@@ -17,6 +17,11 @@ service BuilderContainerService {
 
   // Inspect whether a Docker network exists.
   rpc InspectNetwork(InspectNetworkRequest) returns (InspectNetworkResponse);
+
+  // Report whether a container exists and is running. Returns running=false
+  // for an absent container; returns an error (never false) when liveness
+  // could not be determined, so callers cannot mistake "unknown" for "dead".
+  rpc InspectWorker(InspectWorkerRequest) returns (InspectWorkerResponse);
 }
 
 message Volume {
@@ -81,4 +86,16 @@ message InspectNetworkRequest {
 
 message InspectNetworkResponse {
   bool exists = 1;
+}
+
+message InspectWorkerRequest {
+  string container_id = 1;
+}
+
+message InspectWorkerResponse {
+  bool running = 1;
+  // Full container ID the request resolved to; empty when no such container.
+  // Lets callers that looked a container up by name identify which launch it
+  // actually belongs to, since names are reused across launches.
+  string container_id = 2;
 }

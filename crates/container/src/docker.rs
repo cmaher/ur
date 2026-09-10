@@ -2,7 +2,10 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-use crate::{BuildOpts, ContainerId, ContainerRuntime, ExecOpts, ExecOutput, ImageId, RunOpts};
+use crate::{
+    BuildOpts, ContainerId, ContainerRuntime, ContainerState, ExecOpts, ExecOutput, ImageId,
+    RunOpts,
+};
 
 /// Docker-compatible container runtime. Works with `docker` and `nerdctl` (containerd).
 #[derive(Clone)]
@@ -172,6 +175,59 @@ impl ContainerRuntime for DockerRuntime {
             .with_context(|| format!("failed to inspect container {}", id.0))?;
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
+
+    fn inspect_state(&self, id: &ContainerId) -> Result<Option<ContainerState>> {
+        let output = Command::new(&self.command)
+            .args(["inspect", "--format", "{{.State.Running}} {{.Id}}", &id.0])
+            .output()
+            .with_context(|| format!("failed to inspect container {}", id.0))?;
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return parse_inspect_state(&stdout).with_context(|| {
+                format!(
+                    "unexpected {} inspect output for container {}: {}",
+                    self.command,
+                    id.0,
+                    stdout.trim()
+                )
+            });
+        }
+        // "No such container" is a definitive answer; anything else (daemon
+        // unreachable, permission denied) leaves the state unknown.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No such container") || stderr.contains("no such object") {
+            return Ok(None);
+        }
+        bail!(
+            "{} inspect failed for container {}: {}",
+            self.command,
+            id.0,
+            stderr.trim()
+        )
+    }
+}
+
+/// Parse `docker inspect --format "{{.State.Running}} {{.Id}}"` output into a
+/// `ContainerState`. Returns `Err` when the line is not the expected shape,
+/// so a malformed answer never reads as a valid one.
+fn parse_inspect_state(stdout: &str) -> Result<Option<ContainerState>> {
+    let line = stdout.trim();
+    let Some((running, id)) = line.split_once(char::is_whitespace) else {
+        bail!("expected \"<running> <id>\", got {line:?}");
+    };
+    let running = match running.trim() {
+        "true" => true,
+        "false" => false,
+        other => bail!("expected running to be true/false, got {other:?}"),
+    };
+    let id = id.trim();
+    if id.is_empty() {
+        bail!("empty container id in inspect output");
+    }
+    Ok(Some(ContainerState {
+        id: ContainerId(id.to_owned()),
+        running,
+    }))
 }
 
 #[cfg(test)]
@@ -183,6 +239,30 @@ mod tests {
 
     fn s(v: &str) -> String {
         v.to_string()
+    }
+
+    #[test]
+    fn parses_running_container_state() {
+        let state = parse_inspect_state("true abc123\n").unwrap().unwrap();
+        assert!(state.running);
+        assert_eq!(state.id.0, "abc123");
+    }
+
+    #[test]
+    fn parses_stopped_container_state() {
+        let state = parse_inspect_state("false abc123").unwrap().unwrap();
+        assert!(!state.running);
+        assert_eq!(state.id.0, "abc123");
+    }
+
+    #[test]
+    fn rejects_unparseable_inspect_output() {
+        // A malformed answer must not read as a valid one — reconciliation
+        // treats "not running" as grounds to release a worker's slot.
+        assert!(parse_inspect_state("").is_err());
+        assert!(parse_inspect_state("true").is_err());
+        assert!(parse_inspect_state("maybe abc123").is_err());
+        assert!(parse_inspect_state("true  ").is_err());
     }
 
     fn sample_build_opts() -> BuildOpts {

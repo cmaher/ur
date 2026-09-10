@@ -75,6 +75,24 @@ pub trait ContainerRuntime {
     /// Return the Docker HEALTHCHECK status string (e.g. "healthy", "starting", "unhealthy").
     /// Returns an empty string when no health check is configured.
     fn health_status(&self, id: &ContainerId) -> Result<String>;
+    /// Inspect a container's run state, resolving a name or ID reference.
+    ///
+    /// `Ok(None)` means the runtime answered definitively: no such container.
+    /// An error means the question could not be answered (daemon unreachable,
+    /// runtime binary missing) and must never be collapsed into "absent" —
+    /// callers that reconcile state against this answer would otherwise
+    /// destroy live containers.
+    fn inspect_state(&self, id: &ContainerId) -> Result<Option<ContainerState>>;
+}
+
+/// A container's identity and run state as reported by the runtime.
+#[derive(Debug, Clone)]
+pub struct ContainerState {
+    /// Full container ID the reference resolved to. A name can be reused
+    /// across launches, so this is what identifies the specific container.
+    pub id: ContainerId,
+    /// Whether the container is currently running.
+    pub running: bool,
 }
 
 /// Create a Docker-based container runtime.

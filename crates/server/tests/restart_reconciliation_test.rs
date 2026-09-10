@@ -283,7 +283,7 @@ async fn restart_reclaims_worker_with_live_container() {
 
     // Run reconciliation with container alive (simulates docker inspect returning true).
     let reconcile_result = worker_repo2
-        .reconcile_workers(|container_id| async move { container_id == "live-container-abc" })
+        .reconcile_workers(|container_id| async move { Ok(container_id == "live-container-abc") })
         .await
         .unwrap();
 
@@ -536,7 +536,7 @@ async fn restart_mixed_live_and_dead_workers() {
         make_components_with_db(dir.path(), ticket_pool, workflow_pool).await;
 
     let reconcile_result = worker_repo2
-        .reconcile_workers(|cid| async move { cid == "container-alive" })
+        .reconcile_workers(|cid| async move { Ok(cid == "container-alive") })
         .await
         .unwrap();
 
@@ -581,5 +581,60 @@ async fn restart_mixed_live_and_dead_workers() {
     assert!(
         dead_result.is_ok(),
         "stopped worker credentials remain valid in DB"
+    );
+}
+
+/// Scenario 4: Restart while the container runtime cannot be reached.
+///
+/// This is the failure that motivated the tri-state probe: the server has no
+/// Docker socket, so a probe that reports failure as "not running" marked every
+/// live worker stopped and released its slot, after which a stop aimed at the
+/// slot killed whichever container had taken it over. An unanswered probe must
+/// leave the row exactly as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restart_with_unreachable_runtime_leaves_workers_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let test_db = ur_db_test::TestDb::new().await;
+    let ticket_pool = test_db.ticket_pool();
+    let workflow_pool = test_db.workflow_pool();
+
+    let (_pm1, worker_repo1, _handler1) =
+        make_components_with_db(dir.path(), ticket_pool, workflow_pool).await;
+
+    let worker_id = "worker-unreachable";
+    insert_worker_with_slot(
+        &worker_repo1,
+        "slot-unreachable",
+        "1",
+        "/tmp/unreachable/1",
+        worker_id,
+        "secret-unreachable",
+        "proc-unreachable",
+        "container-unreachable",
+    )
+    .await;
+
+    // --- "Restart" with a probe that cannot answer ---
+    let (_pm2, worker_repo2, _handler2) =
+        make_components_with_db(dir.path(), ticket_pool, workflow_pool).await;
+
+    let reconcile_result = worker_repo2
+        .reconcile_workers(|cid| async move { Err(format!("{cid}: docker daemon unreachable")) })
+        .await
+        .unwrap();
+
+    assert_eq!(reconcile_result.indeterminate, vec![worker_id]);
+    assert!(reconcile_result.reclaimed.is_empty());
+    assert!(
+        reconcile_result.marked_stopped.is_empty(),
+        "an unanswered liveness probe must not mark a worker stopped"
+    );
+
+    let worker = worker_repo2.get_worker(worker_id).await.unwrap().unwrap();
+    assert_eq!(worker.container_status, "running");
+    let slot_link = worker_repo2.get_worker_slot(worker_id).await.unwrap();
+    assert!(
+        slot_link.is_some(),
+        "slot must stay held while liveness is unknown"
     );
 }

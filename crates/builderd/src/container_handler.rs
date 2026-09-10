@@ -10,7 +10,8 @@ use container::{
 use ur_rpc::proto::builder_container::builder_container_service_server::BuilderContainerService;
 use ur_rpc::proto::builder_container::{
     ExecContainerRequest, ExecContainerResponse, InspectNetworkRequest, InspectNetworkResponse,
-    LaunchWorkerRequest, LaunchWorkerResponse, StopWorkerRequest, StopWorkerResponse,
+    InspectWorkerRequest, InspectWorkerResponse, LaunchWorkerRequest, LaunchWorkerResponse,
+    StopWorkerRequest, StopWorkerResponse,
 };
 
 /// Handles BuilderContainerService RPCs: launch, stop, exec, and network inspect
@@ -245,6 +246,34 @@ impl BuilderContainerService for BuilderContainerHandler {
 
         let exists = output.status.success();
         Ok(Response::new(InspectNetworkResponse { exists }))
+    }
+
+    async fn inspect_worker(
+        &self,
+        req: Request<InspectWorkerRequest>,
+    ) -> Result<Response<InspectWorkerResponse>, Status> {
+        let req = req.into_inner();
+        let id = ContainerId(req.container_id.clone());
+
+        // An absent container is a definitive `running: false`. A runtime that
+        // cannot answer is an error, never a false — the server reconciles DB
+        // rows against this answer and would kill live workers otherwise.
+        let state = self.runtime.inspect_state(&id).map_err(|e| {
+            error!(container_id = %req.container_id, error = %e, "container liveness probe failed");
+            Status::internal(format!("container liveness probe failed: {e}"))
+        })?;
+
+        let response = match state {
+            Some(state) => InspectWorkerResponse {
+                running: state.running,
+                container_id: state.id.0,
+            },
+            None => InspectWorkerResponse {
+                running: false,
+                container_id: String::new(),
+            },
+        };
+        Ok(Response::new(response))
     }
 }
 

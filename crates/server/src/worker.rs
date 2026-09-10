@@ -13,7 +13,7 @@ use workflow_db::WorkerRepo;
 use crate::network_manager::NetworkManager;
 
 use tonic::Code;
-use ur_rpc::proto::builder_container::StopWorkerRequest;
+use ur_rpc::proto::builder_container::{InspectWorkerRequest, StopWorkerRequest};
 
 use crate::RepoPoolManager;
 use crate::builder_container_client::BuilderContainerClient;
@@ -1116,28 +1116,84 @@ impl WorkerManager {
 
     /// Stop a running worker process by process_id (searches all entries).
     /// Used by the CLI which only knows the process_id, not the worker_id.
+    ///
+    /// A process_id names a slot, and every worker that has ever occupied that
+    /// slot shares it, so the newest running instance is the one a stop means.
     pub async fn stop(&self, process_id: &str) -> Result<(), String> {
         let workers = self
             .worker_repo
             .list_workers_by_container_status("running")
             .await
             .map_err(|e| format!("db error: {e}"))?;
-        if let Some(worker) = workers.iter().find(|w| w.process_id == process_id) {
+        // list_workers_by_container_status orders oldest-first; take the last
+        // match so a re-used slot stops its current worker, not a stale row.
+        if let Some(worker) = workers.iter().rev().find(|w| w.process_id == process_id) {
             let worker_id = WorkerId::parse(&worker.worker_id)?;
             return self.stop_by_worker_id(&worker_id).await;
         }
 
-        // Not in DB — fall back to stopping by container name. This handles
-        // orphaned containers whose DB row was cleaned up after a crash.
+        self.stop_unrecorded_by_name(process_id).await
+    }
+
+    /// Stop the container occupying a slot's container name when no running
+    /// worker row claims it.
+    ///
+    /// The container name is derived from the process_id, which names a slot —
+    /// so the name outlives any single worker and is re-used by the next one.
+    /// Killing it blind would take down whichever worker holds the slot now,
+    /// which is why the container is resolved to an ID first: if a worker row
+    /// owns it, that row has merely drifted out of `running` and gets a proper
+    /// graceful stop (releasing its slot). Only a container no row claims is
+    /// treated as an orphan and removed by name.
+    async fn stop_unrecorded_by_name(&self, process_id: &str) -> Result<(), String> {
         let container_name = format!("{}{}", self.network_config.worker_prefix, process_id);
         warn!(
             process_id,
-            container_name, "worker not in database, attempting container stop by name"
+            container_name, "no running worker row for process; resolving container by name"
+        );
+
+        let state = self
+            .builder_container_client
+            .inspect_worker(InspectWorkerRequest {
+                container_id: container_name.clone(),
+            })
+            .await
+            .map_err(|status| {
+                format!("cannot determine what occupies container {container_name}: {status}")
+            })?;
+
+        if state.container_id.is_empty() {
+            return Err(format!("unknown worker: {process_id}"));
+        }
+
+        let owner = self
+            .worker_repo
+            .get_worker_by_container_id(&state.container_id)
+            .await
+            .map_err(|e| format!("db error: {e}"))?;
+
+        if let Some(owner) = owner {
+            warn!(
+                process_id,
+                container_name,
+                worker_id = %owner.worker_id,
+                container_status = %owner.container_status,
+                "container belongs to a worker whose row drifted; stopping it by worker id"
+            );
+            let worker_id = WorkerId::parse(&owner.worker_id)?;
+            return self.stop_by_worker_id(&worker_id).await;
+        }
+
+        warn!(
+            process_id,
+            container_name,
+            container_id = %state.container_id,
+            "no worker row owns container; removing as an orphan"
         );
         match self
             .builder_container_client
             .stop_worker(StopWorkerRequest {
-                container_id: container_name,
+                container_id: state.container_id,
             })
             .await
         {
@@ -1621,12 +1677,21 @@ mod tests {
         assert!(result.unwrap_err().contains("process already running"));
     }
 
+    /// With no worker row and no reachable container runtime, a stop must fail
+    /// loudly about the unanswerable probe. It must not fall through to
+    /// removing the slot's container by name: that name is shared by every
+    /// worker that has used the slot, so a blind kill takes down whichever
+    /// worker holds it now.
     #[tokio::test]
-    async fn stop_unknown_process_returns_error() {
+    async fn stop_unknown_process_errors_when_runtime_unreachable() {
         let (mgr, _workspace, _test_db) = test_manager().await;
         let result = mgr.stop("nonexistent").await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unknown worker"));
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("cannot determine what occupies container"),
+            "expected an unresolved-container error, got: {err}"
+        );
+        assert!(err.contains("ur-worker-nonexistent"), "got: {err}");
     }
 
     #[test]

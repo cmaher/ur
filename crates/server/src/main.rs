@@ -12,7 +12,9 @@ use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::str::FromStr;
 use ticket_db::{GraphManager, TicketRepo};
+use ur_rpc::proto::builder_container::InspectWorkerRequest;
 use ur_server::SnapshotManager;
+use ur_server::builder_container_client::BuilderContainerClient;
 use ur_server::worker::WorkerModesConfig;
 use ur_server::workflow::handlers::build_handlers;
 use ur_server::{
@@ -205,25 +207,41 @@ async fn reconcile_slots(
     Ok(())
 }
 
-async fn reconcile_workers(worker_repo: &WorkerRepo, docker_command: &str) -> anyhow::Result<()> {
-    let docker_cmd = docker_command.to_owned();
+/// Reconcile worker rows against live containers.
+///
+/// The liveness probe goes through builderd: the server container has no
+/// Docker socket, so inspecting containers from this process would fail for
+/// every worker. A failed probe is reported as an error rather than "dead",
+/// leaving the row untouched — see `WorkerRepo::reconcile_workers`.
+async fn reconcile_workers(
+    worker_repo: &WorkerRepo,
+    builder_container_client: &BuilderContainerClient,
+) -> anyhow::Result<()> {
     let worker_result = worker_repo
         .reconcile_workers(|container_id| {
-            let cmd = docker_cmd.clone();
+            let client = builder_container_client.clone();
             async move {
-                tokio::process::Command::new(&cmd)
-                    .args(["inspect", "--format", "{{.State.Running}}", &container_id])
-                    .output()
+                client
+                    .inspect_worker(InspectWorkerRequest {
+                        container_id: container_id.clone(),
+                    })
                     .await
-                    .map(|o| o.stdout.starts_with(b"true"))
-                    .unwrap_or(false)
+                    .map(|response| response.running)
+                    .map_err(|status| format!("{container_id}: {status}"))
             }
         })
         .await
         .map_err(|e| anyhow::anyhow!("worker reconciliation failed: {e}"))?;
+    if !worker_result.indeterminate.is_empty() {
+        warn!(
+            indeterminate = ?worker_result.indeterminate,
+            "worker liveness could not be determined; rows left unchanged"
+        );
+    }
     info!(
         reclaimed = ?worker_result.reclaimed,
         stopped = ?worker_result.marked_stopped,
+        indeterminate = ?worker_result.indeterminate,
         "worker reconciliation complete"
     );
     Ok(())
@@ -590,14 +608,13 @@ async fn init_managers(
     host_config_dir: &Path,
     logs_dir: &Path,
     worker_modes: WorkerModesConfig,
-    docker_command: &str,
 ) -> anyhow::Result<(
     String,
     WorkerRepo,
     RepoPoolManager,
     WorkerManager,
     ProjectRegistry,
-    ur_server::builder_container_client::BuilderContainerClient,
+    BuilderContainerClient,
 )> {
     let builderd_addr = std::env::var(ur_config::BUILDERD_ADDR_ENV)
         .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.builderd_port));
@@ -651,7 +668,7 @@ async fn init_managers(
         builder_container_client.clone(),
     );
 
-    reconcile_workers(&worker_repo, docker_command).await?;
+    reconcile_workers(&worker_repo, &builder_container_client).await?;
 
     let stale_deleted = worker_repo
         .cleanup_stale_workers(cfg.server.stale_worker_ttl_days)
@@ -704,8 +721,6 @@ async fn main() -> anyhow::Result<()> {
     let pid_file = cfg.config_dir.join(ur_config::SERVER_PID_FILE);
     tokio::fs::write(&pid_file, std::process::id().to_string()).await?;
 
-    let docker_command = cfg.server.container_command.clone();
-
     let host_config_dir = std::env::var(ur_config::UR_HOST_CONFIG_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|_| cfg.config_dir.clone());
@@ -732,7 +747,6 @@ async fn main() -> anyhow::Result<()> {
         &host_config_dir,
         &logs_dir,
         worker_modes,
-        &docker_command,
     )
     .await?;
 

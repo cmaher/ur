@@ -24,6 +24,8 @@ pub struct WorkerReconcileResult {
     pub reclaimed: Vec<String>,
     /// Worker IDs whose containers are dead (marked stopped, slots released).
     pub marked_stopped: Vec<String>,
+    /// Worker IDs whose liveness could not be determined, left untouched.
+    pub indeterminate: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -122,6 +124,26 @@ impl WorkerRepo {
              FROM worker WHERE worker_id = $1",
         )
         .bind(worker_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(worker_from_row))
+    }
+
+    /// Look up a worker by the container it owns.
+    ///
+    /// Container IDs are unique per launch, unlike the slot-derived container
+    /// name, so this is the safe way to ask "which worker does this live
+    /// container belong to?" before acting on it.
+    pub async fn get_worker_by_container_id(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<Worker>, sqlx::Error> {
+        let row = sqlx::query_as::<_, WorkerRow>(
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count
+             FROM worker WHERE container_id = $1 ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(container_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -569,25 +591,36 @@ impl WorkerRepo {
     /// - Active (provisioning/running/stopping) + dead: set container_status = "stopped", unlink slot.
     /// - Stopped + alive: set container_status = "running" (reclaim). Does NOT modify agent_status.
     /// - Stopped + dead: no-op.
+    ///
+    /// `is_container_alive` returns `Err` when liveness cannot be determined
+    /// (the container runtime is unreachable, for instance). Such a worker is
+    /// left exactly as it is and reported in `indeterminate`: an unanswered
+    /// probe must never be read as "dead", or a reconcile pass would mark
+    /// every live worker stopped and release the slots they are still using.
     pub async fn reconcile_workers<F, Fut>(
         &self,
         is_container_alive: F,
     ) -> Result<WorkerReconcileResult, sqlx::Error>
     where
         F: Fn(String) -> Fut,
-        Fut: Future<Output = bool>,
+        Fut: Future<Output = Result<bool, String>>,
     {
         let mut result = WorkerReconcileResult {
             reclaimed: Vec::new(),
             marked_stopped: Vec::new(),
+            indeterminate: Vec::new(),
         };
 
         let all_workers = self.list_all_workers().await?;
 
         for worker in all_workers {
-            let alive = is_container_alive(worker.container_id.clone()).await;
-            self.reconcile_single_worker(worker, alive, &mut result)
-                .await?;
+            match is_container_alive(worker.container_id.clone()).await {
+                Ok(alive) => {
+                    self.reconcile_single_worker(worker, alive, &mut result)
+                        .await?;
+                }
+                Err(_) => result.indeterminate.push(worker.worker_id),
+            }
         }
 
         Ok(result)

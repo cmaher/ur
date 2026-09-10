@@ -3,13 +3,14 @@ use tonic::{Code, Status};
 use ur_rpc::proto::builder_container::builder_container_service_client::BuilderContainerServiceClient;
 use ur_rpc::proto::builder_container::{
     ExecContainerRequest, ExecContainerResponse, InspectNetworkRequest, InspectNetworkResponse,
-    LaunchWorkerRequest, LaunchWorkerResponse, StopWorkerRequest, StopWorkerResponse,
+    InspectWorkerRequest, InspectWorkerResponse, LaunchWorkerRequest, LaunchWorkerResponse,
+    StopWorkerRequest, StopWorkerResponse,
 };
 
 /// Thin clone-able wrapper around the generated `BuilderContainerServiceClient`.
 ///
 /// Constructed from the same retry channel used by `BuilderdClient` — one TCP
-/// connection, two service clients. Exposes typed async methods matching the four
+/// connection, two service clients. Exposes typed async methods matching the
 /// RPCs defined in `builder_container.proto`.
 #[derive(Clone)]
 pub struct BuilderContainerClient {
@@ -85,6 +86,22 @@ impl BuilderContainerClient {
             .inspect_network(request)
             .await
             .map_err(|status| preserve_status_code(status, "inspect_network"))?;
+        Ok(response.into_inner())
+    }
+
+    /// Report whether a worker container exists and is running.
+    ///
+    /// An absent container is reported as `running: false`. Any error means
+    /// liveness is unknown and must not be treated as "not running".
+    pub async fn inspect_worker(
+        &self,
+        request: InspectWorkerRequest,
+    ) -> Result<InspectWorkerResponse, Status> {
+        let mut client = self.inner.clone();
+        let response = client
+            .inspect_worker(request)
+            .await
+            .map_err(|status| preserve_status_code(status, "inspect_worker"))?;
         Ok(response.into_inner())
     }
 }
