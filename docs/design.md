@@ -52,7 +52,7 @@ No other credentials are passed to the worker.
 
 ## Network Isolation
 
-Workers run on a docker network that does not have access to the host or the internet. All internet-based requests go through Squid, which only allows access to Anthropic domains and the specific GCP bucket that holds Claude Code releases.
+Workers run on a docker network that does not have access to the host or the internet. All internet-based requests go through Squid, whose allowlist covers the supported agents' API and OAuth domains plus required distribution endpoints.
 
 The server only runs on localhost and is not exposed to LAN or the internet.
 

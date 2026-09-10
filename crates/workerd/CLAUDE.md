@@ -33,9 +33,9 @@ submit.
 immediately, the hook completes, Claude Code returns to its prompt, and only then
 (`HOOK_RETURN_GRACE`, 750ms later) is the text typed in. Never call `send_keys` inline from
 `NotifyIdle`. This rationale is Claude-specific (its `Stop` hook is synchronous), but the
-deferred send stays in place for both agents rather than being special-cased away: codex's
-command handlers accept `async = true` so the hazard may not apply there, but a needless-only
-divergence between agents is worse than a harmless deferred send.
+deferred send stays in place for every agent rather than being special-cased away: Codex's
+command handlers accept `async = true` so the hazard may not apply there, while AGY hooks are
+synchronous like Claude's. A uniform harmless deferred send keeps this path agent-agnostic.
 
 `Implement` / `Design` / `AddressFeedbackTickets` send inline instead — they arrive from the
 server rather than from a hook, so their errors can propagate back to the caller.

@@ -48,7 +48,7 @@ Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `instr
 
 | Config Field | Container Mount Point | Env Var | Read-only? |
 |---|---|---|---|
-| `instruction_md` | `/var/ur/project-instruction/{agent.instruction_filename()}` (`CLAUDE.md` for Claude, `AGENTS.md` for Codex) | `UR_PROJECT_INSTRUCTION` | yes (`:ro`) |
+| `instruction_md` | `/var/ur/project-instruction/{agent.instruction_filename()}` (`CLAUDE.md` for Claude, `AGENTS.md` for Codex/AGY) | `UR_PROJECT_INSTRUCTION` | yes (`:ro`) |
 | `memory_dir` | `~/{agent.home_subdir()}/{agent.memory_subdir()}` (`/home/worker/.claude/projects/-workspace/memory` for Claude); no-op if the agent has no memory-dir concept | (none) | no |
 | `brain_dir` | `/brain` | (none) | no |
 | `workspace_brain_dir` (top-level) | `/brain` | (none) | no |
@@ -81,7 +81,7 @@ Workerd copies both sources into `/workspace/.git/hooks/` at container startup.
 | In-repo | `/workspace/ur-hooks/skills/` | applied first |
 | Host overlay | `/var/ur/host-hooks/skills/:ro` | applied second, wins on conflict |
 
-The host overlay path `/var/ur/host-hooks/skills/` is volume-mounted from `<config_dir>/projects/<key>/hooks/skills/` on the host. Workerd copies both sources into `~/{agent.home_subdir()}/{agent.skill_hooks_subdir()}/` at container startup (`~/.claude/skill-hooks/` for Claude), via `InitSkillHooksManager` (`crates/workerd/src/init_skill_hooks.rs`), which takes the agent through its constructor.
+The host overlay path `/var/ur/host-hooks/skills/` is volume-mounted from `<config_dir>/projects/<key>/hooks/skills/` on the host. Workerd copies both sources into `~/{agent.customization_root()}/{agent.skill_hooks_subdir()}/` at container startup (`~/.claude/skill-hooks/` for Claude and `~/.gemini/config/skill-hooks/` for AGY), via `InitSkillHooksManager`. AGY's `home_subdir()` remains the separate runtime root `.gemini/antigravity-cli`; settings and mutable state belong there, while skills, hooks, and generated instructions use `.gemini/config`.
 
 ### Workflow Hooks (Server-Side, Not Container-Mounted)
 
@@ -105,7 +105,7 @@ Source: `crates/server/src/workflow/handlers/verify.rs`
 4. If not → no instruction file mounted
 ```
 
-This means placing a file at `~/.ur/projects/ur/CLAUDE.md` is enough — no config change needed (for Claude; the convention filename is agent-derived via `agent.instruction_filename()`, so a Codex worker's convention path is `~/.ur/projects/ur/AGENTS.md` instead).
+This means placing a file at `~/.ur/projects/ur/CLAUDE.md` is enough for Claude; the convention filename is agent-derived, so Codex and AGY use `~/.ur/projects/ur/AGENTS.md` instead. AGY does not discover a workspace `CLAUDE.md`, so workerd folds the configured project instruction content into its generated `~/.gemini/config/AGENTS.md`.
 
 **Codex never needs its own `AGENTS.md`:** the codex image bakes `project_doc_fallback_filenames = ["CLAUDE.md"]` into `~/.codex/config.toml` (`containers/worker-codex/codex-config.toml`), so codex reads a repo's existing `CLAUDE.md` when no `AGENTS.md` is present — no ur-managed repo has to carry both files just to support both agents.
 
@@ -370,4 +370,3 @@ BuilderPoolHandler::recycle_slot() / prepare_new_slot()   [builderd/src/pool_han
   ▼
 Slot returned to server → container launch with /workspace mount
 ```
-

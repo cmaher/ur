@@ -1,8 +1,8 @@
 # Ur Agentic Development Environment (Ur ADE)
 
-Run [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents in secure, isolated containers with full permissions — no more permission prompts, no security trade-offs.
+Run Claude Code, Codex, and Google Antigravity (`agy`) agents in secure, isolated containers with full permissions — no more permission prompts, no security trade-offs.
 
-Ur ADE coordinates containerized Claude Code workers via gRPC, managing the full lifecycle from design through implementation and PR creation. All agent activity is sandboxed: workers run on isolated Docker networks with no direct host or internet access, while a Lua-scripted command gateway mediates every host interaction.
+Ur ADE coordinates containerized AI coding workers via gRPC, managing the full lifecycle from design through implementation and PR creation. All agent activity is sandboxed: workers run on isolated Docker networks with no direct host or internet access, while a Lua-scripted command gateway mediates every host interaction.
 
 > **Warning:** Ur ADE is under active development and highly unstable. APIs, configuration formats, and behavior may change without notice.
 
@@ -78,14 +78,14 @@ Git and skill hooks are loaded from two fixed convention paths (no config needed
 │  ┌─────────┐    ┌──────────┐    ┌──────────────────────────┐    │
 │  │ ur CLI  │───▶│  Server  │───▶│  Worker Containers       │    │
 │  │ ur TUI  │    │ (Docker) │    │  ┌────────┐ ┌────────┐   │    │
-│  └─────────┘    │          │    │  │Claude  │ │Claude  │   │    │
-│                 │ Tickets  │    │  │Code    │ │Code    │   │    │
+│  └─────────┘    │          │    │  │ Agent  │ │ Agent  │   │    │
+│                 │ Tickets  │    │  │harness │ │harness │   │    │
 │  ┌──────────┐   │ Workflow │    │  └───┬────┘ └───┬────┘   │    │
 │  │ builderd │◀──│ Workers  │    │      │          │        │    │
 │  │ (host)   │   └──────────┘    │  workerd      workerd    │    │
 │  └──────────┘       │           └──────────────────────────┘    │
 │       │         ┌───┴───┐                                       │
-│       │         │ Squid │  (proxy: Anthropic domains only)      │
+│       │         │ Squid │  (agent API allowlist)                │
 │       ▼         └───────┘                                       │
 │  Git repos, gh, cargo, docker (sandboxed)                       │
 └─────────────────────────────────────────────────────────────────┘
@@ -93,10 +93,10 @@ Git and skill hooks are loaded from two fixed convention paths (no config needed
 
 **Key components:**
 
-- **Worker containers** — Run Claude Code with all permissions on an isolated Docker network
+- **Worker containers** — Run Claude Code, Codex, or AGY with all permissions on an isolated Docker network
 - **Server** — Orchestrates workers, manages tickets, automates the development lifecycle
 - **builderd** — Host daemon that executes sandboxed commands (git, gh, cargo) on behalf of workers
-- **Squid proxy** — Restricts network access to Anthropic API domains only
+- **Squid proxy** — Restricts network access to the configured agent API/OAuth allowlist
 - **Lua command gateway** — Validates and filters every host command, blocking directory escapes and dangerous flags
 
 See [docs/design.md](docs/design.md) for the full architecture and security model.

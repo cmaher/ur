@@ -12,7 +12,7 @@ Loaded by `Config::load()` / `Config::load_from()` in `crates/ur_config/src/lib.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `agent` | string | `"claude"` | Default agent harness for every worker (`"claude"` or `"codex"`). An unrecognized value is a startup config error naming the valid agents — never a silent fallback. See [Agent Default Precedence](#agent-default-precedence) |
+| `agent` | string | `"claude"` | Default agent harness for every worker (`"claude"`, `"codex"`, or `"agy"`). An unrecognized value is a startup config error naming the valid agents — never a silent fallback. See [Agent Default Precedence](#agent-default-precedence) |
 | `workspace` | path | `<config_dir>/workspace` | Worker workspace directory (host-side) |
 | `server_port` | u16 | 12321 | TCP port for ur→server gRPC |
 | `builderd_port` | u16 | `server_port + 2` | TCP port for builderd |
@@ -21,7 +21,7 @@ Loaded by `Config::load()` / `Config::load_from()` in `crates/ur_config/src/lib.
 
 ## `[skills]` Section
 
-Host-side skills injected into worker containers at runtime. Skills are bind-mounted read-only into `/home/worker/.claude/potential-skills/<name>/` alongside skills baked into the container image.
+Host-side skills injected into worker containers at runtime. Skills are bind-mounted read-only into the agent-neutral `/home/worker/.agent-shared/potential-skills/<name>/` pool alongside skills baked into the container image.
 
 Three sub-tables are supported:
 
@@ -57,7 +57,7 @@ Forward proxy (Squid) configuration for restricting container network access.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `hostname` | string | `"ur-squid"` | Proxy hostname on Docker network |
-| `allowlist` | string[] | `["api.anthropic.com", "platform.claude.com"]` | Domains containers may reach (GCS bucket for Claude Code dist is allowed via URL regex in squid.conf) |
+| `allowlist` | string[] | all supported-agent domains | Domains containers may reach, assembled from `AgentType::ALL`; the live Squid file is seeded separately by `ur init` |
 
 ## `[network]` Section
 
@@ -199,12 +199,21 @@ code = { model = "sonnet", effort = "high" }
 
 [worker_models.codex]
 code = { model = "gpt-5.6-terra", effort = "high" }
+
+[worker_models.agy]
+code = { model = "gemini-3.8-flash", effort = "high" }
 ```
 
 Every key is an agent table; strategy entries are inline tables whose `model` and `effort`
 fields are independently optional. Flat entries such as `code = "sonnet"` are a hard migration
 error. Unknown agents and strategy fields are rejected, and effort is validated against the
 selected agent's supported set during parsing.
+
+Built-in model defaults are Claude `sonnet`/`opus`/`opus`, Codex
+`gpt-5.6-terra`/`gpt-5.6-sol`/`gpt-5.6-sol`, and AGY `gemini-3.8-flash` for all three
+strategies. All agents default to medium effort. AGY deliberately exposes the shared,
+uncurated effort vocabulary; AGY itself reports an incompatible model/effort pair. AGY model
+values must be base IDs, not effort-suffixed IDs.
 
 Model resolution precedence, most specific first:
 
@@ -243,6 +252,11 @@ resolved against the wrong agent.
 Because resolution is agent-derived, an alias can never disagree with the agent, and existing
 `ur.toml` files and `--image` flags keep working untouched — `"ur-worker"` and
 `"ur-worker-rust"` remain the only two alias names.
+
+| Alias | Claude | Codex | AGY |
+|---|---|---|---|
+| `ur-worker` | `ur-worker-claude:latest` | `ur-worker-codex:latest` | `ur-worker-agy:latest` |
+| `ur-worker-rust` | `ur-worker-rust-claude:latest` | `ur-worker-rust-codex:latest` | `ur-worker-rust-agy:latest` |
 
 ## Config Flow Through the System
 
