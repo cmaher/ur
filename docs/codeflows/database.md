@@ -213,10 +213,20 @@ password = "ur"            # default; prefer UR_WORKFLOW_DB_PASSWORD env var
 name     = "ur_workflow"   # default
 
 [workflow_db.backup]
-path             = "/path/to/backup/dir"   # omit to disable
+path             = "/path/to/backup/dir"   # omit to disable; use the same dir as [ticket_db.backup]
 interval_minutes = 30                       # default: 30
 retain_count     = 3                        # default: 3
 ```
+
+### Legacy `[db]` / top-level `[backup]`
+
+`[db]` (and the top-level `[backup]` table, which resolves into `[db].backup`) predates the
+two-database split and no longer configures either live pool. It survives only for the
+`ur db backup` / `ur db restore` CLI path (`crates/ur/src/db.rs`), which dumps
+`config.db.name` — `"ur"` by default, not `ur_tickets` or `ur_workflow`. Periodic server-side
+backups read `[ticket_db.backup]` and `[workflow_db.backup]` exclusively (`init_backups`,
+`crates/server/src/main.rs`), so a config carrying only a top-level `[backup]` has
+**no periodic backups running at all**.
 
 Passwords can be supplied via environment variable instead of the config file:
 
@@ -229,7 +239,9 @@ Passwords can be supplied via environment variable instead of the config file:
 
 The backup architecture runs two independent `BackupTaskManager` instances — one per database. Each follows the same lifecycle.
 
-The backup path on the host is mounted at `/backup` in the `ur-postgres` container via Docker Compose.
+The backup path on the host is mounted at `/backup` in the `ur-postgres` container via Docker Compose — a **single** mount, whose host source is `ticket_db.backup.path` (`generate_compose`, `crates/ur/src/compose.rs`). `workflow_db.backup.path` is never mounted, so both managers write into whatever directory the ticket config named. Point both sections at the same host path; a `workflow_db.backup.path` that differs from the ticket one is silently ignored.
+
+Automatic backup filenames are `ur-backup-<timestamp>.pgdump` and carry **no database name**, so the two managers share a filename space in that one directory and same-second dumps collide. Retention (`retain_count`) likewise counts both databases' dumps together.
 
 ### Startup
 
@@ -245,11 +257,11 @@ The backup path on the host is mounted at `/backup` in the `ur-postgres` contain
 loop {
     tokio::select! {
         sleep(interval) => {
-            1. Generate timestamped filename: ur-{db_name}-YYYYMMDDTHHMMSSz.pgdump
+            1. Generate timestamped filename: ur-backup-YYYYMMDDTHHMMSSZ.pgdump
             2. SnapshotManager::dump_to(filename)
                → docker exec ur-postgres pg_dump -Fc -f /backup/<filename> <db_name>
-            3. On success: clean_old_backups() removes older ur-{db_name}-*.pgdump files
-               (keeps retain_count most recent)
+            3. On success: clean_old_backups() removes older ur-backup-*.pgdump files
+               (keeps retain_count most recent; manual-*.pgdump is never cleaned)
             4. On failure: log error, continue loop
         }
         shutdown_rx.changed() => {

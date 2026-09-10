@@ -83,7 +83,11 @@ github_scan_interval_secs = 60
 
 ## `[db]`, `[ticket_db]`, `[workflow_db]` Sections
 
-Three separate Postgres connection configs. `[db]` is the legacy shared config; prefer `[ticket_db]` and `[workflow_db]` for new installations.
+Three separate Postgres connection configs. `[db]` — and the top-level `[backup]` table, which
+resolves into `[db].backup` — is legacy: it configures neither live pool. It is read only by the
+`ur db backup` / `ur db restore` CLI, which dumps `db.name` (`"ur"` by default, not `ur_tickets`
+or `ur_workflow`). **Periodic backups come from `[ticket_db.backup]` and `[workflow_db.backup]`
+only**, so a config with just a top-level `[backup]` has no periodic backups running.
 
 All three sections share the same fields:
 
@@ -101,6 +105,12 @@ Password env var overrides: `UR_TICKET_DB_PASSWORD`, `UR_WORKFLOW_DB_PASSWORD`.
 ### `[*.backup]` Sub-section
 
 Nested under any database section as `[db.backup]`, `[ticket_db.backup]`, or `[workflow_db.backup]`.
+
+**Both databases share one host directory.** Compose mounts a single `/backup` volume in the
+postgres container, sourced from `ticket_db.backup.path`; `workflow_db.backup.path` is never
+mounted, so give both sections the *same* path. Automatic dumps are named
+`ur-backup-<timestamp>.pgdump` with no database name in them, so the two databases share a
+filename space and a `retain_count` budget in that directory.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -556,12 +566,12 @@ max_implement_cycles = 8
 github_scan_interval_secs = 45
 
 [ticket_db.backup]
-path = "/var/backups/ur/tickets"
+path = "/var/backups/ur"
 interval_minutes = 60
 retain_count = 5
 
 [workflow_db.backup]
-path = "/var/backups/ur/workflow"
+path = "/var/backups/ur"   # must match [ticket_db.backup] — only that one is mounted
 interval_minutes = 60
 retain_count = 5
 

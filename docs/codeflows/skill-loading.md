@@ -77,24 +77,31 @@ agent = "claude"             # optional; defaults to "claude" when omitted
 
 Config-defined modes merge with defaults: defined names replace their default counterpart, undefined defaults are preserved. Each mode may optionally specify a `model` field to override the base strategy's default model, and an `agent` field to override which agent runs it (an unrecognized `agent` value is a config error naming the offending mode).
 
-### `[worker_models]` Override (strategy-level default)
+### `[worker_models.<agent>]` Override (strategy-level default)
 
 ```toml
-[worker_models]
-code = "opus"
-design = "sonnet"
-manual = "sonnet"
+[worker_models.claude]
+code   = { model = "opus" }
+design = { model = "sonnet", effort = "high" }
+manual = { model = "sonnet" }
+
+[worker_models.codex]
+code = { effort = "high" }
 ```
 
-`[worker_models]` (parsed in `WorkerModesConfig::from_toml`, `crates/server/src/worker.rs`) overrides the built-in default model per **strategy** ("code", "design", "manual") rather than per mode. It changes what every mode based on that strategy resolves to when it doesn't specify its own `model` — including the built-in `code`/`design` modes themselves. `deny_unknown_fields` rejects typos or unrecognized strategy names with an error naming the bad key. Keys are optional; an omitted key falls back to `agent.default_model(strategy)` for that strategy. This section stays flat and agent-independent — it is not keyed by agent, only by strategy.
+`[worker_models]` (parsed in `WorkerModesConfig::from_toml`, `crates/server/src/worker.rs`) overrides the built-in default model and reasoning effort per **strategy** ("code", "design", "manual") rather than per mode. It changes what every mode based on that strategy resolves to when it doesn't specify its own `model`/`effort` — including the built-in `code`/`design` modes themselves.
 
-### Model Resolution Precedence (highest wins)
+Every top-level key must be an **agent table** (`claude`, `codex`); a bare `code = "opus"` at the top level, or under an agent, is a hard config error telling you to use `[worker_models.<agent>]` with inline `{ model, effort }` entries. `deny_unknown_fields` rejects typos or unrecognized strategy names with an error naming the bad key, an unknown agent table is rejected with the valid agent list, and an `effort` value outside `agent.supported_efforts()` is rejected at parse time. Every key is optional; `model` and `effort` resolve independently, so an entry may set just one.
 
-1. A custom mode's explicit `worker_modes.<name>.model`
-2. The `[worker_models]` override for that mode's base strategy
-3. `agent.default_model(strategy)` — the agent's own built-in table ("sonnet" for code, "opus" for design/manual, for Claude)
+### Model / Effort Resolution Precedence (highest wins)
 
-So a custom mode's explicit `model` always wins over `[worker_models]`, and `[worker_models]` always wins over the agent's hardcoded default. The resolved value reaches the container as `UR_WORKER_MODEL` and is turned into a `--model` flag by `agent.spawn_command(model)` — **it is not injected into `settings.json`**, because Claude Code rewrites `~/.claude/settings.json` on startup and silently drops unrecognized keys.
+Each field resolves on its own:
+
+1. A custom mode's explicit `worker_modes.<name>.model` / `.effort`
+2. The `[worker_models.<agent>].<strategy>` entry's `model` / `effort` for that mode's base strategy
+3. `agent.default_model(strategy)` — the agent's own built-in table ("sonnet" for code, "opus" for design/manual, for Claude) — and `agent.default_effort()` ("medium" for both agents)
+
+Resolution happens after the agent is resolved, so an explicit `--agent` launch override picks up that agent's tables and defaults. The resolved values reach the container as `UR_WORKER_MODEL` and `UR_WORKER_EFFORT` and are turned into agent-specific flags by `agent.spawn_command(model, effort)` (`--model`/`--effort` for Claude, `-m`/`-c model_reasoning_effort` for Codex) — **they are not injected into `settings.json`**, because Claude Code rewrites `~/.claude/settings.json` on startup and silently drops unrecognized keys.
 
 ## Container Startup (entrypoint.sh → workerd init)
 
