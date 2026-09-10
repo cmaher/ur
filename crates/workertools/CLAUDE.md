@@ -8,6 +8,8 @@ Installed at `/usr/local/bin/workertools` in worker containers.
 - `workertools status step-complete` — signals step completion to workerd (WorkerDaemonService)
 - `workertools status pause-nudge` — suppresses nudges for 5 min via workerd (WorkerDaemonService)
 - `workertools status request-human "<msg>"` — requests human attention via server (CoreService)
+- `workertools notify-idle` — notifies workerd that the agent is idle; `--json` prints `{}`
+  on stdout after a successful RPC for AGY's synchronous `Stop` hook contract
 - Bash shims at `/home/worker/.local/bin/<command>` call `workertools host-exec`
 - Connects to ur-server via `$UR_SERVER_ADDR`
 - Auth headers (`ur-worker-id`, `ur-worker-secret`) injected via tonic interceptor for all subcommands
