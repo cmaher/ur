@@ -4,7 +4,8 @@
 
 # Build artifacts
 target/
-containers/agent-claude/bin/
+containers/worker-claude/bin/
+containers/worker-codex/bin/
 containers/server/ur-server
 containers/server/builderd
 containers/server/libonnxruntime.so

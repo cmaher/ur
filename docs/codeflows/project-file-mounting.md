@@ -36,7 +36,7 @@ memory_dir = "%URCONFIG%/projects/ur/memory"
 brain_dir = "%URCONFIG%/projects/ur/brain"
 
 [projects.ur.container]
-image = "ur-worker:latest"
+image = "ur-worker"
 mounts = ["%URCONFIG%/shared-data:/var/data"]
 ```
 
@@ -48,7 +48,7 @@ Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `instr
 
 | Config Field | Container Mount Point | Env Var | Read-only? |
 |---|---|---|---|
-| `instruction_md` | `/var/ur/project-instruction/{agent.instruction_filename()}` (e.g. `CLAUDE.md` for Claude) | `UR_PROJECT_INSTRUCTION` | yes (`:ro`) |
+| `instruction_md` | `/var/ur/project-instruction/{agent.instruction_filename()}` (`CLAUDE.md` for Claude, `AGENTS.md` for Codex) | `UR_PROJECT_INSTRUCTION` | yes (`:ro`) |
 | `memory_dir` | `~/{agent.home_subdir()}/{agent.memory_subdir()}` (`/home/worker/.claude/projects/-workspace/memory` for Claude); no-op if the agent has no memory-dir concept | (none) | no |
 | `brain_dir` | `/brain` | (none) | no |
 | `workspace_brain_dir` (top-level) | `/brain` | (none) | no |
@@ -105,7 +105,9 @@ Source: `crates/server/src/workflow/handlers/verify.rs`
 4. If not → no instruction file mounted
 ```
 
-This means placing a file at `~/.ur/projects/ur/CLAUDE.md` is enough — no config change needed (for Claude; the convention filename is agent-derived via `agent.instruction_filename()`).
+This means placing a file at `~/.ur/projects/ur/CLAUDE.md` is enough — no config change needed (for Claude; the convention filename is agent-derived via `agent.instruction_filename()`, so a Codex worker's convention path is `~/.ur/projects/ur/AGENTS.md` instead).
+
+**Codex never needs its own `AGENTS.md`:** the codex image bakes `project_doc_fallback_filenames = ["CLAUDE.md"]` into `~/.codex/config.toml` (`containers/worker-codex/codex-config.toml`), so codex reads a repo's existing `CLAUDE.md` when no `AGENTS.md` is present — no ur-managed repo has to carry both files just to support both agents.
 
 Source: `resolve_project_instruction()` in `crates/server/src/worker.rs`
 

@@ -1,5 +1,5 @@
 ARG BASE_TAG=latest
-FROM ur-worker:${BASE_TAG}
+FROM ur-worker-codex:${BASE_TAG}
 
 USER root
 

@@ -1,0 +1,15 @@
+# Baked to /etc/codex/managed_config.toml as root. See CLAUDE.md for why
+# hooks must live here rather than in config.toml: `bypass_hook_trust` is
+# not a config.toml key — only the `--dangerously-bypass-hook-trust` CLI
+# flag — so a hook declared in the user config would sit behind an
+# interactive trust gate that never clears in a container. The managed
+# layer's hooks are always on regardless of that gate.
+#
+# allow_managed_hooks_only additionally blocks a checked-out repo from
+# shipping its own hooks into this worker — the right posture for a
+# container running other people's code.
+allow_managed_hooks_only = true
+
+[hooks]
+SessionStart = [{ hooks = [{ type = "command", command = "workertools notify-idle" }] }]
+Stop         = [{ hooks = [{ type = "command", command = "workertools notify-idle" }] }]

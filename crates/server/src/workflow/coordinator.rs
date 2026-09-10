@@ -491,6 +491,7 @@ mod tests {
 
     fn dummy_config() -> Arc<ur_config::Config> {
         Arc::new(ur_config::Config {
+            agent: ur_config::AgentType::Claude,
             config_dir: std::path::PathBuf::from("/tmp/test"),
             logs_dir: std::path::PathBuf::from("/tmp/test/logs"),
             workspace: std::path::PathBuf::from("/tmp/test/workspace"),

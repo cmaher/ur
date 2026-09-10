@@ -113,6 +113,6 @@ SOFTWARE.
 - **License:** Proprietary (Anthropic, PBC)
 - **Copyright:** (c) 2025 Anthropic, PBC. All rights reserved.
 - **Usage:** The Claude Code install script is vendored at
-  `containers/agent-claude/vendor/claude/install.sh` and used during container
+  `containers/worker-claude/vendor/claude/install.sh` and used during container
   image builds to install Claude Code without fetching from the internet at
   build time. Redistribution is subject to Anthropic's terms of service.

@@ -1,7 +1,10 @@
 mod agent;
 mod template_path;
 
-pub use agent::{AgentAuth, AgentType, ParseAgentError};
+pub use agent::{
+    AgentAuth, AgentType, AuthSource, MIN_SEEDED_CREDENTIALS_BYTES, ParseAgentError,
+    UnknownAliasError, credentials_file_is_seeded,
+};
 pub use template_path::{
     ResolvedTemplatePath, WORKSPACE_TEMPLATE, resolve_template_path, resolve_workspace_content,
 };
@@ -295,19 +298,22 @@ pub const DEFAULT_WORKER_CPUS: u32 = 2;
 /// Default memory limit for a worker container (used when the launch request omits it).
 pub const DEFAULT_WORKER_MEMORY: &str = "8G";
 
-/// Fallback image for a launch with no `image_id` and no project-configured
-/// image. Deliberately the rust-toolchain image — swapping in the plain
-/// `ur-worker` image here would silently drop the rust toolchain from default
-/// launches.
-pub const DEFAULT_FALLBACK_IMAGE: &str = "ur-worker-rust:latest";
-
-/// Domains required by Claude Code for normal operation.
+/// Union of every known agent's required domains.
+///
+/// There is one shared Squid instance for all workers (`ur-squid`), so the
+/// default allowlist must cover every agent that might run behind it, not
+/// just whichever agent a given project happens to use. Deduplicated and
+/// stably ordered (by `AgentType::ALL` order, then each agent's own
+/// `proxy_domains()` order) so the generated `allowlist.txt` doesn't churn
+/// between runs.
 fn default_proxy_allowlist() -> Vec<String> {
-    vec![
-        "api.anthropic.com".to_string(),
-        "platform.claude.com".to_string(),
-        "downloads.claude.ai".to_string(),
-    ]
+    let mut seen = std::collections::HashSet::new();
+    AgentType::ALL
+        .iter()
+        .flat_map(|agent| agent.proxy_domains().iter().copied())
+        .filter(|domain| seen.insert(*domain))
+        .map(str::to_string)
+        .collect()
 }
 
 // ---- Config ----
@@ -321,6 +327,8 @@ pub const DEFAULT_BACKUP_RETAIN_COUNT: u64 = 3;
 /// Raw TOML representation — all fields optional so missing keys use defaults.
 #[derive(Debug, Default, Deserialize)]
 struct RawConfig {
+    /// Default agent harness for every worker (e.g. "codex"). Omitted means "claude".
+    agent: Option<String>,
     workspace: Option<PathBuf>,
     server_port: Option<u16>,
     worker_port: Option<u16>,
@@ -1083,61 +1091,42 @@ impl DatabaseConfig {
     }
 }
 
-/// Known image aliases and their full tags.
-pub const IMAGE_ALIASES: &[(&str, &str)] = &[
-    ("ur-worker", "ur-worker:latest"),
-    ("ur-worker-rust", "ur-worker-rust:latest"),
-];
+/// Logical image aliases. Agent-agnostic — the agent name is appended at
+/// resolution time (see [`AgentType::resolve_image`]), not stored here.
+pub const IMAGE_ALIASES: &[&str] = &["ur-worker", "ur-worker-rust"];
 
 /// Returns the default image alias (first entry in [`IMAGE_ALIASES`]).
 pub fn default_image_alias() -> &'static str {
-    IMAGE_ALIASES[0].0
+    IMAGE_ALIASES[0]
 }
 
 /// Validate that the given string is a known image alias or a full image reference.
 /// Returns `Ok(())` if valid, or an error describing the valid aliases.
+///
+/// This is a parse-time syntactic check only — it cannot resolve the alias to a
+/// tag, since the agent that will run the launch isn't known until
+/// `resolve_mode` runs at launch time. See [`AgentType::resolve_image`].
 pub fn validate_image_alias(raw: &str) -> anyhow::Result<()> {
     // Full image references are always valid
     if raw.contains(':') || raw.contains('/') {
         return Ok(());
     }
-    for (alias, _) in IMAGE_ALIASES {
-        if raw == *alias {
-            return Ok(());
-        }
+    if IMAGE_ALIASES.contains(&raw) {
+        return Ok(());
     }
-    let valid: Vec<&str> = IMAGE_ALIASES.iter().map(|(a, _)| *a).collect();
     anyhow::bail!(
-        "unknown image alias '{raw}'. Valid aliases: {valid:?}. \
+        "unknown image alias '{raw}'. Valid aliases: {IMAGE_ALIASES:?}. \
          Use a full image reference (e.g. 'myimage:tag') for custom images."
-    )
-}
-
-/// Resolve an image alias to its full tag.
-/// Returns the full tag if the input is a known alias, or an error if the alias is unknown.
-/// If the input contains `:` or `/`, it is treated as a full image reference and returned as-is.
-fn resolve_image_alias(project_key: &str, raw: &str) -> anyhow::Result<String> {
-    // If it looks like a full image reference, pass through
-    if raw.contains(':') || raw.contains('/') {
-        return Ok(raw.to_string());
-    }
-    // Try alias lookup
-    for (alias, tag) in IMAGE_ALIASES {
-        if raw == *alias {
-            return Ok(tag.to_string());
-        }
-    }
-    let valid: Vec<&str> = IMAGE_ALIASES.iter().map(|(a, _)| *a).collect();
-    anyhow::bail!(
-        "project '{project_key}': container.image: unknown alias '{raw}'. \
-         Valid aliases: {valid:?}. Use a full image reference (e.g. 'myimage:tag') for custom images."
     )
 }
 
 /// Resolved container configuration for a project.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerConfig {
-    /// Full image tag (after alias resolution).
+    /// Image alias or full reference, exactly as written in `container.image`.
+    /// Validated at parse time (`validate_image_alias`) but *not* resolved to a
+    /// tag — the agent that will run the launch isn't known until `resolve_mode`
+    /// runs at launch time. Resolve with [`AgentType::resolve_image`] there.
     pub image: String,
     /// Additional volume mounts for this project.
     /// Each entry maps a host-side source to a container-side destination.
@@ -1238,6 +1227,10 @@ impl ProjectConfig {
 /// Resolved, ready-to-use daemon configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
+    /// Default agent harness for every worker (default: [`AgentType::Claude`]).
+    /// `worker_modes.<mode>.agent` and the `--agent` launch flag both override
+    /// this per mode/launch; this is only the floor when neither is set.
+    pub agent: AgentType,
     /// Root config directory (`$UR_CONFIG` or `~/.ur`).
     pub config_dir: PathBuf,
     /// Worker workspace directory.
@@ -1339,6 +1332,8 @@ impl Config {
     pub fn from_toml_str(contents: &str, config_dir: &Path) -> anyhow::Result<Self> {
         let raw: RawConfig = toml::from_str(contents)?;
 
+        let agent = resolve_top_level_agent(raw.agent.as_deref())?;
+
         let workspace = raw
             .workspace
             .unwrap_or_else(|| config_dir.join("workspace"));
@@ -1384,6 +1379,7 @@ impl Config {
         let workspace_brain_dir = validate_workspace_brain_dir(raw.workspace_brain_dir)?;
 
         Ok(Config {
+            agent,
             config_dir: config_dir.to_path_buf(),
             workspace,
             server_port,
@@ -1404,6 +1400,27 @@ impl Config {
             global_skills,
             workspace_brain_dir,
         })
+    }
+}
+
+/// Resolve the top-level `agent` key: the default harness for every worker.
+///
+/// An omitted key defaults to [`AgentType::Claude`]. An unrecognized value is a
+/// startup config error naming the valid agents — never a silent fallback, since
+/// a typo'd harness name that quietly launches Claude is the kind of thing
+/// nobody notices until the wrong model has done the work.
+///
+/// Public so `crates/server`'s `WorkerModesConfig::from_toml` — which parses the
+/// same `ur.toml` document independently to extract `[worker_modes]` and
+/// `[worker_models]` — resolves the identical top-level key the identical way,
+/// rather than reimplementing the default/error logic.
+pub fn resolve_top_level_agent(raw: Option<&str>) -> anyhow::Result<AgentType> {
+    match raw {
+        Some(name) => AgentType::parse(name).map_err(|_| {
+            let valid: Vec<&str> = AgentType::ALL.iter().map(AgentType::name).collect();
+            anyhow::anyhow!("agent: unknown agent '{name}'. Valid agents: {valid:?}")
+        }),
+        None => Ok(AgentType::Claude),
     }
 }
 
@@ -1592,13 +1609,14 @@ fn resolve_project_config(
         image: IMAGE_ALIASES
             .first()
             .expect("IMAGE_ALIASES must not be empty")
-            .0
             .to_string(),
         mounts: Vec::new(),
         ports: Vec::new(),
     });
 
-    let image = resolve_image_alias(&key, &raw_container.image)?;
+    validate_image_alias(&raw_container.image)
+        .map_err(|e| anyhow::anyhow!("project '{key}': container.image: {e}"))?;
+    let image = raw_container.image;
     let mounts = raw_container
         .mounts
         .iter()
@@ -2280,6 +2298,28 @@ mod tests {
         assert_eq!(dir, tmp.path());
     }
 
+    /// The default allowlist is the union of every known agent's domains —
+    /// one shared Squid instance serves every worker, regardless of which
+    /// agent it runs.
+    #[test]
+    fn default_proxy_allowlist_is_union_of_all_agents() {
+        let allowlist = default_proxy_allowlist();
+        for domain in [
+            "api.anthropic.com",
+            "platform.claude.com",
+            "downloads.claude.ai",
+            "chatgpt.com",
+            "api.openai.com",
+            "auth.openai.com",
+        ] {
+            assert!(
+                allowlist.contains(&domain.to_string()),
+                "missing {domain} in {allowlist:?}"
+            );
+        }
+        assert_eq!(allowlist.len(), 6, "unexpected duplicates in {allowlist:?}");
+    }
+
     #[test]
     fn proxy_section_defaults_when_present_but_empty() {
         let tmp = TempDir::new().unwrap();
@@ -2394,7 +2434,7 @@ image = "ur-worker"
         assert_eq!(proj.repo.as_deref(), Some("git@github.com:cmaher/ur.git"));
         assert_eq!(proj.name, "ur");
         assert_eq!(proj.pool_limit, DEFAULT_POOL_LIMIT);
-        assert_eq!(proj.container.image, "ur-worker:latest");
+        assert_eq!(proj.container.image, "ur-worker");
     }
 
     #[test]
@@ -2529,7 +2569,7 @@ image = "ur-worker"
         assert_eq!(proj.repo, None);
         assert!(proj.is_local());
         assert_eq!(proj.name, "My App");
-        assert_eq!(proj.container.image, "ur-worker:latest");
+        assert_eq!(proj.container.image, "ur-worker");
     }
 
     #[test]
@@ -2638,7 +2678,7 @@ ports = ["8080:8080"]
         let cfg = Config::load_from(tmp.path()).unwrap();
         let proj = &cfg.projects["myapp"];
         assert!(proj.is_local());
-        assert_eq!(proj.container.image, "ur-worker-rust:latest");
+        assert_eq!(proj.container.image, "ur-worker-rust");
         assert_eq!(proj.container.mounts.len(), 1);
         assert_eq!(proj.container.ports.len(), 1);
         assert_eq!(proj.hostexec, vec!["make", "npm"]);
@@ -3183,6 +3223,41 @@ image = "ur-worker"
         let msg = err.to_string();
         assert!(msg.contains("brain_dir"), "{msg}");
         assert!(msg.contains("%PROJECT%"), "{msg}");
+    }
+
+    #[test]
+    fn agent_defaults_to_claude_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.agent, AgentType::Claude);
+    }
+
+    #[test]
+    fn agent_parses_codex() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\nagent = \"codex\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.agent, AgentType::Codex);
+    }
+
+    #[test]
+    fn agent_rejects_unknown_value() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\nagent = \"bogus\"\n",
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("bogus"), "{msg}");
+        assert!(msg.contains("claude"), "{msg}");
+        assert!(msg.contains("codex"), "{msg}");
     }
 
     #[test]
@@ -3983,8 +4058,12 @@ tool = { long_lived = false, bidi = false }
         assert!(!tool.bidi);
     }
 
+    /// Parse time no longer resolves the alias to a tag — the agent isn't known
+    /// until `resolve_mode` runs at launch. `container.image` holds the alias
+    /// exactly as written; see `container_image_alias_resolves_per_agent` for
+    /// the actual resolution, which happens via `AgentType::resolve_image`.
     #[test]
-    fn container_image_alias_ur_worker_resolves() {
+    fn container_image_alias_kept_as_written() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
@@ -3998,11 +4077,11 @@ image = "ur-worker"
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.projects["ur"].container.image, "ur-worker:latest");
+        assert_eq!(cfg.projects["ur"].container.image, "ur-worker");
     }
 
     #[test]
-    fn container_image_alias_ur_worker_rust_resolves() {
+    fn container_image_alias_rust_kept_as_written() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
@@ -4016,7 +4095,84 @@ image = "ur-worker-rust"
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.projects["ur"].container.image, "ur-worker-rust:latest");
+        assert_eq!(cfg.projects["ur"].container.image, "ur-worker-rust");
+    }
+
+    /// A project's `container.image` needs no edit to work with either agent:
+    /// the same config-time alias resolves to a different tag depending on
+    /// which agent `resolve_mode` picks at launch.
+    #[test]
+    fn container_image_alias_resolves_per_agent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker-rust"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let image = &cfg.projects["ur"].container.image;
+        assert_eq!(
+            AgentType::Claude.resolve_image(image).unwrap(),
+            "ur-worker-rust-claude:latest"
+        );
+        assert_eq!(
+            AgentType::Codex.resolve_image(image).unwrap(),
+            "ur-worker-rust-codex:latest"
+        );
+    }
+
+    /// Table-driven: every alias resolves to `<alias>-<agent>:latest` for
+    /// every agent.
+    #[test]
+    fn resolve_image_per_alias_and_agent() {
+        for &alias in IMAGE_ALIASES {
+            for agent in AgentType::ALL {
+                assert_eq!(
+                    agent.resolve_image(alias).unwrap(),
+                    format!("{alias}-{}:latest", agent.name())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_image_full_reference_passes_through_for_any_agent() {
+        for agent in AgentType::ALL {
+            assert_eq!(
+                agent
+                    .resolve_image("myregistry/custom-image:v1.2.3")
+                    .unwrap(),
+                "myregistry/custom-image:v1.2.3"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_image_unknown_alias_names_agent_and_valid_aliases() {
+        let err = AgentType::Codex.resolve_image("bogus").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("bogus"), "{msg}");
+        assert!(msg.contains("codex"), "{msg}");
+        assert!(msg.contains("ur-worker"), "{msg}");
+        assert!(msg.contains("ur-worker-rust"), "{msg}");
+    }
+
+    #[test]
+    fn fallback_image_is_rust_toolchain_variant_per_agent() {
+        assert_eq!(
+            AgentType::Claude.fallback_image(),
+            "ur-worker-rust-claude:latest"
+        );
+        assert_eq!(
+            AgentType::Codex.fallback_image(),
+            "ur-worker-rust-codex:latest"
+        );
     }
 
     #[test]
@@ -4056,7 +4212,7 @@ image = "unknown"
         .unwrap();
         let err = Config::load_from(tmp.path()).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("unknown alias 'unknown'"), "{msg}");
+        assert!(msg.contains("unknown image alias 'unknown'"), "{msg}");
         assert!(msg.contains("ur-worker"), "{msg}");
         assert!(msg.contains("ur-worker-rust"), "{msg}");
     }
@@ -4074,7 +4230,7 @@ repo = "git@github.com:cmaher/ur.git"
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.projects["ur"].container.image, "ur-worker:latest");
+        assert_eq!(cfg.projects["ur"].container.image, "ur-worker");
     }
 
     #[test]

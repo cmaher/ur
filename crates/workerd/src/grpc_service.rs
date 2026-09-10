@@ -43,6 +43,10 @@ pub struct WorkerDaemonServiceImpl {
     pub worker_secret: String,
     pub dispatch_buffer: Arc<Mutex<DispatchBuffer>>,
     pub dispatch_ticket_id: Arc<Mutex<Option<String>>>,
+    /// Which agent this worker runs. Resolved once in `main` and injected here —
+    /// no handler calls `AgentType::from_env()` itself — so dispatch commands are
+    /// phrased for the agent actually running in this container.
+    pub agent: ur_config::AgentType,
 }
 
 /// How long to wait before typing into the agent session from a hook-driven RPC.
@@ -245,6 +249,18 @@ impl WorkerDaemonServiceImpl {
     }
 }
 
+/// Build the two-command dispatch buffer (context reset + skill invocation) for
+/// a server-driven dispatch (`Implement` / `Design` / `AddressFeedbackTickets`).
+///
+/// Pulled out of the handlers so the exact commands sent to the agent are
+/// unit-testable without a tmux session.
+fn dispatch_commands(agent: ur_config::AgentType, skill: &str, args: &[&str]) -> VecDeque<String> {
+    VecDeque::from(vec![
+        agent.clear_command().to_string(),
+        agent.skill_invocation(skill, args),
+    ])
+}
+
 /// Inject worker auth headers into gRPC request metadata.
 fn inject_auth_headers(
     metadata: &mut tonic::metadata::MetadataMap,
@@ -400,14 +416,13 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         request: Request<ImplementRequest>,
     ) -> Result<Response<ImplementResponse>, Status> {
         let ticket_id = &request.into_inner().ticket_id;
-        let skill_command = format!("/implement {ticket_id}");
         info!(ticket_id, "Implement received, loading dispatch buffer");
 
         let mut buf = self.dispatch_buffer.lock().await;
         buf.lifecycle_step = "implementing".to_string();
         buf.step_complete = false;
         buf.nudge_suppressed_until = None;
-        buf.commands = VecDeque::from(vec!["/clear".to_string(), skill_command]);
+        buf.commands = dispatch_commands(self.agent, "implement", &[ticket_id.as_str()]);
 
         // Pop the first command and send it immediately
         let first_command = buf.commands.pop_front().expect("commands is non-empty");
@@ -426,14 +441,13 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         request: Request<DesignRequest>,
     ) -> Result<Response<DesignResponse>, Status> {
         let ticket_id = &request.into_inner().ticket_id;
-        let skill_command = format!("/design {ticket_id}");
         info!(ticket_id, "Design received, loading dispatch buffer");
 
         let mut buf = self.dispatch_buffer.lock().await;
         buf.lifecycle_step = "designing".to_string();
         buf.step_complete = false;
         buf.nudge_suppressed_until = None;
-        buf.commands = VecDeque::from(vec!["/clear".to_string(), skill_command]);
+        buf.commands = dispatch_commands(self.agent, "design", &[ticket_id.as_str()]);
 
         // Pop the first command and send it immediately
         let first_command = buf.commands.pop_front().expect("commands is non-empty");
@@ -452,7 +466,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         request: Request<AddressFeedbackRequest>,
     ) -> Result<Response<AddressFeedbackResponse>, Status> {
         let inner = request.into_inner();
-        let skill_command = format!("/address-feedback {} {}", inner.ticket_id, inner.pr_number);
+        let pr_number = inner.pr_number.to_string();
         info!(
             ticket_id = inner.ticket_id,
             pr_number = inner.pr_number,
@@ -463,7 +477,11 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         buf.lifecycle_step = "addressing_feedback".to_string();
         buf.step_complete = false;
         buf.nudge_suppressed_until = None;
-        buf.commands = VecDeque::from(vec!["/clear".to_string(), skill_command]);
+        buf.commands = dispatch_commands(
+            self.agent,
+            "address-feedback",
+            &[inner.ticket_id.as_str(), pr_number.as_str()],
+        );
 
         // Pop the first command and send it immediately
         let first_command = buf.commands.pop_front().expect("commands is non-empty");
@@ -561,5 +579,84 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
                 Ok(Response::new(DispatchTicketResponse { error: e }))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn implement_commands_claude() {
+        let commands = dispatch_commands(ur_config::AgentType::Claude, "implement", &["ur-x"]);
+        assert_eq!(
+            Vec::from(commands),
+            vec!["/clear".to_string(), "/implement ur-x".to_string()]
+        );
+    }
+
+    #[test]
+    fn implement_commands_codex() {
+        let commands = dispatch_commands(ur_config::AgentType::Codex, "implement", &["ur-x"]);
+        assert_eq!(
+            Vec::from(commands),
+            vec![
+                "/new".to_string(),
+                "Run the `implement` skill. Arguments: ur-x".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn design_commands_claude() {
+        let commands = dispatch_commands(ur_config::AgentType::Claude, "design", &["ur-x"]);
+        assert_eq!(
+            Vec::from(commands),
+            vec!["/clear".to_string(), "/design ur-x".to_string()]
+        );
+    }
+
+    #[test]
+    fn design_commands_codex() {
+        let commands = dispatch_commands(ur_config::AgentType::Codex, "design", &["ur-x"]);
+        assert_eq!(
+            Vec::from(commands),
+            vec![
+                "/new".to_string(),
+                "Run the `design` skill. Arguments: ur-x".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn address_feedback_commands_claude() {
+        let commands = dispatch_commands(
+            ur_config::AgentType::Claude,
+            "address-feedback",
+            &["ur-x", "123"],
+        );
+        assert_eq!(
+            Vec::from(commands),
+            vec![
+                "/clear".to_string(),
+                "/address-feedback ur-x 123".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn address_feedback_commands_codex() {
+        let commands = dispatch_commands(
+            ur_config::AgentType::Codex,
+            "address-feedback",
+            &["ur-x", "123"],
+        );
+        assert_eq!(
+            Vec::from(commands),
+            vec![
+                "/new".to_string(),
+                "Run the `address-feedback` skill. Arguments: ur-x, 123".to_string()
+            ]
+        );
     }
 }

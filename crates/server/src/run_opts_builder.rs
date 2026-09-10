@@ -83,18 +83,23 @@ impl RunOptsBuilder {
         let Some(auth) = agent.auth() else {
             return Ok(self);
         };
+        let credentials_filename =
+            Path::new(auth.credentials_path)
+                .file_name()
+                .ok_or_else(|| {
+                    format!(
+                        "credentials_path '{}' has no filename",
+                        auth.credentials_path
+                    )
+                })?;
         let host_creds = host_config_dir
             .join(agent.name())
-            .join(auth.credentials_filename);
+            .join(credentials_filename);
         ensure_file_exists(&host_creds)
             .map_err(|e| format!("failed to ensure credentials file: {e}"))?;
         let worker_home = PathBuf::from(ur_config::WORKER_HOME);
-        self.volumes.push((
-            host_creds,
-            worker_home
-                .join(agent.home_subdir())
-                .join(auth.credentials_filename),
-        ));
+        self.volumes
+            .push((host_creds, worker_home.join(auth.credentials_path)));
         Ok(self)
     }
 

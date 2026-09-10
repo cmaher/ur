@@ -349,6 +349,7 @@ mod tests {
     /// Build a minimal `Config` for use in tests.
     fn minimal_test_config(tmp: &std::path::Path) -> ur_config::Config {
         ur_config::Config {
+            agent: ur_config::AgentType::Claude,
             config_dir: tmp.join("config"),
             workspace: tmp.join("workspace"),
             server_port: ur_config::DEFAULT_SERVER_PORT,

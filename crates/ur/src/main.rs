@@ -245,21 +245,25 @@ enum WorkerCommands {
         /// Comma-separated list of project keys to mount as read-only context repositories
         #[arg(long = "context-repos")]
         context_repos: Option<String>,
+        /// Which agent to run (default: the mode's `agent` field, else the
+        /// configured top-level agent). Overrides both.
+        #[arg(long)]
+        agent: Option<String>,
     },
     /// List all running processes
     List,
-    /// Force re-seed shared Claude Code credentials from the host (Keychain on macOS)
+    /// Force re-seed shared agent credentials from the host
     ReseedCredentials {
-        /// Which agent to reseed credentials for
-        #[arg(long, default_value = ur_config::AgentType::Claude.name())]
-        agent: String,
+        /// Which agent to reseed credentials for (default: the configured top-level agent)
+        #[arg(long)]
+        agent: Option<String>,
     },
     /// Save credentials from a running container for reuse
     SaveCredentials {
         worker_id: String,
-        /// Which agent to save credentials for
-        #[arg(long, default_value = ur_config::AgentType::Claude.name())]
-        agent: String,
+        /// Which agent to save credentials for (default: the configured top-level agent)
+        #[arg(long)]
+        agent: Option<String>,
     },
     /// Show detailed worker information
     Describe { worker_id: Option<String> },
@@ -311,37 +315,32 @@ fn prepare_project_mounts(config: &ur_config::Config) {
     }
 }
 
-/// Re-seed credentials for every agent that has an auth profile.
+/// Warn when the configured default agent has no seeded credentials, naming
+/// that agent's own remediation.
 ///
-/// The CLI cannot know which agent(s) a launch will actually use — `[worker_modes]`
-/// resolution is server-side and `crates/ur` has no `server` dependency — so this
-/// iterates `AgentType::ALL` rather than a single agent. With one variant today,
-/// this runs once for Claude, identical to seeding Claude alone.
-///
-/// Errors are real I/O failures (unresolvable config dir, unwritable credentials
-/// path) and propagate to the caller — a worker launched with an unwritten
-/// credentials file comes up unable to authenticate. "The host has no credentials
-/// to copy" is *not* an error: `ensure_credentials` warns and leaves the existing
-/// file alone. Callers that must tolerate failure (e.g. `ur start`, which prints
-/// its own guidance) log the error explicitly instead of dropping it here.
-///
-/// Every agent is attempted before returning: one agent's broken keychain must
-/// not leave a healthy agent unseeded, since the caller cannot know which agent
-/// the launch will resolve to. Failures are then reported together.
-fn ensure_credentials_for_all_agents(max_age: Duration) -> Result<()> {
-    let mut failures = Vec::new();
-    for agent in ur_config::AgentType::ALL {
-        let Some(cred_mgr) = credential::credential_manager_for(*agent) else {
-            continue;
-        };
-        if let Err(e) = cred_mgr.ensure_credentials(max_age) {
-            failures.push(format!("{}: {e:#}", agent.name()));
-        }
+/// Only the default agent is checked, not every agent in `AgentType::ALL`: a
+/// Claude-only user must not be nagged about an unconfigured codex (and vice
+/// versa), and a launch that resolves to some *other* agent still fails loudly
+/// at the RPC via `check_credentials_seeded` with the same remediation text.
+fn warn_if_default_agent_unseeded(agent: ur_config::AgentType, output: &OutputManager) {
+    let Some(cred_mgr) = credential::credential_manager_for(agent) else {
+        return;
+    };
+    let seeded = cred_mgr
+        .host_credentials_path()
+        .is_ok_and(|p| ur_config::credentials_file_is_seeded(&p));
+    if seeded {
+        return;
     }
-    if !failures.is_empty() {
-        bail!("failed to seed credentials — {}", failures.join("; "));
+    // Reuse the launch-time remediation text verbatim so `ur start`'s guidance
+    // and the `MissingCredentials` RPC error a later launch would produce say
+    // exactly the same thing.
+    let remediation = agent.credentials_remediation();
+    warn!(agent = agent.name(), %remediation, "no shared credentials found");
+    if !output.is_json() {
+        println!();
+        println!("{remediation}");
     }
-    Ok(())
 }
 
 #[instrument(skip(config, compose, output))]
@@ -354,28 +353,13 @@ fn start_server(
 
     prepare_project_mounts(config);
 
-    // Seed credentials from host Claude Code before starting anything so
+    // Seed credentials for every known agent before starting anything so
     // they're available for bind-mounting into worker containers. Force a
     // re-seed on every start so host re-logins propagate after a restart.
-    if let Err(e) = ensure_credentials_for_all_agents(Duration::ZERO) {
+    if let Err(e) = credential::ensure_credentials_for_all_agents(Duration::ZERO) {
         warn!(error = %e, "credential seeding failed");
     }
-    if let Some(cred_mgr) = credential::credential_manager_for(ur_config::AgentType::Claude) {
-        let has_credentials = cred_mgr
-            .host_credentials_path()
-            .ok()
-            .and_then(|p| std::fs::metadata(&p).ok())
-            .is_some_and(|m| m.len() > 10);
-        if !has_credentials {
-            warn!("no shared credentials found");
-            if !output.is_json() {
-                println!();
-                println!(
-                    "No shared credentials found. Log in to Claude Code on this machine first."
-                );
-            }
-        }
-    }
+    warn_if_default_agent_unseeded(config.agent, output);
 
     match builderd::start_builderd(config, output) {
         Ok(()) => info!("builderd started"),
@@ -871,13 +855,29 @@ async fn process_launch(
     dispatch: bool,
     output: &OutputManager,
     projects: &HashMap<String, ur_config::ProjectConfig>,
+    agent_type: String,
 ) -> Result<String> {
     info!(ticket_id, project_key, "launching worker process");
 
-    // Refresh credentials from host Claude Code and ensure config exists.
+    // Refresh credentials for every known agent and ensure config exists.
     // Re-seed if the file is older than a day so host re-logins propagate
     // without clobbering fresh container-driven token refreshes.
-    ensure_credentials_for_all_agents(Duration::from_secs(60 * 60 * 24))?;
+    //
+    // A seeding failure warns rather than aborting the launch: this loops every
+    // agent in `AgentType::ALL` (mode resolution is server-side, so the CLI
+    // cannot know which one this launch will use), and one agent's broken host
+    // source — say an empty `~/.codex/auth.json` — must not block a launch that
+    // resolves to a different, perfectly healthy agent. Not silent, and not a
+    // swallowed error either: the server's `check_credentials_seeded` rejects
+    // the launch with an actionable `MissingCredentials` status if the agent it
+    // *does* resolve to has nothing seeded.
+    if let Err(e) = credential::ensure_credentials_for_all_agents(Duration::from_secs(60 * 60 * 24))
+    {
+        warn!(ticket_id, error = %e, "credential seeding failed");
+        if !output.is_json() {
+            eprintln!("Warning: credential seeding failed — {e:#}");
+        }
+    }
     debug!(ticket_id, "credentials ensured");
 
     // Resolve workspace to an absolute path if provided
@@ -899,11 +899,11 @@ async fn process_launch(
     {
         Some(image) => image,
         None if !workspace_dir.is_empty() => {
-            // Workspace mount without a project — use the base image
-            default_image = ur_config::IMAGE_ALIASES
+            // Workspace mount without a project — send the base image alias;
+            // the server resolves it against the launch's agent.
+            default_image = *ur_config::IMAGE_ALIASES
                 .first()
-                .expect("IMAGE_ALIASES must not be empty")
-                .1;
+                .expect("IMAGE_ALIASES must not be empty");
             default_image
         }
         None => {
@@ -935,9 +935,9 @@ async fn process_launch(
             project_key: project_key.to_owned(),
             context_repos: context_repos.to_vec(),
             dispatch,
-            // No --agent flag on launch yet (ur-vui34 decision 6) — empty
-            // defaults to claude server-side.
-            agent_type: String::new(),
+            // Empty means "let the server resolve it" (mode's agent, then
+            // the configured top-level default).
+            agent_type,
         })
         .await?;
 
@@ -998,6 +998,7 @@ async fn handle_worker(
     worker_prefix: &str,
     projects: &HashMap<String, ur_config::ProjectConfig>,
     output: &OutputManager,
+    default_agent: ur_config::AgentType,
 ) -> Result<()> {
     match command {
         WorkerCommands::List => {
@@ -1013,11 +1014,15 @@ async fn handle_worker(
             process_stop(&mut client, &worker_id, output).await
         }
         WorkerCommands::ReseedCredentials { agent } => {
-            handle_worker_reseed_credentials(output, &agent)
+            handle_worker_reseed_credentials(output, agent.as_deref(), default_agent)
         }
-        WorkerCommands::SaveCredentials { worker_id, agent } => {
-            handle_worker_save_credentials(worker_prefix, output, &worker_id, &agent)
-        }
+        WorkerCommands::SaveCredentials { worker_id, agent } => handle_worker_save_credentials(
+            worker_prefix,
+            output,
+            &worker_id,
+            agent.as_deref(),
+            default_agent,
+        ),
         WorkerCommands::Launch {
             ticket_id,
             workspace,
@@ -1029,6 +1034,7 @@ async fn handle_worker(
             skills,
             dispatch,
             context_repos,
+            agent,
         } => {
             handle_worker_launch(
                 port,
@@ -1045,6 +1051,7 @@ async fn handle_worker(
                 skills,
                 dispatch,
                 context_repos,
+                agent,
             )
             .await
         }
@@ -1092,22 +1099,52 @@ async fn handle_worker_attach(
     process::exit(exit_code);
 }
 
-fn handle_worker_reseed_credentials(output: &OutputManager, agent: &str) -> Result<()> {
-    info!(agent, "forcing credential re-seed from host");
-    let agent =
-        ur_config::AgentType::parse(agent).with_context(|| format!("invalid --agent {agent:?}"))?;
+/// Resolve an optional `--agent` flag against the configured top-level
+/// default. `None` means the flag was omitted; a bad name is a descriptive
+/// error naming the flag, not a panic.
+fn resolve_agent_flag(
+    agent: Option<&str>,
+    default_agent: ur_config::AgentType,
+) -> Result<ur_config::AgentType> {
+    match agent {
+        Some(name) => {
+            ur_config::AgentType::parse(name).with_context(|| format!("invalid --agent {name:?}"))
+        }
+        None => Ok(default_agent),
+    }
+}
+
+/// Validate an optional `--agent` flag for `worker launch`, returning the
+/// resolved agent name to send on the wire, or an empty string when omitted.
+/// Empty means "let the server resolve it" (the mode's `agent` field, then
+/// the configured top-level default) — this CLI has no dependency on
+/// `crates/server` to resolve it itself.
+fn resolve_launch_agent_flag(agent: Option<&str>) -> Result<String> {
+    match agent {
+        Some(name) => Ok(ur_config::AgentType::parse(name)
+            .with_context(|| format!("invalid --agent {name:?}"))?
+            .name()
+            .to_owned()),
+        None => Ok(String::new()),
+    }
+}
+
+fn handle_worker_reseed_credentials(
+    output: &OutputManager,
+    agent: Option<&str>,
+    default_agent: ur_config::AgentType,
+) -> Result<()> {
+    info!(agent = ?agent, "forcing credential re-seed from host");
+    let agent = resolve_agent_flag(agent, default_agent)?;
     let Some(cred_mgr) = credential::credential_manager_for(agent) else {
         anyhow::bail!("agent {} has no credentials to seed", agent.name());
     };
     cred_mgr.ensure_credentials(Duration::ZERO)?;
     let path = cred_mgr.host_credentials_path()?;
-    if !path.exists()
-        || std::fs::metadata(&path)
-            .map(|m| m.len() < 10)
-            .unwrap_or(true)
-    {
+    if !ur_config::credentials_file_is_seeded(&path) {
         anyhow::bail!(
-            "no host Claude Code credentials found to seed — log in to Claude Code on this machine first"
+            "no host credentials found to seed for agent {} — log in to that agent on this machine first",
+            agent.name()
         );
     }
     if output.is_json() {
@@ -1124,14 +1161,14 @@ fn handle_worker_save_credentials(
     worker_prefix: &str,
     output: &OutputManager,
     worker_id: &str,
-    agent: &str,
+    agent: Option<&str>,
+    default_agent: ur_config::AgentType,
 ) -> Result<()> {
     input::validate_id(worker_id, "worker_id")?;
-    info!(worker_id = %worker_id, agent, "saving credentials from container");
+    info!(worker_id = %worker_id, agent = ?agent, "saving credentials from container");
     let runtime = container::runtime_from_env();
     let id = container::ContainerId(format!("{worker_prefix}{worker_id}"));
-    let agent =
-        ur_config::AgentType::parse(agent).with_context(|| format!("invalid --agent {agent:?}"))?;
+    let agent = resolve_agent_flag(agent, default_agent)?;
     let Some(cred_mgr) = credential::credential_manager_for(agent) else {
         anyhow::bail!("agent {} has no credentials to save", agent.name());
     };
@@ -1216,6 +1253,7 @@ async fn handle_worker_launch(
     skills: Option<String>,
     dispatch: bool,
     context_repos: Option<String>,
+    agent: Option<String>,
 ) -> Result<()> {
     let is_manual = mode == "manual";
 
@@ -1226,6 +1264,9 @@ async fn handle_worker_launch(
     if is_manual && project.is_none() && workspace.is_none() {
         bail!("manual mode requires -p project or -w workspace");
     }
+
+    // Validate --agent up front so a bad name fails before any RPC.
+    let agent_type = resolve_launch_agent_flag(agent.as_deref())?;
 
     // Non-manual modes require a ticket_id
     let ticket_id_str: String = if is_manual {
@@ -1295,6 +1336,7 @@ async fn handle_worker_launch(
         dispatch && is_design,
         output,
         projects,
+        agent_type,
     )
     .await?;
     if attach || rm {
@@ -1651,6 +1693,7 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
                 &config.network.worker_prefix,
                 &config.projects,
                 output,
+                config.agent,
             )
             .await?
         }
@@ -1852,24 +1895,34 @@ mod tests {
 
     #[test]
     fn reseed_credentials_unknown_agent_errors_without_panicking() {
-        let result = handle_worker_reseed_credentials(&text_output(), "bogus-agent");
+        let result = handle_worker_reseed_credentials(
+            &text_output(),
+            Some("bogus-agent"),
+            ur_config::AgentType::Claude,
+        );
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("bogus-agent"), "{msg}");
     }
 
     #[test]
     fn save_credentials_unknown_agent_errors_without_panicking() {
-        let result =
-            handle_worker_save_credentials("ur-worker-", &text_output(), "w1", "bogus-agent");
+        let result = handle_worker_save_credentials(
+            "ur-worker-",
+            &text_output(),
+            "w1",
+            Some("bogus-agent"),
+            ur_config::AgentType::Claude,
+        );
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("bogus-agent"), "{msg}");
     }
 
-    /// The `--agent` default comes from `AgentType::Claude.name()` rather than a
-    /// literal, so it cannot drift into a value `AgentType::parse` rejects. Pins
-    /// both that clap applies the expression and that the result round-trips.
+    /// The `--agent` flag on the credential subcommands has no clap
+    /// `default_value` any more — omitting it must leave `None` so the
+    /// caller applies the configured top-level default, rather than baking
+    /// a literal into the CLI definition.
     #[test]
-    fn agent_flag_defaults_to_a_parseable_agent_name() {
+    fn agent_flag_omitted_is_none_on_credential_commands() {
         let cli = Cli::try_parse_from(["ur", "worker", "reseed-credentials"]).unwrap();
         let Commands::Worker {
             command: WorkerCommands::ReseedCredentials { agent },
@@ -1877,10 +1930,64 @@ mod tests {
         else {
             panic!("expected worker reseed-credentials");
         };
-        assert_eq!(agent, ur_config::AgentType::Claude.name());
+        assert_eq!(agent, None);
+    }
+
+    /// `resolve_agent_flag` must always produce a value `AgentType::parse`
+    /// already accepts (it *is* an `AgentType`) — pins the omitted-flag path
+    /// for every known agent, so a new agent variant is covered automatically.
+    #[test]
+    fn resolve_agent_flag_omitted_uses_configured_default() {
+        for default_agent in ur_config::AgentType::ALL {
+            assert_eq!(
+                resolve_agent_flag(None, *default_agent).unwrap(),
+                *default_agent
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_agent_flag_present_overrides_default() {
         assert_eq!(
-            ur_config::AgentType::parse(&agent).unwrap(),
-            ur_config::AgentType::Claude
+            resolve_agent_flag(Some("codex"), ur_config::AgentType::Claude).unwrap(),
+            ur_config::AgentType::Codex
         );
+    }
+
+    #[test]
+    fn resolve_agent_flag_unknown_errors_without_panicking() {
+        let err = resolve_agent_flag(Some("bogus"), ur_config::AgentType::Claude).unwrap_err();
+        assert!(err.to_string().contains("bogus"));
+    }
+
+    // ── --agent flag on worker launch ──────────────────────────────────
+
+    #[test]
+    fn launch_parses_agent_flag() {
+        let cli =
+            Cli::try_parse_from(["ur", "worker", "launch", "ur-x", "--agent", "codex"]).unwrap();
+        let Commands::Worker {
+            command: WorkerCommands::Launch { agent, .. },
+        } = cli.command
+        else {
+            panic!("expected worker launch");
+        };
+        assert_eq!(agent, Some("codex".to_string()));
+    }
+
+    #[test]
+    fn launch_agent_flag_omitted_is_empty() {
+        assert_eq!(resolve_launch_agent_flag(None).unwrap(), "");
+    }
+
+    #[test]
+    fn launch_agent_flag_valid_resolves_name() {
+        assert_eq!(resolve_launch_agent_flag(Some("codex")).unwrap(), "codex");
+    }
+
+    #[test]
+    fn launch_agent_flag_unknown_errors_without_panicking() {
+        let err = resolve_launch_agent_flag(Some("bogus")).unwrap_err();
+        assert!(err.to_string().contains("bogus"));
     }
 }

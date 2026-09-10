@@ -23,11 +23,11 @@ else
     exit 1
 fi
 
-WORKER_CONTEXT=containers/agent-claude
-RUST_WORKER_CONTEXT=containers/agent-claude-rust
+WORKER_CONTEXT=containers/worker-claude
+RUST_WORKER_CONTEXT=containers/worker-rust-claude
 
-$RUNTIME build -t ur-worker:latest -f "$WORKER_CONTEXT/Dockerfile" "$WORKER_CONTEXT"
-$RUNTIME build -t ur-worker-rust:latest -f "$RUST_WORKER_CONTEXT/Dockerfile" "$RUST_WORKER_CONTEXT"
+$RUNTIME build -t ur-worker-claude:latest -f "$WORKER_CONTEXT/Dockerfile" "$WORKER_CONTEXT"
+$RUNTIME build -t ur-worker-rust-claude:latest -f "$RUST_WORKER_CONTEXT/Dockerfile" "$RUST_WORKER_CONTEXT"
 
 echo ""
 echo "=== Relaunching worker $PROCESS_ID ==="

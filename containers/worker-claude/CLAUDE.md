@@ -1,9 +1,9 @@
-# agent-claude (Container Image)
+# worker-claude (Container Image)
 
 Claude-specific layer on top of `ur-worker-base:latest`. Must work with Docker and nerdctl (containerd) runtimes.
 
-- Build context is `containers/agent-claude/` — all files copied into the image must live here
-- Image is tagged `ur-worker:latest` by convention (tag unchanged from the pre-split layout)
+- Build context is `containers/worker-claude/` — all files copied into the image must live here
+- Image is tagged `ur-worker-claude:latest` by convention — the directory name matches the tag
 - `vendor/claude/install.sh` is a local wrapper around the upstream installer — cached in the build context so the Dockerfile doesn't depend on a remote URL directly
 - Claude Code is installed into **this** image (agent-specific, not the base) and refreshed by a `claude update` layer gated on the `CACHEBUST` build arg. A plain `cargo make install` leaves that layer cached, so the version never moves — use `cargo make install-update-claude` (busts only this layer) or `cargo make install-nocache` (also rebuilds the base with `--no-cache`). The update is **not** best-effort: a failed `claude update` fails the build rather than silently shipping a stale version
 - Entrypoint runs `exec workerd`, making workerd PID 1 — it owns the full container lifecycle (init, tmux, claude, gRPC server)

@@ -51,7 +51,7 @@ The following is an example configuration used for this project
 repo = "https://github.com/cmaher/ur.git"
 
 [projects.ur.container]
-# image can be any docker image on your system. derive custom images from ur-worker:latest
+# image can be any docker image on your system. derive custom images from ur-worker-claude:latest
 # the rust worker assumes that you are using `bacon`
 image = "ur-worker-rust"
 # mounts for useful reference. I mount logs for debugging. The :ro is for read-only.

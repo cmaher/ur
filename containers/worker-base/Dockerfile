@@ -34,7 +34,7 @@ COPY worker.bashrc /home/worker/.bashrc
 RUN chown worker:worker /home/worker/.profile /home/worker/.bashrc
 
 # Agent-agnostic skills and instructions, shared by every agent image built
-# on top of this one (see containers/agent-claude/). Agent-specific assets
+# on top of this one (see containers/worker-claude/). Agent-specific assets
 # (CLI install, app config) live in the agent layer instead.
 # Order matters: both COPYs land in the same directory, and the later one wins
 # a name collision. The repo's own skills go second so they override a

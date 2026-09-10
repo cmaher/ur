@@ -32,10 +32,24 @@ submit.
 `spawn_deferred_send` is therefore how anything hook-driven reaches the agent: the RPC returns
 immediately, the hook completes, Claude Code returns to its prompt, and only then
 (`HOOK_RETURN_GRACE`, 750ms later) is the text typed in. Never call `send_keys` inline from
-`NotifyIdle`.
+`NotifyIdle`. This rationale is Claude-specific (its `Stop` hook is synchronous), but the
+deferred send stays in place for both agents rather than being special-cased away: codex's
+command handlers accept `async = true` so the hazard may not apply there, but a needless-only
+divergence between agents is worse than a harmless deferred send.
 
 `Implement` / `Design` / `AddressFeedbackTickets` send inline instead — they arrive from the
 server rather than from a hook, so their errors can propagate back to the caller.
+
+### Dispatch commands are agent-phrased
+
+`WorkerDaemonServiceImpl.agent: AgentType` is resolved once in `main` (`run_daemon_only`) and
+injected into the gRPC service — no handler calls `AgentType::from_env()` itself. The
+`Implement` / `Design` / `AddressFeedbackTickets` handlers build their tmux commands via the
+shared `dispatch_commands(agent, skill, args)` helper in `grpc_service.rs`, which is just
+`[agent.clear_command(), agent.skill_invocation(skill, args)]` — for Claude that's
+`["/clear", "/implement ur-x"]`; for Codex, which has no custom slash commands, it's
+`["/new", "Run the \`implement\` skill. Arguments: ur-x"]`. No slash-command literal lives in
+`grpc_service.rs` itself.
 
 Init phase (`crates/workerd/src/init/{skills,instructions,settings}.rs`, split by concern). `run_init` resolves the agent (`AgentType::from_env()`) and home (`init::worker_home()`) **once** and injects both into every manager's constructor — no init manager reads `UR_AGENT_TYPE` itself, so the whole phase cannot disagree about which agent it is setting up:
 - `InitSkillsManager` copies skills from `.agent-shared/potential-skills/` (baked, agent-agnostic) based on `$UR_WORKER_SKILLS` env var into `~/{agent.home_subdir()}/{agent.skill_subdir()}/` (e.g. `~/.claude/skills/`)

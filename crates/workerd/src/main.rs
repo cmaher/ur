@@ -192,6 +192,7 @@ async fn run_daemon_only() -> Result<()> {
             },
         )),
         dispatch_ticket_id: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+        agent,
     };
     info!(port = WORKERD_GRPC_PORT, "starting gRPC server");
 

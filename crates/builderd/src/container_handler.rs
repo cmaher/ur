@@ -255,7 +255,7 @@ mod tests {
 
     fn make_request(volumes: Vec<Volume>) -> LaunchWorkerRequest {
         LaunchWorkerRequest {
-            image: "ur-worker:latest".into(),
+            image: "ur-worker-claude:latest".into(),
             name: "test-container".into(),
             cpus: 2,
             memory: "4G".into(),
@@ -283,7 +283,7 @@ mod tests {
 
         let opts = request_to_run_opts(&req);
 
-        assert_eq!(opts.image.0, "ur-worker:latest");
+        assert_eq!(opts.image.0, "ur-worker-claude:latest");
         assert_eq!(opts.name, "test-container");
         assert_eq!(opts.cpus, 2);
         assert_eq!(opts.memory, "4G");

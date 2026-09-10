@@ -187,15 +187,15 @@ mod tests {
 
     fn sample_build_opts() -> BuildOpts {
         BuildOpts {
-            tag: "ur-worker:latest".into(),
-            dockerfile: PathBuf::from("/project/containers/agent-claude/Dockerfile"),
-            context: PathBuf::from("/project/containers/agent-claude"),
+            tag: "ur-worker-claude:latest".into(),
+            dockerfile: PathBuf::from("/project/containers/worker-claude/Dockerfile"),
+            context: PathBuf::from("/project/containers/worker-claude"),
         }
     }
 
     fn sample_run_opts() -> RunOpts {
         RunOpts {
-            image: ImageId("ur-worker:latest".into()),
+            image: ImageId("ur-worker-claude:latest".into()),
             name: "agent_abc123".into(),
             cpus: 4,
             memory: "8G".into(),
@@ -223,10 +223,10 @@ mod tests {
             vec![
                 s("build"),
                 s("-t"),
-                s("ur-worker:latest"),
+                s("ur-worker-claude:latest"),
                 s("-f"),
-                s("/project/containers/agent-claude/Dockerfile"),
-                s("/project/containers/agent-claude"),
+                s("/project/containers/worker-claude/Dockerfile"),
+                s("/project/containers/worker-claude"),
             ]
         );
     }
@@ -251,7 +251,7 @@ mod tests {
                 format!("{}=ur-server:55000", ur_config::UR_SERVER_ADDR_ENV),
                 s("-w"),
                 s("/workspace"),
-                s("ur-worker:latest"),
+                s("ur-worker-claude:latest"),
             ]
         );
     }
@@ -265,7 +265,10 @@ mod tests {
         let net_idx = args.iter().position(|a| a == "--network").unwrap();
         assert_eq!(args[net_idx + 1], "ur");
         // Image name comes after --network pair
-        let image_idx = args.iter().position(|a| a == "ur-worker:latest").unwrap();
+        let image_idx = args
+            .iter()
+            .position(|a| a == "ur-worker-claude:latest")
+            .unwrap();
         assert!(net_idx + 1 < image_idx);
     }
 

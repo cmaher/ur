@@ -46,6 +46,7 @@ fn make_test_config(dir: &Path, workspace: &Path) -> (ur_config::Config, ur_conf
         retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
     };
     let config = ur_config::Config {
+        agent: ur_config::AgentType::Claude,
         config_dir: dir.to_path_buf(),
         logs_dir: dir.join("logs"),
         workspace: workspace.to_path_buf(),
@@ -162,6 +163,7 @@ async fn make_grpc_handler(
         workflow_repo: workflow_repo.clone(),
         network_config: network_config.clone(),
         workspace_brain_dir: None,
+        config_dir: workspace.clone(),
     };
     let handler = ur_server::grpc::CoreServiceHandler {
         launch_manager,
@@ -288,6 +290,7 @@ async fn make_worker_handler() -> (
         workflow_repo: workflow_repo.clone(),
         network_config,
         workspace_brain_dir: None,
+        config_dir: workspace.clone(),
     };
 
     let handler = ur_server::grpc::WorkerCoreServiceHandler {

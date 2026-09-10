@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use futures::future::try_join_all;
 use tonic::{Code, Request, Response, Status};
@@ -32,6 +32,9 @@ pub enum CoreError {
     #[error("invalid agent: {reason}")]
     InvalidAgent { reason: String },
 
+    #[error("invalid image: {reason}")]
+    InvalidImage { reason: String },
+
     #[error("pool slot acquisition failed: {reason}")]
     PoolSlotFailed { reason: String },
 
@@ -47,6 +50,13 @@ pub enum CoreError {
          ur worker launch -m manual -w <dir> -p {project_key}"
     )]
     LocalProjectUnsupportedLaunch { project_key: String, reason: String },
+
+    /// The resolved agent has no seeded host credentials. Caught before
+    /// `run_and_record` so the container never boots into an interactive
+    /// login prompt nobody sees — `add_credentials` would otherwise create an
+    /// empty file at the bind-mount source and let the launch "succeed."
+    #[error("{remediation}")]
+    MissingCredentials { agent: String, remediation: String },
 
     #[error("prepare failed: {reason}")]
     PrepareFailed { reason: String },
@@ -70,98 +80,72 @@ pub enum CoreError {
     Unimplemented,
 }
 
+/// Build a `Status` for a `CoreError` variant with no extra metadata fields.
+fn simple_status(code: Code, err: &CoreError, err_type: &str) -> Status {
+    error::status_with_info(code, err.to_string(), DOMAIN_CORE, err_type, HashMap::new())
+}
+
+/// Build a `Status` for a `CoreError` variant carrying one metadata field.
+fn status_with_meta(
+    code: Code,
+    err: &CoreError,
+    err_type: &str,
+    key: &str,
+    value: String,
+) -> Status {
+    let mut meta = HashMap::new();
+    meta.insert(key.to_owned(), value);
+    error::status_with_info(code, err.to_string(), DOMAIN_CORE, err_type, meta)
+}
+
 impl From<CoreError> for Status {
     fn from(err: CoreError) -> Self {
         match &err {
-            CoreError::InvalidMode { .. } => error::status_with_info(
-                Code::InvalidArgument,
-                err.to_string(),
-                DOMAIN_CORE,
-                INVALID_ARGUMENT,
-                HashMap::new(),
-            ),
-            CoreError::InvalidAgent { .. } => error::status_with_info(
-                Code::InvalidArgument,
-                err.to_string(),
-                DOMAIN_CORE,
-                INVALID_ARGUMENT,
-                HashMap::new(),
-            ),
-            CoreError::PoolSlotFailed { .. } => error::status_with_info(
-                Code::Internal,
-                err.to_string(),
-                DOMAIN_CORE,
-                INTERNAL,
-                HashMap::new(),
-            ),
-            CoreError::InvalidContextRepo { .. } => error::status_with_info(
-                Code::InvalidArgument,
-                err.to_string(),
-                DOMAIN_CORE,
-                INVALID_ARGUMENT,
-                HashMap::new(),
-            ),
-            CoreError::LocalProjectUnsupportedLaunch { project_key, .. } => {
-                let mut meta = HashMap::new();
-                meta.insert("project_key".into(), project_key.clone());
-                error::status_with_info(
-                    Code::FailedPrecondition,
-                    err.to_string(),
-                    DOMAIN_CORE,
-                    INVALID_ARGUMENT,
-                    meta,
-                )
+            CoreError::InvalidMode { .. } => {
+                simple_status(Code::InvalidArgument, &err, INVALID_ARGUMENT)
             }
-            CoreError::PrepareFailed { .. } => error::status_with_info(
-                Code::Internal,
-                err.to_string(),
-                DOMAIN_CORE,
-                INTERNAL,
-                HashMap::new(),
-            ),
-            CoreError::RunFailed { .. } => error::status_with_info(
-                Code::Internal,
-                err.to_string(),
-                DOMAIN_CORE,
-                INTERNAL,
-                HashMap::new(),
-            ),
-            CoreError::StopFailed { .. } => error::status_with_info(
-                Code::Internal,
-                err.to_string(),
-                DOMAIN_CORE,
-                INTERNAL,
-                HashMap::new(),
-            ),
-            CoreError::WorkerNotFound { worker_id } => {
-                let mut meta = HashMap::new();
-                meta.insert("worker_id".into(), worker_id.clone());
-                error::status_with_info(
-                    Code::NotFound,
-                    err.to_string(),
-                    DOMAIN_CORE,
-                    NOT_FOUND,
-                    meta,
-                )
+            CoreError::InvalidAgent { .. } => {
+                simple_status(Code::InvalidArgument, &err, INVALID_ARGUMENT)
             }
-            CoreError::SendMessageFailed { .. } => error::status_with_info(
-                Code::Internal,
-                err.to_string(),
-                DOMAIN_CORE,
-                INTERNAL,
-                HashMap::new(),
-            ),
-            CoreError::WorkspaceNotFound { process_id } => {
-                let mut meta = HashMap::new();
-                meta.insert("process_id".into(), process_id.clone());
-                error::status_with_info(
-                    Code::NotFound,
-                    err.to_string(),
-                    DOMAIN_CORE,
-                    NOT_FOUND,
-                    meta,
-                )
+            CoreError::InvalidImage { .. } => {
+                simple_status(Code::InvalidArgument, &err, INVALID_ARGUMENT)
             }
+            CoreError::PoolSlotFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
+            CoreError::InvalidContextRepo { .. } => {
+                simple_status(Code::InvalidArgument, &err, INVALID_ARGUMENT)
+            }
+            CoreError::LocalProjectUnsupportedLaunch { project_key, .. } => status_with_meta(
+                Code::FailedPrecondition,
+                &err,
+                INVALID_ARGUMENT,
+                "project_key",
+                project_key.clone(),
+            ),
+            CoreError::MissingCredentials { agent, .. } => status_with_meta(
+                Code::FailedPrecondition,
+                &err,
+                INVALID_ARGUMENT,
+                "agent",
+                agent.clone(),
+            ),
+            CoreError::PrepareFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
+            CoreError::RunFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
+            CoreError::StopFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
+            CoreError::WorkerNotFound { worker_id } => status_with_meta(
+                Code::NotFound,
+                &err,
+                NOT_FOUND,
+                "worker_id",
+                worker_id.clone(),
+            ),
+            CoreError::SendMessageFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
+            CoreError::WorkspaceNotFound { process_id } => status_with_meta(
+                Code::NotFound,
+                &err,
+                NOT_FOUND,
+                "process_id",
+                process_id.clone(),
+            ),
             CoreError::Unimplemented => Status::unimplemented(err.to_string()),
         }
     }
@@ -185,10 +169,11 @@ struct ResolvedLaunch {
 
 /// Resolve `WorkerLaunchRequest.agent_type` into an explicit agent override.
 ///
-/// Empty means "no override" — the mode's own `agent` field (or claude) decides,
-/// which is what every in-tree client sends today since launch has no `--agent`
-/// flag yet. A non-empty unknown name is a client error, not a silent fallback
-/// to claude: launching the wrong agent is worse than a rejected request.
+/// Empty means "no override" — the mode's own `agent` field, then the
+/// top-level `agent` default, decides. Every client that has no `--agent`
+/// flag of its own (or where the user omits it) sends empty. A non-empty
+/// unknown name is a client error, not a silent fallback to claude: launching
+/// the wrong agent is worse than a rejected request.
 fn parse_requested_agent(agent_type: &str) -> Result<Option<ur_config::AgentType>, CoreError> {
     if agent_type.is_empty() {
         return Ok(None);
@@ -198,6 +183,66 @@ fn parse_requested_agent(agent_type: &str) -> Result<Option<ur_config::AgentType
         .map_err(|e| CoreError::InvalidAgent {
             reason: e.to_string(),
         })
+}
+
+/// Resolve the image to launch for `agent`: `requested_image_id` (from
+/// `ur --image`) wins if set, else `project_image` (the project's configured
+/// `container.image`, alias or full reference, as written), else
+/// `agent.fallback_image()`.
+///
+/// This is the single decision point that resolves an image alias against an
+/// agent — both the project-configured image and the CLI override are
+/// unresolved aliases until the agent is known, which happens no earlier than
+/// this call in the launch path.
+fn resolve_worker_image(
+    agent: ur_config::AgentType,
+    requested_image_id: &str,
+    project_image: &str,
+) -> Result<String, CoreError> {
+    let raw = if !requested_image_id.is_empty() {
+        Some(requested_image_id)
+    } else if !project_image.is_empty() {
+        Some(project_image)
+    } else {
+        None
+    };
+    match raw {
+        Some(raw) => agent
+            .resolve_image(raw)
+            .map_err(|e| CoreError::InvalidImage {
+                reason: e.to_string(),
+            }),
+        None => Ok(agent.fallback_image()),
+    }
+}
+
+/// Check that `agent` has seeded host credentials before launching a
+/// container for it — otherwise `RunOptsBuilder::add_credentials` creates an
+/// empty file at the bind-mount source so the launch "succeeds," and the
+/// worker boots straight into an interactive login prompt nobody sees.
+///
+/// Exempt for an agent with no auth profile (`agent.auth()` is `None`, so
+/// `host_credentials_path` returns `None`) — there is nothing to seed. This
+/// check is deliberately strict, unlike `ur start`'s credential seeding
+/// (`ensure_credentials_for_all_agents`), which must stay permissive so a
+/// Claude-only user isn't blocked by an unconfigured codex: seeding every
+/// agent on `ur start` is best-effort, but *launching* a specific agent with
+/// no credentials for it is a real, actionable failure.
+fn check_credentials_seeded(
+    agent: ur_config::AgentType,
+    config_dir: &Path,
+) -> Result<(), CoreError> {
+    let Some(path) = agent.host_credentials_path(config_dir) else {
+        return Ok(());
+    };
+    if ur_config::credentials_file_is_seeded(&path) {
+        Ok(())
+    } else {
+        Err(CoreError::MissingCredentials {
+            agent: agent.name().to_owned(),
+            remediation: agent.credentials_remediation(),
+        })
+    }
 }
 
 /// Shared worker launch and stop logic used by both the host-facing
@@ -215,6 +260,10 @@ pub struct LaunchManager {
     /// Top-level `workspace_brain_dir` from `ur.toml`, mounted at `/brain` for workers
     /// launched without a project. Resolution happens in `resolve_brain_dir`.
     pub workspace_brain_dir: Option<String>,
+    /// Locally-reachable `$UR_CONFIG` root (bind-mounted at `/config` inside
+    /// the server container) — used to check whether the resolved agent has
+    /// seeded credentials before launching a container for it.
+    pub config_dir: PathBuf,
 }
 
 /// Why a launch against a local project cannot proceed, or `None` if it can.
@@ -579,6 +628,11 @@ impl LaunchManager {
     /// Build a `WorkerConfig` from resolved launch fields and the original request.
     ///
     /// Extracted from `launch` to keep method body within the line limit.
+    ///
+    /// Resolves the image alias (or full reference) against `agent` here — the
+    /// single decision point that covers both the project-configured
+    /// `container.image` and `req.image_id` (from `ur --image`), since neither
+    /// is known to be agent-specific until `agent` itself is resolved.
     #[allow(clippy::too_many_arguments)]
     fn build_worker_config(
         &self,
@@ -593,7 +647,7 @@ impl LaunchManager {
         agent: ur_config::AgentType,
         workspace_dir: Option<PathBuf>,
         context_mounts: Vec<(String, std::path::PathBuf)>,
-    ) -> crate::WorkerConfig {
+    ) -> Result<crate::WorkerConfig, CoreError> {
         let mode_skills = if req.skills.is_empty() {
             resolved_skills
         } else {
@@ -611,15 +665,7 @@ impl LaunchManager {
             memory_dir,
             brain_dir,
         ) = self.extract_project_launch_fields(&project_key);
-        let image_id = if req.image_id.is_empty() {
-            if resolved_image.is_empty() {
-                ur_config::DEFAULT_FALLBACK_IMAGE.to_owned()
-            } else {
-                resolved_image
-            }
-        } else {
-            req.image_id.clone()
-        };
+        let image_id = resolve_worker_image(agent, &req.image_id, &resolved_image)?;
         let cpus = if req.cpus == 0 {
             ur_config::DEFAULT_WORKER_CPUS
         } else {
@@ -630,7 +676,7 @@ impl LaunchManager {
         } else {
             req.memory.clone()
         };
-        crate::WorkerConfig {
+        Ok(crate::WorkerConfig {
             process_id,
             worker_id,
             image_id,
@@ -653,7 +699,7 @@ impl LaunchManager {
             memory_dir,
             brain_dir,
             workspace_brain_dir: self.workspace_brain_dir.clone(),
-        }
+        })
     }
 
     /// Execute a full worker launch: resolve workspace, prepare, run, and post-launch setup.
@@ -673,6 +719,8 @@ impl LaunchManager {
             generated_process_id,
         } = self.resolve_launch_workspace(&req).await?;
         let slot_id = slot_claim.as_ref().map(|claim| claim.slot_id().to_owned());
+
+        check_credentials_seeded(agent, &self.config_dir)?;
 
         // For Manual mode, use the auto-generated process_id; otherwise use req.worker_id.
         let process_id = generated_process_id.unwrap_or_else(|| req.worker_id.clone());
@@ -710,7 +758,7 @@ impl LaunchManager {
             agent,
             workspace_dir,
             context_mounts,
-        );
+        )?;
         let (container_id, _worker_secret) = self
             .worker_manager
             .run_and_record(config)
@@ -1563,10 +1611,13 @@ async fn send_transition(
     Ok(())
 }
 
-/// Wait for a design worker to become idle, then send `/design {ticket_id}`.
+/// Wait for a design worker to become idle, then dispatch the `design` skill.
 ///
 /// Polls the worker's agent status at short intervals. Once idle, derives the
-/// workerd gRPC address and sends the design command via the `Design` RPC.
+/// workerd gRPC address and sends the design command via the `Design` RPC —
+/// workerd phrases the actual command for whichever agent the worker runs
+/// (`AgentType::clear_command()` / `skill_invocation()`), so nothing here
+/// needs to know Claude's `/design` slash-command syntax.
 /// Times out after 60 seconds if the worker never becomes idle.
 async fn dispatch_design_on_ready(
     worker_repo: &WorkerRepo,
@@ -1603,7 +1654,7 @@ async fn dispatch_design_on_ready(
     info!(
         process_id = %process_id,
         workerd_addr = %workerd_addr,
-        "design worker ready — dispatching /design command"
+        "design worker ready — dispatching design command"
     );
 
     let workerd_client = crate::WorkerdClient::with_status_tracking(
@@ -1616,7 +1667,7 @@ async fn dispatch_design_on_ready(
         .await
         .map_err(|e| anyhow::anyhow!("workerd Design RPC failed: {e}"))?;
 
-    info!(process_id = %process_id, "/design command dispatched successfully");
+    info!(process_id = %process_id, "design command dispatched successfully");
     Ok(())
 }
 
@@ -1788,6 +1839,123 @@ mod tests {
             status.message().contains("bogus-agent"),
             "{}",
             status.message()
+        );
+    }
+
+    // ── image resolution on the launch request ──────────────────────────
+
+    #[test]
+    fn resolve_worker_image_neither_set_uses_fallback() {
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Claude, "", "").unwrap(),
+            ur_config::AgentType::Claude.fallback_image()
+        );
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Codex, "", "").unwrap(),
+            "ur-worker-rust-codex:latest"
+        );
+    }
+
+    #[test]
+    fn resolve_worker_image_project_image_resolves_per_agent() {
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Claude, "", "ur-worker").unwrap(),
+            "ur-worker-claude:latest"
+        );
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Codex, "", "ur-worker").unwrap(),
+            "ur-worker-codex:latest"
+        );
+    }
+
+    /// `ur --image` (`requested_image_id`) wins over the project's configured
+    /// image, and still resolves against whichever agent the launch settled on.
+    #[test]
+    fn resolve_worker_image_requested_id_overrides_project_image_per_agent() {
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Codex, "ur-worker-rust", "ur-worker")
+                .unwrap(),
+            "ur-worker-rust-codex:latest"
+        );
+    }
+
+    #[test]
+    fn resolve_worker_image_full_reference_passes_through() {
+        assert_eq!(
+            resolve_worker_image(
+                ur_config::AgentType::Codex,
+                "myregistry/custom-image:v1",
+                ""
+            )
+            .unwrap(),
+            "myregistry/custom-image:v1"
+        );
+    }
+
+    #[test]
+    fn resolve_worker_image_unknown_alias_is_invalid_image() {
+        let err = resolve_worker_image(ur_config::AgentType::Codex, "", "bogus")
+            .expect_err("should reject");
+        assert!(matches!(err, CoreError::InvalidImage { .. }), "{err:?}");
+        let status: Status = err.into();
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("bogus"), "{}", status.message());
+        assert!(status.message().contains("codex"), "{}", status.message());
+    }
+
+    // ── credential seeding check before launch ──────────────────────────
+
+    #[test]
+    fn check_credentials_seeded_passes_when_file_is_seeded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let creds_dir = tmp.path().join("claude");
+        std::fs::create_dir_all(&creds_dir).unwrap();
+        std::fs::write(creds_dir.join(".credentials.json"), "{\"token\":\"abc\"}").unwrap();
+
+        assert!(check_credentials_seeded(ur_config::AgentType::Claude, tmp.path()).is_ok());
+    }
+
+    #[test]
+    fn check_credentials_seeded_fails_when_file_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let err = check_credentials_seeded(ur_config::AgentType::Codex, tmp.path())
+            .expect_err("should reject");
+        assert!(
+            matches!(err, CoreError::MissingCredentials { .. }),
+            "{err:?}"
+        );
+        let status: Status = err.into();
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        assert!(status.message().contains("codex"), "{}", status.message());
+        assert!(
+            status.message().contains("codex login"),
+            "{}",
+            status.message()
+        );
+        assert!(
+            status
+                .message()
+                .contains("ur worker reseed-credentials --agent codex"),
+            "{}",
+            status.message()
+        );
+    }
+
+    /// A stub file left behind by a Docker bind-mount setup (or a previous
+    /// empty seed) must not be mistaken for real credentials.
+    #[test]
+    fn check_credentials_seeded_fails_when_file_is_empty_stub() {
+        let tmp = tempfile::tempdir().unwrap();
+        let creds_dir = tmp.path().join("codex");
+        std::fs::create_dir_all(&creds_dir).unwrap();
+        std::fs::write(creds_dir.join("auth.json"), "").unwrap();
+
+        let err = check_credentials_seeded(ur_config::AgentType::Codex, tmp.path())
+            .expect_err("should reject");
+        assert!(
+            matches!(err, CoreError::MissingCredentials { .. }),
+            "{err:?}"
         );
     }
 
