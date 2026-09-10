@@ -63,6 +63,12 @@ mcp-proxy.anthropic.com
 chatgpt.com
 api.openai.com
 auth.openai.com
+oauth2.googleapis.com
+www.googleapis.com
+cloudcode-pa.googleapis.com
+daily-cloudcode-pa.googleapis.com
+lh3.googleusercontent.com
+accounts.google.com
 ";
 
 pub struct InitFlags {

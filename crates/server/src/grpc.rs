@@ -1853,6 +1853,13 @@ mod tests {
             "{}",
             status.message()
         );
+        for agent in ur_config::AgentType::ALL {
+            assert!(
+                status.message().contains(agent.name()),
+                "{}",
+                status.message()
+            );
+        }
     }
 
     // ── image resolution on the launch request ──────────────────────────
@@ -1867,6 +1874,10 @@ mod tests {
             resolve_worker_image(ur_config::AgentType::Codex, "", "").unwrap(),
             "ur-worker-rust-codex:latest"
         );
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Agy, "", "").unwrap(),
+            "ur-worker-rust-agy:latest"
+        );
     }
 
     #[test]
@@ -1878,6 +1889,10 @@ mod tests {
         assert_eq!(
             resolve_worker_image(ur_config::AgentType::Codex, "", "ur-worker").unwrap(),
             "ur-worker-codex:latest"
+        );
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Agy, "", "ur-worker").unwrap(),
+            "ur-worker-agy:latest"
         );
     }
 

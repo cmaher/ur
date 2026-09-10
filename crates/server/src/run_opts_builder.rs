@@ -588,6 +588,27 @@ mod tests {
     }
 
     #[test]
+    fn add_agy_credentials_mounts_only_the_token_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_credentials(tmp.path(), AgentType::Agy)
+            .unwrap()
+            .build();
+
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(
+            req.volumes[0].host_path,
+            tmp.path()
+                .join("agy/antigravity-oauth-token")
+                .to_string_lossy()
+        );
+        assert_eq!(
+            req.volumes[0].container_path,
+            "/home/worker/.gemini/antigravity-cli/antigravity-oauth-token"
+        );
+    }
+
+    #[test]
     fn add_env_vars_accumulates() {
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_env_vars(vec![("A".into(), "1".into())])

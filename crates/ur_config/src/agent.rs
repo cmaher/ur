@@ -63,7 +63,8 @@ pub struct ParseAgentError(pub String);
 
 impl fmt::Display for ParseAgentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "unknown agent type: {}", self.0)
+        let valid: Vec<&str> = AgentType::ALL.iter().map(AgentType::name).collect();
+        write!(f, "unknown agent type: {}. Valid agents: {valid:?}", self.0)
     }
 }
 
