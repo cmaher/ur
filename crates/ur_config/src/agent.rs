@@ -168,20 +168,42 @@ impl AgentType {
     }
 
     /// Full shell command to launch the agent in the tmux pane, with the
-    /// model flag applied if `model` is `Some` and non-blank.
+    /// model flag applied if `model` is `Some` and non-blank and the effort
+    /// flag always applied.
     ///
-    /// Owns its own model-flag syntax — a future agent may take `-m`, an env
-    /// var, or nothing at all.
-    pub fn spawn_command(&self, model: Option<&str>) -> String {
+    /// Owns its own model- and effort-flag syntax — a future agent may take
+    /// `-m`, an env var, or nothing at all.
+    pub fn spawn_command(&self, model: Option<&str>, effort: &str) -> String {
         match self {
             Self::Claude => match model.map(str::trim) {
-                Some(model) if !model.is_empty() => format!("claude --model '{model}'"),
-                _ => "claude".to_string(),
+                Some(model) if !model.is_empty() => {
+                    format!("claude --model '{model}' --effort '{effort}'")
+                }
+                _ => format!("claude --effort '{effort}'"),
             },
             Self::Codex => match model.map(str::trim) {
-                Some(model) if !model.is_empty() => format!("codex -m '{model}'"),
-                _ => "codex".to_string(),
+                Some(model) if !model.is_empty() => {
+                    format!("codex -m '{model}' -c model_reasoning_effort=\"{effort}\"")
+                }
+                _ => format!("codex -c model_reasoning_effort=\"{effort}\""),
             },
+        }
+    }
+
+    /// Reasoning-effort values accepted by this agent's currently supported
+    /// models. Model-specific restrictions remain the agent CLI's concern.
+    pub fn supported_efforts(&self) -> &'static [&'static str] {
+        match self {
+            Self::Claude => &["low", "medium", "high", "xhigh", "max"],
+            Self::Codex => &["low", "medium", "high", "xhigh", "max", "ultra"],
+        }
+    }
+
+    /// Built-in reasoning effort used when no mode or worker-model override
+    /// supplies one. Unlike [`Self::default_model`], it is not strategy-keyed.
+    pub fn default_effort(&self) -> &'static str {
+        match self {
+            Self::Claude | Self::Codex => "medium",
         }
     }
 
@@ -401,39 +423,51 @@ mod tests {
     }
 
     #[test]
-    fn spawn_command_no_model() {
-        assert_eq!(AgentType::Claude.spawn_command(None), "claude");
-        assert_eq!(AgentType::Codex.spawn_command(None), "codex");
+    fn spawn_command_no_model_keeps_effort() {
+        assert_eq!(
+            AgentType::Claude.spawn_command(None, "high"),
+            "claude --effort 'high'"
+        );
+        assert_eq!(
+            AgentType::Codex.spawn_command(None, "high"),
+            "codex -c model_reasoning_effort=\"high\""
+        );
     }
 
     #[test]
     fn spawn_command_with_model() {
         assert_eq!(
-            AgentType::Claude.spawn_command(Some("opus")),
-            "claude --model 'opus'"
+            AgentType::Claude.spawn_command(Some("opus"), "xhigh"),
+            "claude --model 'opus' --effort 'xhigh'"
         );
         assert_eq!(
-            AgentType::Codex.spawn_command(Some("gpt-5.6-sol")),
-            "codex -m 'gpt-5.6-sol'"
+            AgentType::Codex.spawn_command(Some("gpt-5.6-sol"), "max"),
+            "codex -m 'gpt-5.6-sol' -c model_reasoning_effort=\"max\""
         );
     }
 
     #[test]
     fn spawn_command_trims_model() {
         assert_eq!(
-            AgentType::Claude.spawn_command(Some("  opus  ")),
-            "claude --model 'opus'"
+            AgentType::Claude.spawn_command(Some("  opus  "), "medium"),
+            "claude --model 'opus' --effort 'medium'"
         );
         assert_eq!(
-            AgentType::Codex.spawn_command(Some("  gpt-5.6-sol  ")),
-            "codex -m 'gpt-5.6-sol'"
+            AgentType::Codex.spawn_command(Some("  gpt-5.6-sol  "), "medium"),
+            "codex -m 'gpt-5.6-sol' -c model_reasoning_effort=\"medium\""
         );
     }
 
     #[test]
     fn spawn_command_blank_model_is_none() {
-        assert_eq!(AgentType::Claude.spawn_command(Some("   ")), "claude");
-        assert_eq!(AgentType::Codex.spawn_command(Some("   ")), "codex");
+        assert_eq!(
+            AgentType::Claude.spawn_command(Some("   "), "low"),
+            "claude --effort 'low'"
+        );
+        assert_eq!(
+            AgentType::Codex.spawn_command(Some("   "), "low"),
+            "codex -c model_reasoning_effort=\"low\""
+        );
     }
 
     #[test]
@@ -512,6 +546,16 @@ mod tests {
                     "{agent:?} has no default model for strategy {strategy:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn default_effort_is_supported_by_every_agent() {
+        for agent in AgentType::ALL {
+            assert!(
+                agent.supported_efforts().contains(&agent.default_effort()),
+                "{agent:?}'s default effort must be supported"
+            );
         }
     }
 

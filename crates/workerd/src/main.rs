@@ -154,7 +154,7 @@ async fn run_daemon_only() -> Result<()> {
     // unreliable — Claude Code recomposes the file from .claude.json and
     // drops unrecognized keys).
     let model = std::env::var(ur_config::UR_WORKER_MODEL_ENV).ok();
-    let spawn_cmd = agent.spawn_command(model.as_deref());
+    let spawn_cmd = agent.spawn_command(model.as_deref(), agent.default_effort());
     session.send_keys(&spawn_cmd).await?;
     info!(cmd = %spawn_cmd, agent = agent.name(), "agent launched in tmux session");
 

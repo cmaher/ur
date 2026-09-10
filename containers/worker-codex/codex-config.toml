@@ -13,6 +13,8 @@ project_doc_fallback_filenames = ["CLAUDE.md"]
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 
+# Image-level fallback. The launch-time `-c model_reasoning_effort=...`
+# override supplied by ur takes precedence.
 model_reasoning_effort = "high"
 
 # Skip the interactive trust prompt for the workspace mount — every worker
