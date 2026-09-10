@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname "$0")/agent-images.sh"
+
 # Build all container images using Docker (or nerdctl).
 # Builds:
 #   ur-worker-base:<tag> (slow, cached) + ur-worker-<agent>:<tag> (fast) on top
@@ -87,13 +89,9 @@ BASE_CONTEXT=containers/worker-base
 # UR_UPDATE_AGENT matching) : whether this layer has its own CACHEBUST-gated
 # agent-CLI-update step (only the base agent layer does — a variant built on
 # top of it, like the rust toolchain image, picks up the parent's new content
-# automatically once Docker sees the parent image ID changed).
-AGENT_IMAGES=(
-    "worker-claude:ur-worker-claude:claude:true"
-    "worker-rust-claude:ur-worker-rust-claude:claude:false"
-    "worker-codex:ur-worker-codex:codex:true"
-    "worker-rust-codex:ur-worker-rust-codex:codex:false"
-)
+# automatically once Docker sees the parent image ID changed. The final field
+# says whether worker binaries are staged into the context. The table itself
+# lives in agent-images.sh so build, staging, deploy, and cleanup cannot drift.
 
 # Stage vendored mise installer into the claude rust worker build context.
 # worker-rust-codex deliberately gets no copy: nothing in its Dockerfile
@@ -120,7 +118,7 @@ echo "Base image built: ur-worker-base:$tag"
 # `claude update` fails the build rather than silently shipping a stale
 # version.
 for entry in "${AGENT_IMAGES[@]}"; do
-    IFS=':' read -r dir img_tag agent_name needs_cachebust <<< "$entry"
+    IFS=':' read -r dir img_tag agent_name needs_cachebust _stage_binaries <<< "$entry"
     context="containers/$dir"
     args=("BASE_TAG=$tag")
     if [ "$needs_cachebust" = "true" ] && should_bust_agent "$agent_name"; then
