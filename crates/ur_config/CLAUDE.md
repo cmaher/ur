@@ -111,14 +111,19 @@ every consumer of `repo` to handle absence at compile time. See
 ## Agents (`AgentType`)
 
 `AgentType` is the single source of truth for everything that varies per coding agent:
-`Claude` (Claude Code) and `Codex` (OpenAI Codex CLI). Every accessor is an exhaustive match
-over the variants — adding a third agent means the compiler flags every accessor that needs a
-new arm.
+`Claude` (Claude Code), `Codex` (OpenAI Codex CLI), and `Agy` (Google Antigravity CLI).
+Every accessor is an exhaustive match over the variants so adding an agent makes the compiler
+flag every accessor that needs a new arm.
 
-Two accessors are deliberately `None` for `Codex`:
+AGY splits its filesystem layout: `home_subdir()` is the runtime root
+(`.gemini/antigravity-cli`), while `customization_root()` is `.gemini/config` for skills,
+skill hooks, and instructions. Claude and Codex return `home_subdir()` from
+`customization_root()`, preserving their existing layouts.
+
+Some accessors are deliberately `None` for Codex and AGY:
 
 - `memory_subdir()` — Claude's memory dir is Claude Code's own transcript-adjacent layout;
-  Codex has no directory equivalent (it keeps memories in a sqlite database). Callers gate on
+  Codex and AGY have no directory equivalent. Callers gate on
   `if let Some(memory_subdir) = agent.memory_subdir()` and no-op otherwise (e.g.
   `RunOptsBuilder::add_memory_dir` in `crates/server`).
 - (Claude's `settings_filename()` and `auth()` are both `Some` for every current agent, but
@@ -158,9 +163,10 @@ message naming the valid agents) instead of reimplementing the logic. See
 are sourced and where its files live, for agents that need credentials at all (`None` means
 no auth profile).
 
-- `AgentAuth.source: AuthSource` — either `Keychain { service, linux_fallback }` (macOS
-  keychain, falling back to a home-relative file on Linux) or `HostFile { path_from_home }`
-  (always a plain file under the host user's home directory, no keychain).
+- `AgentAuth.source: AuthSource` — `Keychain { service, linux_fallback }` (macOS keychain,
+  falling back to a home-relative file on Linux), `HostFile { path_from_home }` (a plain host
+  file), or `InContainer` (the agent creates credentials in its bind-mounted cache file and
+  there is no host source to seed).
 - `AgentAuth.credentials_path` / `AgentAuth.app_config_path` — both home-relative paths
   (e.g. `.claude/.credentials.json`, `.claude.json`), used as-is when joining onto the
   *worker's* home directory inside a container.
@@ -173,6 +179,11 @@ no auth profile).
   the CLI's seeding and `ur start` warning (`crates/ur`) and the server's pre-launch gate
   (`check_credentials_seeded`, `crates/server/src/grpc.rs`) go through it, so the byte
   threshold can't drift between them. Never reads the file's contents.
+
+AGY deliberately returns the shared effort vocabulary from `supported_efforts()` rather than
+curating the CLI's current model/effort matrix. AGY validates unsupported combinations and
+surfaces its own error, consistent with ur treating model-specific restrictions as an agent
+concern.
 
 ## Other Config
 
