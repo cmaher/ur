@@ -7,7 +7,7 @@ const IN_REPO_SKILL_HOOKS: &str = "/workspace/ur-hooks/skills";
 const HOST_OVERLAY_SKILL_HOOKS: &str = "/var/ur/host-hooks/skills";
 
 /// Manages copying skill hooks from two source directories into
-/// `~/{agent.home_subdir()}/{agent.skill_hooks_subdir()}/`.
+/// `~/{agent.customization_root()}/{agent.skill_hooks_subdir()}/`.
 ///
 /// Source resolution order (both are always checked, independently):
 /// 1. `/workspace/ur-hooks/skills/` (in-repo convention — copied first)
@@ -35,7 +35,7 @@ impl InitSkillHooksManager {
 /// Resolve the skill-hooks target directory for `agent`.
 fn target_dir(agent: AgentType) -> PathBuf {
     PathBuf::from(ur_config::WORKER_HOME)
-        .join(agent.home_subdir())
+        .join(agent.customization_root())
         .join(agent.skill_hooks_subdir())
 }
 
@@ -92,6 +92,14 @@ mod tests {
         assert_eq!(
             target_dir(AgentType::Claude),
             PathBuf::from(ur_config::WORKER_HOME).join(".claude/skill-hooks")
+        );
+    }
+
+    #[test]
+    fn target_dir_resolves_for_agy() {
+        assert_eq!(
+            target_dir(AgentType::Agy),
+            PathBuf::from(ur_config::WORKER_HOME).join(".gemini/config/skill-hooks")
         );
     }
 

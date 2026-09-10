@@ -48,14 +48,14 @@ injected into the gRPC service — no handler calls `AgentType::from_env()` itse
 shared `dispatch_commands(agent, skill, args)` helper in `grpc_service.rs`, which is just
 `[agent.clear_command(), agent.skill_invocation(skill, args)]` — for Claude that's
 `["/clear", "/implement ur-x"]`; for Codex, which has no custom slash commands, it's
-`["/new", "Run the \`implement\` skill. Arguments: ur-x"]`. No slash-command literal lives in
-`grpc_service.rs` itself.
+`["/new", "Run the \`implement\` skill. Arguments: ur-x"]`; AGY uses Claude-shaped phrasing,
+including `/clear`. No slash-command literal lives in `grpc_service.rs` itself.
 
 Init phase (`crates/workerd/src/init/{skills,instructions,settings}.rs`, split by concern). `run_init` resolves the agent (`AgentType::from_env()`) and home (`init::worker_home()`) **once** and injects both into every manager's constructor — no init manager reads `UR_AGENT_TYPE` itself, so the whole phase cannot disagree about which agent it is setting up:
-- `InitSkillsManager` copies skills from `.agent-shared/potential-skills/` (baked, agent-agnostic) based on `$UR_WORKER_SKILLS` env var into `~/{agent.home_subdir()}/{agent.skill_subdir()}/` (e.g. `~/.claude/skills/`)
-- `InitInstructionsManager` copies the strategy-specific instruction file from `.agent-shared/instructions/` based on `$UR_WORKER_INSTRUCTION_STRATEGY` env var, appends `.agent-shared/shared-instructions/*.md` fragments, and writes the result to `~/{agent.home_subdir()}/{agent.instruction_filename()}` (e.g. `~/.claude/CLAUDE.md`)
+- `InitSkillsManager` copies skills from `.agent-shared/potential-skills/` (baked, agent-agnostic) based on `$UR_WORKER_SKILLS` env var into `~/{agent.customization_root()}/{agent.skill_subdir()}/` (e.g. `~/.claude/skills/` or `~/.gemini/config/skills/`)
+- `InitInstructionsManager` copies the strategy-specific instruction file from `.agent-shared/instructions/` based on `$UR_WORKER_INSTRUCTION_STRATEGY` env var, appends `.agent-shared/shared-instructions/*.md` fragments, and writes the result under `agent.customization_root()`. AGY cannot read a workspace `CLAUDE.md`, so its project instructions are folded directly into `~/.gemini/config/AGENTS.md`.
 - `InitSettingsManager` copies `~/{agent.home_subdir()}/potential-settings.json` (baked into the agent image) to `~/{agent.home_subdir()}/{agent.settings_filename()}` verbatim, gated on `agent.settings_filename().is_some()`, so Claude Code picks up hooks/permissions. The `model` key is intentionally NOT injected here — see step 2 of the daemon startup sequence above for why.
 - Copies git hooks from `/workspace/ur-hooks/git/` (in-repo), then `/var/ur/host-hooks/git/` (host overlay, wins on conflict), into `/workspace/.git/hooks/`
-- `InitSkillHooksManager` copies skill hooks from `/workspace/ur-hooks/skills/` (in-repo), then `/var/ur/host-hooks/skills/` (host overlay, wins on conflict), into `~/{agent.home_subdir()}/{agent.skill_hooks_subdir()}/` (e.g. `~/.claude/skill-hooks/`)
+- `InitSkillHooksManager` copies skill hooks from `/workspace/ur-hooks/skills/` (in-repo), then `/var/ur/host-hooks/skills/` (host overlay, wins on conflict), under `agent.customization_root()` (e.g. `~/.claude/skill-hooks/` or `~/.gemini/config/skill-hooks/`)
 - Calls `ListHostExecCommands` RPC on ur-server (retries with backoff)
 - Generates shims in `~/.local/bin/` that call `workertools host-exec <command> "$@"`

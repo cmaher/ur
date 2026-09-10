@@ -23,13 +23,13 @@ impl InitInstructionsManager {
 
     fn instruction_dest(&self) -> PathBuf {
         self.home
-            .join(self.agent.home_subdir())
+            .join(self.agent.customization_root())
             .join(self.agent.instruction_filename())
     }
 
     fn project_instruction_dest(&self) -> PathBuf {
         self.home
-            .join(self.agent.home_subdir())
+            .join(self.agent.customization_root())
             .join(format!("PROJECT_{}", self.agent.instruction_filename()))
     }
 
@@ -77,14 +77,20 @@ impl InitInstructionsManager {
             info!(path = %path.display(), "appended shared instruction fragment");
         }
 
-        // If a project instruction file is provided, resolve %WORKSPACE% and append @ reference
+        // AGY does not read workspace CLAUDE.md and has no fallback-filename
+        // setting, so fold project instructions into its global AGENTS.md.
         if let Some(project_content) = self.resolve_project_instruction().await? {
-            let project_dest = self.project_instruction_dest();
-            tokio::fs::write(&project_dest, &project_content).await?;
-            info!(dst = %project_dest.display(), "wrote project instruction file");
+            if self.agent == AgentType::Agy {
+                content.push_str("\n\n");
+                content.push_str(&project_content);
+            } else {
+                let project_dest = self.project_instruction_dest();
+                tokio::fs::write(&project_dest, &project_content).await?;
+                info!(dst = %project_dest.display(), "wrote project instruction file");
 
-            content.push_str("\n\n@");
-            content.push_str(&project_dest.to_string_lossy());
+                content.push_str("\n\n@");
+                content.push_str(&project_dest.to_string_lossy());
+            }
         }
 
         tokio::fs::write(&dst, &content).await?;
@@ -321,5 +327,34 @@ mod tests {
             project_content, "# Project\nPath: %WORKSPACE%/foo",
             "content should pass through unchanged without UR_HOST_WORKSPACE"
         );
+    }
+
+    #[tokio::test]
+    async fn agy_uses_customization_root_and_folds_project_instructions() {
+        let _lock = ENV_LOCK.lock().await;
+        let tmp = TempDir::new().unwrap();
+        setup_strategy_file(&tmp, "code", "# Code Worker");
+        std::fs::create_dir_all(tmp.path().join(".gemini/config")).unwrap();
+        let project_path = tmp.path().join("CLAUDE.md");
+        std::fs::write(&project_path, "# Project rules").unwrap();
+
+        unsafe {
+            std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
+            std::env::set_var(ur_config::UR_PROJECT_INSTRUCTION_ENV, &project_path);
+        }
+        InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Agy)
+            .run()
+            .await
+            .unwrap();
+        unsafe {
+            std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
+            std::env::remove_var(ur_config::UR_PROJECT_INSTRUCTION_ENV);
+        }
+
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join(".gemini/config/AGENTS.md")).unwrap(),
+            "# Code Worker\n\n# Project rules"
+        );
+        assert!(!tmp.path().join(".gemini/config/PROJECT_AGENTS.md").exists());
     }
 }
