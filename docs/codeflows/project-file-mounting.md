@@ -55,13 +55,15 @@ Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `instr
 | `container.mounts` | user-specified `destination` | (none) | no |
 | host hooks overlay — git | `/var/ur/host-hooks/git/` | (none) | yes (`:ro`) |
 | host hooks overlay — skills | `/var/ur/host-hooks/skills/` | (none) | yes (`:ro`) |
+| host hooks overlay — startup | `/var/ur/host-hooks/startup/` | (none) | yes (`:ro`) |
+| host hooks overlay — background startup | `/var/ur/host-hooks/startup-bg/` | (none) | yes (`:ro`) |
 | workflow hooks (server-side) | (not container-mounted — resolved server-side) | — | — |
 
 When `instruction_md` resolves to `ProjectRelative`, no volume mount is created — only the env var is set, pointing to `/workspace/<rel_path>`.
 
 ## Hook Overlay Model
 
-Git and skill hooks use a two-layer overlay with **no config fields**. Sources are fixed by convention; the host overlay wins on identical filenames.
+Git, skill, and startup hooks use a two-layer overlay with **no config fields**. Sources are fixed by convention; the host overlay wins on identical filenames.
 
 ### Git Hooks
 
@@ -82,6 +84,17 @@ Workerd copies both sources into `/workspace/.git/hooks/` at container startup.
 | Host overlay | `/var/ur/host-hooks/skills/:ro` | applied second, wins on conflict |
 
 The host overlay path `/var/ur/host-hooks/skills/` is volume-mounted from `<config_dir>/projects/<key>/hooks/skills/` on the host. Workerd copies both sources into `~/{agent.customization_root()}/{agent.skill_hooks_subdir()}/` at container startup (`~/.claude/skill-hooks/` for Claude and `~/.gemini/config/skill-hooks/` for AGY), via `InitSkillHooksManager`. AGY's `home_subdir()` remains the separate runtime root `.gemini/antigravity-cli`; settings and mutable state belong there, while skills, hooks, and generated instructions use `.gemini/config`.
+
+### Startup Hooks
+
+Startup hooks execute in place after workerd initialization has created hostexec shims and before tmux or the agent starts. Only executable regular files participate; filenames are resolved in lexical order, with the host layer replacing an in-repo file of the same name.
+
+| Kind | In-repo source | Host overlay | Behavior |
+|---|---|---|---|
+| Synchronous | `/workspace/ur-hooks/startup/` | `/var/ur/host-hooks/startup/:ro` | Run serially with cwd `/workspace`; the first non-zero exit aborts startup |
+| Background | `/workspace/ur-hooks/startup-bg/` | `/var/ur/host-hooks/startup-bg/:ro` | Spawn detached with cwd `/workspace`; workerd logs each name and PID |
+
+The host sources are `<config_dir>/projects/<key>/hooks/startup/` and `<config_dir>/projects/<key>/hooks/startup-bg/`. As with other hook overlays, each mount is added only when its host directory exists.
 
 ### Workflow Hooks (Server-Side, Not Container-Mounted)
 
@@ -224,6 +237,8 @@ WorkerManager::run_and_record()                  [server/src/worker.rs]
   │   ├─ .add_credentials(agent)       → shared OAuth credentials; no-op if agent.auth() is None
   │   ├─ .add_host_hooks_overlay()     → <config_dir>/projects/<key>/hooks/git/ → /var/ur/host-hooks/git/:ro
   │   │                                  <config_dir>/projects/<key>/hooks/skills/ → /var/ur/host-hooks/skills/:ro
+  │   │                                  <config_dir>/projects/<key>/hooks/startup/ → /var/ur/host-hooks/startup/:ro
+  │   │                                  <config_dir>/projects/<key>/hooks/startup-bg/ → /var/ur/host-hooks/startup-bg/:ro
   │   │                                  (each mount added only if the host dir exists)
   │   ├─ .add_project_instruction(agent) → resolve_template_path → mount or env var
   │   ├─ .add_memory_dir(agent)         → create_dir_all + chown → ~/{agent.home_subdir()}/{agent.memory_subdir()}

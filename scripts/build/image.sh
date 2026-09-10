@@ -87,17 +87,8 @@ BASE_CONTEXT=containers/worker-base
 #
 # Fields: context dir : image tag (no version suffix) : agent name (for
 # UR_UPDATE_AGENT matching) : whether this layer has its own CACHEBUST-gated
-# agent-CLI-update step (only the base agent layer does — a variant built on
-# top of it, like the rust toolchain image, picks up the parent's new content
-# automatically once Docker sees the parent image ID changed. The final field
-# says whether worker binaries are staged into the context. The table itself
+# agent-CLI-update step : whether worker binaries are staged into the context. The table itself
 # lives in agent-images.sh so build, staging, deploy, and cleanup cannot drift.
-
-# Stage vendored mise installer into the claude rust worker build context.
-# worker-rust-codex deliberately gets no copy: nothing in its Dockerfile
-# references install-mise.sh, so staging one there would only check a
-# generated file into a second build context.
-cp "$BASE_CONTEXT/vendor/mise/install.sh" "containers/worker-rust-claude/install-mise.sh"
 
 # `ur-worker-base` now carries only agent-agnostic assets (shell setup, skills,
 # instructions) — no agent CLI install — so UR_FORCE_REBUILD_BASE no longer

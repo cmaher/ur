@@ -1097,7 +1097,7 @@ impl DatabaseConfig {
 
 /// Logical image aliases. Agent-agnostic — the agent name is appended at
 /// resolution time (see [`AgentType::resolve_image`]), not stored here.
-pub const IMAGE_ALIASES: &[&str] = &["ur-worker", "ur-worker-rust"];
+pub const IMAGE_ALIASES: &[&str] = &["ur-worker"];
 
 /// Returns the default image alias (first entry in [`IMAGE_ALIASES`]).
 pub fn default_image_alias() -> &'static str {
@@ -2479,7 +2479,7 @@ repo = "git@github.com:cmaher/swa.git"
 name = "Swa App"
 pool_limit = 5
 [projects.swa.container]
-image = "ur-worker-rust"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -2670,7 +2670,7 @@ ignored_workflow_checks = ["flaky"]
 [projects.myapp.tui]
 theme = "nord"
 [projects.myapp.container]
-image = "ur-worker-rust"
+image = "ur-worker"
 mounts = ["/host/data:/data:ro"]
 ports = ["8080:8080"]
 "#,
@@ -2679,7 +2679,7 @@ ports = ["8080:8080"]
         let cfg = Config::load_from(tmp.path()).unwrap();
         let proj = &cfg.projects["myapp"];
         assert!(proj.is_local());
-        assert_eq!(proj.container.image, "ur-worker-rust");
+        assert_eq!(proj.container.image, "ur-worker");
         assert_eq!(proj.container.mounts.len(), 1);
         assert_eq!(proj.container.ports.len(), 1);
         assert_eq!(proj.hostexec, vec!["make", "npm"]);
@@ -4082,7 +4082,7 @@ image = "ur-worker"
     }
 
     #[test]
-    fn container_image_alias_rust_kept_as_written() {
+    fn removed_rust_image_alias_is_rejected() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
@@ -4095,8 +4095,11 @@ image = "ur-worker-rust"
 "#,
         )
         .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.projects["ur"].container.image, "ur-worker-rust");
+        let error = Config::load_from(tmp.path()).unwrap_err().to_string();
+        assert!(
+            error.contains("unknown image alias 'ur-worker-rust'"),
+            "{error}"
+        );
     }
 
     /// A project's `container.image` needs no edit to work with either agent:
@@ -4112,7 +4115,7 @@ node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "ur-worker-rust"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -4120,11 +4123,11 @@ image = "ur-worker-rust"
         let image = &cfg.projects["ur"].container.image;
         assert_eq!(
             AgentType::Claude.resolve_image(image).unwrap(),
-            "ur-worker-rust-claude:latest"
+            "ur-worker-claude:latest"
         );
         assert_eq!(
             AgentType::Codex.resolve_image(image).unwrap(),
-            "ur-worker-rust-codex:latest"
+            "ur-worker-codex:latest"
         );
     }
 
@@ -4161,19 +4164,16 @@ image = "ur-worker-rust"
         assert!(msg.contains("bogus"), "{msg}");
         assert!(msg.contains("codex"), "{msg}");
         assert!(msg.contains("ur-worker"), "{msg}");
-        assert!(msg.contains("ur-worker-rust"), "{msg}");
+        assert!(!msg.contains("ur-worker-rust"), "{msg}");
     }
 
     #[test]
-    fn fallback_image_is_rust_toolchain_variant_per_agent() {
+    fn fallback_image_is_base_variant_per_agent() {
         assert_eq!(
             AgentType::Claude.fallback_image(),
-            "ur-worker-rust-claude:latest"
+            "ur-worker-claude:latest"
         );
-        assert_eq!(
-            AgentType::Codex.fallback_image(),
-            "ur-worker-rust-codex:latest"
-        );
+        assert_eq!(AgentType::Codex.fallback_image(), "ur-worker-codex:latest");
     }
 
     #[test]
@@ -4215,7 +4215,7 @@ image = "unknown"
         let msg = err.to_string();
         assert!(msg.contains("unknown image alias 'unknown'"), "{msg}");
         assert!(msg.contains("ur-worker"), "{msg}");
-        assert!(msg.contains("ur-worker-rust"), "{msg}");
+        assert!(!msg.contains("ur-worker-rust"), "{msg}");
     }
 
     #[test]

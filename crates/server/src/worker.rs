@@ -1694,7 +1694,10 @@ mod tests {
     /// worker holds it now.
     #[tokio::test]
     async fn stop_unknown_process_errors_when_runtime_unreachable() {
-        let (mgr, _workspace, _test_db) = test_manager().await;
+        let (mut mgr, _workspace, _test_db) = test_manager().await;
+        let unreachable =
+            tonic::transport::Channel::from_static("http://127.0.0.1:0").connect_lazy();
+        mgr.builder_container_client = BuilderContainerClient::new(unreachable);
         let result = mgr.stop("nonexistent").await;
         let err = result.unwrap_err();
         assert!(
@@ -1795,7 +1798,7 @@ mod tests {
         WorkerConfig {
             process_id: "test-proc".into(),
             worker_id: WorkerId("test-proc-ab12".into()),
-            image_id: "ur-worker-rust-claude:latest".into(),
+            image_id: "ur-worker-claude:latest".into(),
             cpus: 1,
             memory: "512m".into(),
             workspace_dir: None,

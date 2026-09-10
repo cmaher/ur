@@ -485,7 +485,7 @@ mod tests {
             &config,
             &AddRequest {
                 path: repo.path(),
-                image: "ur-worker-rust",
+                image: "registry.example/custom:v1",
                 key: Some("mykey"),
                 name: Some("My Project"),
                 pool_limit: Some(5),
@@ -500,7 +500,7 @@ mod tests {
         assert_eq!(proj.repo.as_deref(), Some("git@github.com:cmaher/ur.git"));
         assert_eq!(proj.name, "My Project");
         assert_eq!(proj.pool_limit, 5);
-        assert_eq!(proj.container.image, "ur-worker-rust");
+        assert_eq!(proj.container.image, "registry.example/custom:v1");
     }
 
     #[test]
@@ -558,7 +558,7 @@ image = "ur-worker"
     }
 
     #[test]
-    fn add_project_with_rust_image() {
+    fn config_rejects_removed_rust_image_alias_after_add() {
         let tmp = TempDir::new().unwrap();
         let config = write_config(&tmp, "");
         let repo = make_git_repo("git@github.com:cmaher/myproj.git");
@@ -576,8 +576,8 @@ image = "ur-worker"
         )
         .unwrap();
 
-        let updated = ur_config::Config::load_from(tmp.path()).unwrap();
-        assert_eq!(updated.projects["myproj"].container.image, "ur-worker-rust");
+        let error = ur_config::Config::load_from(tmp.path()).unwrap_err();
+        assert!(error.to_string().contains("unknown image alias"));
     }
 
     #[test]
@@ -589,7 +589,6 @@ image = "ur-worker"
     #[test]
     fn validate_image_alias_known_ok() {
         ur_config::validate_image_alias("ur-worker").unwrap();
-        ur_config::validate_image_alias("ur-worker-rust").unwrap();
     }
 
     #[test]

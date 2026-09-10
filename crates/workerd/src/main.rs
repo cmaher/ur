@@ -125,11 +125,22 @@ async fn run_daemon() -> Result<()> {
     // 0. Run initialization (skills, git hooks, hostexec shims)
     run_init().await.context("init phase failed")?;
 
+    let startup_hooks_manager = init::StartupHooksManager::new(
+        PathBuf::from("/workspace"),
+        PathBuf::from("/var/ur/host-hooks"),
+    );
+    let spawned_hooks = startup_hooks_manager
+        .run()
+        .await
+        .context("startup hooks phase failed")?;
+    for hook in spawned_hooks {
+        info!(hook = %hook.name, pid = hook.pid, "spawned background startup hook");
+    }
+
     run_daemon_only().await
 }
 
 /// Daemon without init — expects `workerd init` to have been called already.
-/// Used by image-specific entrypoints that need to launch background processes between init and daemon.
 async fn run_daemon_only() -> Result<()> {
     let agent = ur_config::AgentType::from_env();
 

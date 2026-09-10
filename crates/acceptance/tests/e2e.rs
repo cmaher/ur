@@ -194,6 +194,17 @@ fn wait_for_healthy(runtime: &str, container: &str) {
     }
 }
 
+fn wait_for_container_file(runtime: &str, container: &str, path: &str) {
+    for _ in 0..40 {
+        let output = exec_in_container(runtime, container, &["test", "-f", path]);
+        if output.status.success() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("timed out waiting for {path} in container {container}");
+}
+
 /// Extra project entries to append to ur.toml.
 struct ProjectEntry {
     key: String,
@@ -201,7 +212,7 @@ struct ProjectEntry {
     repo: String,
     /// Emit `local = true` and no `repo` — a repo-less local project.
     local: bool,
-    /// Container image alias (e.g. "ur-worker", "ur-worker-rust") or full reference.
+    /// Container image alias (`ur-worker`) or full reference.
     image: String,
     /// Agent name (e.g. "claude", "codex", "agy") the image alias resolves against when
     /// rendering the config's full CI-tagged reference — see `render_projects_toml`.
@@ -495,6 +506,40 @@ fn create_bare_repo(parent_dir: &Path) -> PathBuf {
     );
 
     bare_repo
+}
+
+/// Add an executable background startup hook to a repository created by
+/// [`create_bare_repo`] and push it to the bare origin.
+fn add_startup_hook_to_repo(parent_dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let staging = parent_dir.join("staging");
+    let hooks_dir = staging.join("ur-hooks/startup-bg");
+    std::fs::create_dir_all(&hooks_dir).expect("failed to create startup hook directory");
+    let hook = hooks_dir.join("10-acceptance-marker");
+    std::fs::write(&hook, "#!/bin/sh\ntouch .startup-background-hook-ran\n")
+        .expect("failed to write startup hook");
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to make startup hook executable");
+
+    let add = Command::new("git")
+        .args(["add", "ur-hooks/startup-bg/10-acceptance-marker"])
+        .current_dir(&staging)
+        .output()
+        .expect("failed to add startup hook");
+    assert!(add.status.success(), "git add failed");
+    let commit = Command::new("git")
+        .args(["commit", "-m", "add startup hook"])
+        .current_dir(&staging)
+        .output()
+        .expect("failed to commit startup hook");
+    assert!(commit.status.success(), "git commit failed");
+    let push = Command::new("git")
+        .args(["push", "origin", "HEAD"])
+        .current_dir(&staging)
+        .output()
+        .expect("failed to push startup hook");
+    assert!(push.status.success(), "git push failed");
 }
 
 /// Kill any process listening on the given TCP port. Used to clean up orphaned
@@ -1023,7 +1068,7 @@ fn create_codex_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
             key: "rustcodexproj".into(),
             repo: bare_repo_rust_codex.to_string_lossy().into_owned(),
             local: false,
-            image: "ur-worker-rust".into(),
+            image: "ur-worker".into(),
             agent: "codex",
             hostexec_scripts: vec![],
             mounts: vec![],
@@ -1065,7 +1110,7 @@ fn create_agy_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
             key: "rustagyproj".into(),
             repo: bare_repo_rust_agy.to_string_lossy().into_owned(),
             local: false,
-            image: "ur-worker-rust".into(),
+            image: "ur-worker".into(),
             agent: "agy",
             hostexec_scripts: vec![],
             mounts: vec![],
@@ -1085,6 +1130,7 @@ fn create_project_fixtures(
     let rust_repos_dir = config_path.join("rust-repos");
     std::fs::create_dir_all(&rust_repos_dir).expect("failed to create rust-repos dir");
     let bare_repo_rust = create_bare_repo(&rust_repos_dir);
+    add_startup_hook_to_repo(&rust_repos_dir);
 
     let script_repos_dir = config_path.join("script-repos");
     std::fs::create_dir_all(&script_repos_dir).expect("failed to create script-repos dir");
@@ -1125,7 +1171,7 @@ fn create_project_fixtures(
             key: "rustproj".into(),
             repo: bare_repo_rust.to_string_lossy().into_owned(),
             local: false,
-            image: "ur-worker-rust".into(),
+            image: "ur-worker".into(),
             agent: "claude",
             hostexec_scripts: vec![],
             mounts: vec![],
@@ -1296,7 +1342,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_design_mode_pool_launch(&env);
         scenario_custom_mode_model_override(&env);
         scenario_launch_without_project(&env);
-        scenario_project_image_rust(&env);
+        scenario_startup_background_hook(&env);
         scenario_local_project(&env);
         scenario_project_add_local(&env);
         scenario_project_add_image_flag(&env);
@@ -1384,7 +1430,7 @@ fn teardown_worker_containers(env: &TestEnv) {
         "design-test-1",
         "design-test-2",
         "custom-model-test",
-        "rust-image-test",
+        "startup-hook-test",
         "hotreload-test",
         "script-pool-test",
         "global-skill-test",
@@ -2403,15 +2449,15 @@ fn scenario_project_add_local(env: &TestEnv) {
     }
 }
 
-/// Launch with `image = "ur-worker-rust"` project config and verify the container uses the `ur-worker-rust` image.
-fn scenario_project_image_rust(env: &TestEnv) {
-    let ticket_id = "rust-image-test";
+/// Launch a project whose pool slot contains an in-repo background startup hook.
+fn scenario_startup_background_hook(env: &TestEnv) {
+    let ticket_id = "startup-hook-test";
     let container_name = env.container_name(ticket_id);
     let env_pairs = env.env();
     let env_slice = env_pairs.to_vec();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // ---- Launch worker with rust-image project ----
+        // ---- Launch worker with the startup-hook project ----
         let launch_output = run_cmd(
             &env.ur,
             &["worker", "launch", "-p", "rustproj", ticket_id],
@@ -2432,8 +2478,7 @@ fn scenario_project_image_rust(env: &TestEnv) {
 
         wait_for_healthy(&env.runtime, &container_name);
 
-        // ---- Verify the container is running the rust image ----
-        // Inspect the container image to confirm it uses ur-worker-rust
+        // ---- Verify the base image is sufficient and the hook ran ----
         let inspect_output = Command::new(&env.runtime)
             .args(["inspect", "--format", "{{.Config.Image}}", &container_name])
             .output()
@@ -2442,8 +2487,13 @@ fn scenario_project_image_rust(env: &TestEnv) {
             .trim()
             .to_string();
         assert!(
-            image.contains("ur-worker-rust"),
-            "container should use ur-worker-rust image, got: {image}"
+            image.contains("ur-worker-claude"),
+            "container should use the base agent image, got: {image}"
+        );
+        wait_for_container_file(
+            &env.runtime,
+            &container_name,
+            "/workspace/.startup-background-hook-ran",
         );
 
         // ---- Verify workspace has cloned content ----
@@ -2454,7 +2504,7 @@ fn scenario_project_image_rust(env: &TestEnv) {
         );
         assert_exec_success(
             &ls_output,
-            "rust pool slot should contain README.md from cloned repo",
+            "startup-hook pool slot should contain README.md from cloned repo",
         );
 
         // ---- exec ur-ping inside container ----
@@ -2654,7 +2704,7 @@ fn scenario_project_add_image_flag(env: &TestEnv) {
         String::from_utf8_lossy(&remove_default_output.stderr),
     );
 
-    // ---- `ur project add --image rust` should succeed and write correct TOML ----
+    // ---- `ur project add --image` accepts a full custom image reference ----
     let add_output = run_cmd(
         &env.ur,
         &[
@@ -2662,7 +2712,7 @@ fn scenario_project_add_image_flag(env: &TestEnv) {
             "add",
             repo_dir.to_str().unwrap(),
             "--image",
-            "ur-worker-rust",
+            "registry.example/custom:v1",
             "--key",
             "addtest",
         ],
@@ -2670,7 +2720,7 @@ fn scenario_project_add_image_flag(env: &TestEnv) {
     );
     assert!(
         add_output.status.success(),
-        "project add --image rust failed.\nstdout: {}\nstderr: {}",
+        "project add --image custom reference failed.\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&add_output.stdout),
         String::from_utf8_lossy(&add_output.stderr),
     );
@@ -2683,8 +2733,8 @@ fn scenario_project_add_image_flag(env: &TestEnv) {
         "ur.toml should contain [projects.addtest.container] section.\nGot:\n{toml_content}"
     );
     assert!(
-        toml_content.contains("image = \"ur-worker-rust\""),
-        "ur.toml should contain image = \"ur-worker-rust\" in the addtest project.\nGot:\n{toml_content}"
+        toml_content.contains("image = \"registry.example/custom:v1\""),
+        "ur.toml should contain the custom image reference in the addtest project.\nGot:\n{toml_content}"
     );
 
     // ---- Clean up: remove the added project so it doesn't affect other tests ----
@@ -5254,16 +5304,15 @@ fn scenario_codex_manual_worker(env: &TestEnv) {
 }
 
 /// A claude-agent project and a codex-agent project, both configured from the
-/// same `container.image = "ur-worker-rust"` alias in `ProjectEntry`, each land
-/// in their own agent's rust image: `ur-worker-rust-claude` for "rustproj",
-/// `ur-worker-rust-codex` for "rustcodexproj". Two project entries rather than
+/// surviving `container.image = "ur-worker"` alias in `ProjectEntry`, each land
+/// in their own agent image. Two project entries are used rather than
 /// one launched twice, since there is no `ur worker launch --image` flag to
 /// override a project's image per-launch (see create_project_fixtures).
 ///
 /// **What this does not cover.** It does not exercise `AgentType::resolve_image`
 /// / `resolve_worker_image` (`crates/server/src/grpc.rs`): `render_projects_toml`
 /// bakes each entry's alias into a full, CI-tagged reference
-/// (`ur-worker-rust-codex:ci-<label>`) because the suite builds CI-tagged
+/// (`ur-worker-codex:ci-<label>`) because the suite builds CI-tagged
 /// images, and `resolve_image` returns any value containing `:` unchanged. So
 /// the resolved tag asserted here is the one this test wrote into `ur.toml`
 /// itself — what it really pins is that a full reference reaches `docker run`
@@ -5326,17 +5375,17 @@ fn scenario_codex_image_template(env: &TestEnv) {
     };
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // ---- "rustproj" (container.image = "ur-worker-rust") resolves to the
+        // ---- "rustproj" (container.image = "ur-worker") resolves to the
         // claude image for its own (claude-agent) project entry ----
         launch_and_verify_image(
             "rustproj",
             claude_ticket_id,
             &claude_container_name,
             None,
-            "ur-worker-rust-claude",
+            "ur-worker-claude",
         );
 
-        // ---- "rustcodexproj" — the SAME configured alias ("ur-worker-rust"),
+        // ---- "rustcodexproj" — the SAME configured alias ("ur-worker"),
         // on a project entry dedicated to codex — lands in the codex image.
         // There is no `ur worker launch --image` flag to override a project's
         // pre-resolved full reference per-launch (see create_project_fixtures),
@@ -5349,7 +5398,7 @@ fn scenario_codex_image_template(env: &TestEnv) {
             codex_ticket_id,
             &codex_container_name,
             Some("codex"),
-            "ur-worker-rust-codex",
+            "ur-worker-codex",
         );
     }));
 
@@ -5544,7 +5593,7 @@ fn scenario_agy_manual_worker(env: &TestEnv) {
     }
 }
 
-/// The dedicated rust AGY project carries the AGY-specific CI-tagged image.
+/// The dedicated AGY project carries the AGY-specific CI-tagged base image.
 fn scenario_agy_image_template(env: &TestEnv) {
     let ticket_id = "rust-image-template-agy-test";
     let container = env.container_name(ticket_id);
@@ -5555,8 +5604,8 @@ fn scenario_agy_image_template(env: &TestEnv) {
             .output()
             .expect("failed to inspect Rust AGY container");
         assert!(
-            String::from_utf8_lossy(&inspect.stdout).contains("ur-worker-rust-agy"),
-            "rustagyproj must launch ur-worker-rust-agy"
+            String::from_utf8_lossy(&inspect.stdout).contains("ur-worker-agy"),
+            "rustagyproj must launch ur-worker-agy"
         );
         stop_agy_worker(env, ticket_id);
     }));

@@ -177,12 +177,10 @@ impl AgentType {
 
     /// Image used when a project configures none.
     ///
-    /// Deliberately the rust-toolchain alias — resolving the plain `ur-worker`
-    /// alias here instead would silently drop the rust toolchain from default
-    /// launches.
+    /// Toolchain-specific behavior is supplied by per-project startup hooks.
     pub fn fallback_image(&self) -> String {
-        self.resolve_image("ur-worker-rust")
-            .expect("'ur-worker-rust' is always a valid alias")
+        self.resolve_image("ur-worker")
+            .expect("'ur-worker' is always a valid alias")
     }
 
     /// Full shell command to launch the agent in the tmux pane, with the
@@ -553,7 +551,7 @@ mod tests {
             AgentType::Agy.resolve_image("ur-worker").unwrap(),
             "ur-worker-agy:latest"
         );
-        assert_eq!(AgentType::Agy.fallback_image(), "ur-worker-rust-agy:latest");
+        assert_eq!(AgentType::Agy.fallback_image(), "ur-worker-agy:latest");
         assert_eq!(
             AgentType::Agy
                 .resolve_image("registry.example/worker:v1")

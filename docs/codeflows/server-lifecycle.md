@@ -121,14 +121,9 @@ Host (macOS / Linux)
 ## Image Tags Are Agent-Named
 
 Container directories/tags are named `<layer>-<agent>` rather than a bare layer name:
-`containers/worker-claude/` (`ur-worker-claude:latest`), `containers/worker-rust-claude/`
-(`ur-worker-rust-claude:latest`), `containers/worker-codex/` (`ur-worker-codex:latest`),
-`containers/worker-rust-codex/` (`ur-worker-rust-codex:latest`), `containers/worker-agy/`
-(`ur-worker-agy:latest`), and `containers/worker-rust-agy/`
-(`ur-worker-rust-agy:latest`) — each on top of the shared,
-agent-agnostic `ur-worker-base:latest`. These were previously `containers/agent-claude/` and
-`containers/agent-claude-rust/`; the rename happened when Codex support made "the agent layer"
-ambiguous. `scripts/build/agent-images.sh` is the single manifest that maps build context
+`containers/worker-claude/` (`ur-worker-claude:latest`), `containers/worker-codex/`
+(`ur-worker-codex:latest`), and `containers/worker-agy/` (`ur-worker-agy:latest`) — each on top of the shared,
+agent-agnostic `ur-worker-base:latest`. Toolchain-specific startup behavior is supplied by project hooks instead of multiplying images by toolchain. `scripts/build/agent-images.sh` is the single manifest that maps build context
 directories to image tags and agent names; the image, staging, acceptance cleanup, and deploy
 scripts all source it.
 
