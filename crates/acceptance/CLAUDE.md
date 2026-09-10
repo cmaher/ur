@@ -58,6 +58,20 @@ this by writing a bare alias into a test config: an unknown alias is rejected at
 `validate_image_alias`, and a known one resolves to a `:latest` tag CI never builds, so the
 stack would fail to start or the launch would fail to pull.
 
+## AGY-agent acceptance coverage
+
+AGY has no host credential source. Its scenarios launch with a missing or empty
+`$UR_CONFIG/agy/antigravity-oauth-token`; the server creates and bind-mounts that one file and
+AGY waits for interactive Google sign-in. Dedicated `agyproj` and `rustagyproj` entries ensure
+the pre-resolved CI-tagged references select AGY images.
+
+CI cannot complete interactive OAuth, so `scenario_agy_dispatch` verifies the image launch
+and workflow/CLI side while workerd unit tests pin the exact `/clear` then `/implement`
+phrasing. `scenario_agy_stop_hook` verifies the baked global hook command and invokes
+`workertools notify-idle --json` in the running container, proving the command reaches
+NotifyIdle and returns AGY's required `{}` stdout. The spike covers a credentialed real-model
+Stop event.
+
 ## Isolated stacks for config that isn't live-reloadable
 
 `WorkerModesConfig` (the top-level `agent` default, `[worker_modes]`, `[worker_models]`) is

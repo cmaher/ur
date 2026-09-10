@@ -203,7 +203,7 @@ struct ProjectEntry {
     local: bool,
     /// Container image alias (e.g. "ur-worker", "ur-worker-rust") or full reference.
     image: String,
-    /// Agent name (e.g. "claude", "codex") the image alias resolves against when
+    /// Agent name (e.g. "claude", "codex", "agy") the image alias resolves against when
     /// rendering the config's full CI-tagged reference — see `render_projects_toml`.
     /// There is no `ur worker launch --image` CLI flag to override this per-launch, so
     /// a project meant to exercise a specific agent's image must declare it here.
@@ -1033,6 +1033,48 @@ fn create_codex_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
     ]
 }
 
+/// Dedicated AGY image fixtures. Full CI-tagged image references are agent-invariant,
+/// so AGY launches cannot safely reuse the Claude or Codex project entries.
+fn create_agy_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
+    let agy_repos_dir = config_path.join("agy-repos");
+    std::fs::create_dir_all(&agy_repos_dir).expect("failed to create agy-repos dir");
+    let bare_repo_agy = create_bare_repo(&agy_repos_dir);
+
+    let rust_agy_repos_dir = config_path.join("rust-agy-repos");
+    std::fs::create_dir_all(&rust_agy_repos_dir).expect("failed to create rust-agy-repos dir");
+    let bare_repo_rust_agy = create_bare_repo(&rust_agy_repos_dir);
+
+    let hooks_dir = config_path.join("projects/agyproj/hooks/skills");
+    std::fs::create_dir_all(&hooks_dir).expect("failed to create agy skill hooks fixture");
+    std::fs::write(hooks_dir.join("my-hook.sh"), "sentinel\n")
+        .expect("failed to write agy skill hook fixture");
+
+    vec![
+        ProjectEntry {
+            key: "agyproj".into(),
+            repo: bare_repo_agy.to_string_lossy().into_owned(),
+            local: false,
+            image: "ur-worker".into(),
+            agent: "agy",
+            hostexec_scripts: vec![],
+            mounts: vec![],
+            memory_dir: None,
+            brain_dir: None,
+        },
+        ProjectEntry {
+            key: "rustagyproj".into(),
+            repo: bare_repo_rust_agy.to_string_lossy().into_owned(),
+            local: false,
+            image: "ur-worker-rust".into(),
+            agent: "agy",
+            hostexec_scripts: vec![],
+            mounts: vec![],
+            memory_dir: None,
+            brain_dir: None,
+        },
+    ]
+}
+
 fn create_project_fixtures(
     config_path: &Path,
     project_key: &str,
@@ -1117,6 +1159,7 @@ fn create_project_fixtures(
         },
     ];
     projects.extend(create_codex_project_entries(config_path));
+    projects.extend(create_agy_project_entries(config_path));
     projects.extend(mount_projects);
     projects.extend(memory_projects);
     projects.extend(brain_projects);
@@ -1282,6 +1325,11 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_codex_manual_worker(&env);
         scenario_codex_image_template(&env);
         scenario_codex_dispatch(&env);
+        scenario_agy_manual_worker(&env);
+        scenario_agy_image_template(&env);
+        scenario_agy_credentials(&env);
+        scenario_agy_dispatch(&env);
+        scenario_agy_stop_hook(&env);
     }));
 
     // Runs its own isolated `ur start`/`ur stop` cycle (see its doc comment for
@@ -1354,6 +1402,10 @@ fn teardown_worker_containers(env: &TestEnv) {
         "codex-manual-worker-test",
         "rust-image-template-claude-test",
         "rust-image-template-codex-test",
+        "agy-manual-worker-test",
+        "rust-image-template-agy-test",
+        "agy-credentials-test",
+        "agy-stop-hook-test",
     ] {
         force_remove_container(&env.runtime, &env.container_name(ticket));
     }
@@ -5414,6 +5466,210 @@ fn scenario_codex_dispatch(env: &TestEnv) {
     if let Err(e) = result {
         force_remove_container(&env.runtime, &container_name);
         std::panic::resume_unwind(e);
+    }
+}
+
+fn launch_agy_worker(env: &TestEnv, project: &str, ticket_id: &str, dispatch: bool) {
+    let env_pairs = env.env();
+    let mut args = vec!["worker", "launch", "-p", project, "--agent", "agy"];
+    if dispatch {
+        args.push("-d");
+    }
+    args.push(ticket_id);
+    let output = run_cmd(&env.ur, &args, &env_pairs);
+    assert!(
+        output.status.success(),
+        "AGY worker launch failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    wait_for_healthy(&env.runtime, &env.container_name(ticket_id));
+}
+
+fn stop_agy_worker(env: &TestEnv, ticket_id: &str) {
+    let output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env.env());
+    assert!(
+        output.status.success(),
+        "stopping AGY worker failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Launch AGY without a pre-seeded token and assert its model, process, image,
+/// agent identity, and split customization/runtime layout.
+fn scenario_agy_manual_worker(env: &TestEnv) {
+    let ticket_id = "agy-manual-worker-test";
+    let container = env.container_name(ticket_id);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        launch_agy_worker(env, "agyproj", ticket_id, false);
+        assert_eq!(
+            container_env_var(&env.runtime, &container, "UR_AGENT_TYPE"),
+            "agy"
+        );
+        assert_worker_model(&env.runtime, &container, "gemini-3.8-flash");
+
+        let list = run_cmd(&env.ur, &["--output", "json", "worker", "list"], &env.env());
+        let json: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+        let worker = json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|worker| worker["worker_id"].as_str() == Some(ticket_id))
+            .expect("AGY worker should appear in worker list");
+        assert_eq!(worker["agent_type"].as_str(), Some("agy"));
+
+        let inspect = Command::new(&env.runtime)
+            .args(["inspect", "--format", "{{.Config.Image}}", &container])
+            .output()
+            .expect("failed to inspect AGY container");
+        assert!(
+            String::from_utf8_lossy(&inspect.stdout).contains("ur-worker-agy"),
+            "AGY scenario must run the AGY image"
+        );
+
+        for path in [
+            "/home/worker/.gemini/config/AGENTS.md",
+            "/home/worker/.gemini/config/skills/test-skill/SKILL.md",
+            "/home/worker/.gemini/config/skill-hooks/my-hook.sh",
+            "/home/worker/.gemini/antigravity-cli/settings.json",
+        ] {
+            let output = exec_in_container(&env.runtime, &container, &["test", "-e", path]);
+            assert_exec_success(&output, &format!("AGY layout path should exist: {path}"));
+        }
+        stop_agy_worker(env, ticket_id);
+    }));
+    if let Err(error) = result {
+        force_remove_container(&env.runtime, &container);
+        std::panic::resume_unwind(error);
+    }
+}
+
+/// The dedicated rust AGY project carries the AGY-specific CI-tagged image.
+fn scenario_agy_image_template(env: &TestEnv) {
+    let ticket_id = "rust-image-template-agy-test";
+    let container = env.container_name(ticket_id);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        launch_agy_worker(env, "rustagyproj", ticket_id, false);
+        let inspect = Command::new(&env.runtime)
+            .args(["inspect", "--format", "{{.Config.Image}}", &container])
+            .output()
+            .expect("failed to inspect Rust AGY container");
+        assert!(
+            String::from_utf8_lossy(&inspect.stdout).contains("ur-worker-rust-agy"),
+            "rustagyproj must launch ur-worker-rust-agy"
+        );
+        stop_agy_worker(env, ticket_id);
+    }));
+    if let Err(error) = result {
+        force_remove_container(&env.runtime, &container);
+        std::panic::resume_unwind(error);
+    }
+}
+
+/// An absent AGY token is allowed: launch creates and mounts exactly the one cache file.
+fn scenario_agy_credentials(env: &TestEnv) {
+    let ticket_id = "agy-credentials-test";
+    let container = env.container_name(ticket_id);
+    let host_token = env.config_path.join("agy/antigravity-oauth-token");
+    if host_token.exists() {
+        std::fs::remove_file(&host_token).expect("failed to reset AGY token fixture");
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        launch_agy_worker(env, "agyproj", ticket_id, false);
+        assert!(
+            host_token.is_file(),
+            "launch should create the AGY token file"
+        );
+        let output = exec_in_container(
+            &env.runtime,
+            &container,
+            &[
+                "test",
+                "-f",
+                "/home/worker/.gemini/antigravity-cli/antigravity-oauth-token",
+            ],
+        );
+        assert_exec_success(&output, "AGY token mount must be a regular file");
+        let mounts = Command::new(&env.runtime)
+            .args(["inspect", "--format", "{{json .Mounts}}", &container])
+            .output()
+            .expect("failed to inspect AGY mounts");
+        let text = String::from_utf8_lossy(&mounts.stdout);
+        assert_eq!(text.matches("antigravity-oauth-token").count(), 2, "{text}");
+        assert!(!text.contains("/home/worker/.gemini\""), "{text}");
+        stop_agy_worker(env, ticket_id);
+    }));
+    if let Err(error) = result {
+        force_remove_container(&env.runtime, &container);
+        std::panic::resume_unwind(error);
+    }
+}
+
+/// CI cannot complete interactive Google OAuth, so this pins the observable
+/// workflow side; exact `/clear` + `/implement` phrasing is unit-tested in workerd.
+fn scenario_agy_dispatch(env: &TestEnv) {
+    let env_pairs = env.env();
+    let create = run_cmd(
+        &env.ur,
+        &[
+            "--output",
+            "json",
+            "ticket",
+            "create",
+            "AGY dispatch test",
+            "-p",
+            "agyproj",
+        ],
+        &env_pairs,
+    );
+    assert!(
+        create.status.success(),
+        "creating AGY dispatch ticket failed"
+    );
+    let ticket_id = parse_ticket_id_from_create(&create.stdout);
+    let container = env.container_name(&ticket_id);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        launch_agy_worker(env, "agyproj", &ticket_id, true);
+        assert_eq!(
+            get_ticket_status(&env.ur, &env_pairs, &ticket_id).as_deref(),
+            Some("open")
+        );
+        stop_agy_worker(env, &ticket_id);
+    }));
+    if let Err(error) = result {
+        force_remove_container(&env.runtime, &container);
+        std::panic::resume_unwind(error);
+    }
+}
+
+/// Safely exercise the exact global Stop-hook command without requiring OAuth.
+/// This proves the baked hook points at a command that reaches NotifyIdle and
+/// satisfies AGY's JSON stdout contract; a real AGY turn remains credential-gated.
+fn scenario_agy_stop_hook(env: &TestEnv) {
+    let ticket_id = "agy-stop-hook-test";
+    let container = env.container_name(ticket_id);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        launch_agy_worker(env, "agyproj", ticket_id, false);
+        let hooks = exec_in_container(
+            &env.runtime,
+            &container,
+            &["cat", "/home/worker/.gemini/config/hooks.json"],
+        );
+        assert_exec_success(&hooks, "AGY global hooks file should exist");
+        assert!(String::from_utf8_lossy(&hooks.stdout).contains("workertools notify-idle --json"));
+
+        let notify = exec_in_container(
+            &env.runtime,
+            &container,
+            &["workertools", "notify-idle", "--json"],
+        );
+        assert_exec_success(&notify, "AGY Stop hook command should reach NotifyIdle");
+        assert_eq!(String::from_utf8_lossy(&notify.stdout), "{}\n");
+        stop_agy_worker(env, ticket_id);
+    }));
+    if let Err(error) = result {
+        force_remove_container(&env.runtime, &container);
+        std::panic::resume_unwind(error);
     }
 }
 
