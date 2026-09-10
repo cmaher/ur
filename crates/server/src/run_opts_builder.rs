@@ -75,9 +75,14 @@ impl RunOptsBuilder {
     /// `None` — a no-auth agent has no credentials file to mount.
     /// (The app config, e.g. `.claude.json`, is baked into the image -- only
     /// credentials need mounting.)
+    ///
+    /// `local_config_dir` is the server-visible config mount used to create a missing
+    /// credential file. `host_config_dir` remains the source passed to builderd/Docker.
+    /// These paths differ when ur-server runs in a container.
     pub fn add_credentials(
         mut self,
         host_config_dir: &Path,
+        local_config_dir: &Path,
         agent: AgentType,
     ) -> Result<Self, String> {
         let Some(auth) = agent.auth() else {
@@ -95,7 +100,10 @@ impl RunOptsBuilder {
         let host_creds = host_config_dir
             .join(agent.name())
             .join(credentials_filename);
-        ensure_file_exists(&host_creds)
+        let local_creds = local_config_dir
+            .join(agent.name())
+            .join(credentials_filename);
+        ensure_file_exists(&local_creds)
             .map_err(|e| format!("failed to ensure credentials file: {e}"))?;
         let worker_home = PathBuf::from(ur_config::WORKER_HOME);
         self.volumes
@@ -576,7 +584,7 @@ mod tests {
     fn add_credentials_creates_mount() {
         let tmp = tempfile::tempdir().unwrap();
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_credentials(tmp.path(), AgentType::Claude)
+            .add_credentials(tmp.path(), tmp.path(), AgentType::Claude)
             .unwrap()
             .build();
 
@@ -591,7 +599,7 @@ mod tests {
     fn add_agy_credentials_mounts_only_the_token_file() {
         let tmp = tempfile::tempdir().unwrap();
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_credentials(tmp.path(), AgentType::Agy)
+            .add_credentials(tmp.path(), tmp.path(), AgentType::Agy)
             .unwrap()
             .build();
 
@@ -605,6 +613,29 @@ mod tests {
         assert_eq!(
             req.volumes[0].container_path,
             "/home/worker/.gemini/antigravity-cli/antigravity-oauth-token"
+        );
+    }
+
+    #[test]
+    fn add_credentials_creates_through_local_config_but_mounts_host_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let host_config_dir = PathBuf::from("/host/config");
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_credentials(&host_config_dir, tmp.path(), AgentType::Agy)
+            .unwrap()
+            .build();
+        let local_token = tmp.path().join("agy/antigravity-oauth-token");
+
+        assert_eq!(
+            req.volumes[0].host_path,
+            "/host/config/agy/antigravity-oauth-token"
+        );
+        assert_eq!(std::fs::read(&local_token).unwrap(), b"");
+        assert_eq!(
+            std::fs::metadata(local_token).unwrap().permissions().mode() & 0o777,
+            0o600
         );
     }
 

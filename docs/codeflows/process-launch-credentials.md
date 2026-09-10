@@ -65,6 +65,9 @@ ur-server: WorkerManager.run_and_record()            [crates/server/src/worker.r
     │   → /home/worker/.gemini/antigravity-cli/antigravity-oauth-token.
     │   Never mount ~/.gemini: it also contains SQLite conversations, logs,
     │   updater state, and installation identity that must remain per-worker.
+    │   A missing cache is created through the server-visible config mount
+    │   (`local_config_dir`) at mode 600, while the volume request retains the
+    │   corresponding host path (`host_config_dir`) for builderd/Docker.
     │
     ▼  gRPC LaunchWorker RPC → builderd (host, native)
     │                         [BuilderContainerService::launch_worker]

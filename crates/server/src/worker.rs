@@ -922,7 +922,7 @@ impl WorkerManager {
         .workdir("/workspace")
         .add_workspace(&config.workspace_dir)
         .add_logs_dir(&self.host_logs_dir, &self.logs_dir, &config.worker_id.0)
-        .add_credentials(&self.host_config_dir, agent)?
+        .add_credentials(&self.host_config_dir, &self.local_config_dir, agent)?
         .add_host_hooks_overlay(
             &config.project_key,
             &self.host_config_dir,
@@ -1408,7 +1408,13 @@ pub(crate) fn ensure_file_exists(path: &PathBuf) -> Result<(), std::io::Error> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, "{}")?;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
     Ok(())
 }
 
