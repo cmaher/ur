@@ -1586,8 +1586,10 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let config = test_config(workspace.path());
         let (worker_repo, test_db) = test_worker_repo().await;
-        let channel =
-            tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
+        // Keep unit tests isolated from a builderd that may be running on its
+        // normal development port. The lazy channel only connects in tests
+        // that deliberately exercise an unreachable runtime.
+        let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
         let builder_container_client = BuilderContainerClient::new(channel.clone());
         let builder_pool_client = crate::BuilderPoolClient::new(channel);
         let project_registry = crate::ProjectRegistry::new(
