@@ -266,10 +266,18 @@ impl AgentType {
                 invocation
             }
             Self::Codex => {
-                if args.is_empty() {
-                    format!("Run the `{skill}` skill.")
+                let design_skill_prohibition = if skill == "implement" {
+                    " DO NOT USE DESIGN SKILL."
                 } else {
-                    format!("Run the `{skill}` skill. Arguments: {}", args.join(", "))
+                    ""
+                };
+                if args.is_empty() {
+                    format!("Run the `{skill}` skill.{design_skill_prohibition}")
+                } else {
+                    format!(
+                        "Run the `{skill}` skill.{design_skill_prohibition} Arguments: {}",
+                        args.join(", ")
+                    )
                 }
             }
         }
@@ -578,7 +586,7 @@ mod tests {
         );
         assert_eq!(
             AgentType::Codex.skill_invocation("implement", &[]),
-            "Run the `implement` skill."
+            "Run the `implement` skill. DO NOT USE DESIGN SKILL."
         );
         assert_eq!(
             AgentType::Agy.skill_invocation("implement", &[]),
@@ -594,7 +602,7 @@ mod tests {
         );
         assert_eq!(
             AgentType::Codex.skill_invocation("implement", &["ur-x"]),
-            "Run the `implement` skill. Arguments: ur-x"
+            "Run the `implement` skill. DO NOT USE DESIGN SKILL. Arguments: ur-x"
         );
         assert_eq!(
             AgentType::Agy.skill_invocation("implement", &["ur-x"]),

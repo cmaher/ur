@@ -602,7 +602,7 @@ mod tests {
             Vec::from(commands),
             vec![
                 "/new".to_string(),
-                "Run the `implement` skill. Arguments: ur-x".to_string()
+                "Run the `implement` skill. DO NOT USE DESIGN SKILL. Arguments: ur-x".to_string()
             ]
         );
     }

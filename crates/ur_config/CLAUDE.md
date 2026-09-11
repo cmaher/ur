@@ -142,7 +142,7 @@ Command phrasing (`clear_command()`, `skill_invocation(skill, args)`) is agent-o
 a workerd concern: Claude has a custom slash command per skill (`/implement ur-x`) and resets
 context with `/clear`, but Codex has no custom slash commands — it discovers skills via the
 `skill_search` tool from the same `SKILL.md` directory format, so its invocation instead names
-the skill explicitly (`` Run the `implement` skill. Arguments: ur-x ``), and it resets context
+the skill explicitly (`` Run the `implement` skill. DO NOT USE DESIGN SKILL. Arguments: ur-x ``), and it resets context
 with `/new`. `skill_invocation` takes `args: &[&str]` rather than a pre-joined string so a
 multi-argument skill (e.g. `address-feedback`, which takes a ticket and a PR number) doesn't
 push joining logic out to the caller.

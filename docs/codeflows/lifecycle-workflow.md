@@ -175,7 +175,7 @@ Served by the `workerd` daemon inside each worker container on port 9120.
 - Populates `DispatchBuffer` via `dispatch_commands(agent, "implement", &[ticket_id])`:
   `[agent.clear_command(), agent.skill_invocation("implement", &[ticket_id])]` — for Claude
   and AGY that's `["/clear", "/implement {ticket_id}"]`; Codex has no custom slash commands, so it's
-  `["/new", "Run the `implement` skill. Arguments: {ticket_id}"]`. `agent` is injected into
+  `["/new", "Run the `implement` skill. DO NOT USE DESIGN SKILL. Arguments: {ticket_id}"]`. `agent` is injected into
   the gRPC service at startup (`WorkerDaemonServiceImpl.agent`), never read per-handler.
 - Sets `lifecycle_step = "implementing"`
 - Pops and sends the first command (context reset) to tmux immediately
