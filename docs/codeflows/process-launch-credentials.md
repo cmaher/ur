@@ -172,7 +172,7 @@ containers/worker-agy/Dockerfile (ur-worker-agy:latest)
 └── ENTRYPOINT ["/entrypoint.sh"]
 ```
 
-The Claude CLI install moved from the base image into the `worker-claude` layer (inverting the pre-split caching story — see `docs/codeflows/skill-loading.md` and `scripts/build/image.sh` for the `UR_FORCE_REBUILD_BASE`/`UR_UPDATE_AGENT` cache-busting behavior this implies). Image tags: `ur-worker-base:latest`, `ur-worker-claude:latest`, `ur-worker-rust-claude:latest` — each directory name matches its tag.
+The Claude CLI install moved from the base image into the `worker-claude` layer (inverting the pre-split caching story — see `docs/codeflows/skill-loading.md` and `scripts/build/image.sh` for the `UR_FORCE_REBUILD_BASE`/`UR_UPDATE_AGENT` cache-busting behavior this implies). Image tags include `ur-worker-base:latest` and `ur-worker-claude:latest`; each directory name matches its tag.
 
 `potential-settings.json` is baked here (agent-specific config, not shared content) and copied verbatim to `~/.claude/settings.json` by `InitSettingsManager` at container startup — permissions are bypassed via `settings.json` (`permissions.defaultMode: "bypassPermissions"`) rather than a CLI flag, so no wrapper script is needed.
 

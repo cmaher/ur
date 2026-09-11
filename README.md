@@ -50,7 +50,7 @@ ur init
 # Add a project (auto-detects repo URL from the git remote)
 cd /path/to/your/project
 ur project add .                        # --image defaults to ur-worker
-ur project add . --image ur-worker-rust # pass --image to use a custom image
+ur project add . --image registry.example/worker:v1 # custom image reference
 
 # Start the server (launches containers and host process)
 ur server start
@@ -61,13 +61,13 @@ urui
 
 Configure projects in `~/.ur/ur.toml` — each `[projects.<key>]` entry specifies a git repository and container configuration. Key options:
 
-- **`container.image`** — Container image for workers; optional, defaults to `"ur-worker"` (e.g. `"ur-worker-rust"` for Rust projects)
+- **`container.image`** — Container image for workers; optional, defaults to `"ur-worker"`; custom images use a full reference
 - **`container.mounts`** — Additional volume mounts for the container
 - **`instruction_md`** — Template path to project-level instruction file, e.g. CLAUDE.md (`"%PROJECT%/CLAUDE.md"`); the old key `claude_md` is still accepted with a deprecation warning
 
 Template paths support `%PROJECT%/...` (resolved relative to the project repo) and `%URCONFIG%/...` (resolved relative to `~/.ur/`).
 
-Git and skill hooks are loaded from two fixed convention paths (no config needed): `<workspace>/ur-hooks/<type>/` in-repo, and `~/.ur/projects/<key>/hooks/<type>/` as a host overlay. The host overlay wins on identical filenames.
+Git, skill, and startup hooks are loaded from fixed convention paths (no config needed): `<workspace>/ur-hooks/<type>/` in-repo, and `~/.ur/projects/<key>/hooks/<type>/` as a host overlay. The host overlay wins on identical filenames. Startup hook types are `startup` (synchronous) and `startup-bg` (detached).
 
 ## How It Works
 

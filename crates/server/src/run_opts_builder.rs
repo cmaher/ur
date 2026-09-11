@@ -317,10 +317,12 @@ impl RunOptsBuilder {
     /// Add host-side per-project hook directories as read-only overlays.
     ///
     /// Mounts the following paths when they exist, using fixed container
-    /// destinations that workerd will read in a later ticket:
+    /// destinations that workerd reads during initialization and startup:
     ///
     /// - `<host_config_dir>/projects/<project_key>/hooks/git/` → `/var/ur/host-hooks/git/:ro`
     /// - `<host_config_dir>/projects/<project_key>/hooks/skills/` → `/var/ur/host-hooks/skills/:ro`
+    /// - `<host_config_dir>/projects/<project_key>/hooks/startup/` → `/var/ur/host-hooks/startup/:ro`
+    /// - `<host_config_dir>/projects/<project_key>/hooks/startup-bg/` → `/var/ur/host-hooks/startup-bg/:ro`
     ///
     /// `local_config_dir` is the locally-accessible config directory used for existence
     /// checks. When the server runs inside a container, `host_config_dir` is the host
@@ -362,6 +364,20 @@ impl RunOptsBuilder {
             self.volumes.push((
                 host_hooks_base.join("skills"),
                 PathBuf::from("/var/ur/host-hooks/skills:ro"),
+            ));
+        }
+
+        if local_hooks_base.join("startup").exists() {
+            self.volumes.push((
+                host_hooks_base.join("startup"),
+                PathBuf::from("/var/ur/host-hooks/startup:ro"),
+            ));
+        }
+
+        if local_hooks_base.join("startup-bg").exists() {
+            self.volumes.push((
+                host_hooks_base.join("startup-bg"),
+                PathBuf::from("/var/ur/host-hooks/startup-bg:ro"),
             ));
         }
 
@@ -1239,20 +1255,47 @@ mod tests {
             .join("myproj")
             .join("hooks")
             .join("skills");
+        let startup_dir = tmp
+            .path()
+            .join("projects")
+            .join("myproj")
+            .join("hooks")
+            .join("startup");
+        let startup_bg_dir = tmp
+            .path()
+            .join("projects")
+            .join("myproj")
+            .join("hooks")
+            .join("startup-bg");
         std::fs::create_dir_all(&git_dir).unwrap();
         std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::create_dir_all(&startup_dir).unwrap();
+        std::fs::create_dir_all(&startup_bg_dir).unwrap();
 
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_host_hooks_overlay("myproj", tmp.path(), tmp.path())
             .build();
 
-        assert_eq!(req.volumes.len(), 2);
+        assert_eq!(req.volumes.len(), 4);
         assert_eq!(req.volumes[0].host_path, git_dir.display().to_string());
         assert_eq!(req.volumes[0].container_path, "/var/ur/host-hooks/git:ro");
         assert_eq!(req.volumes[1].host_path, skills_dir.display().to_string());
         assert_eq!(
             req.volumes[1].container_path,
             "/var/ur/host-hooks/skills:ro"
+        );
+        assert_eq!(req.volumes[2].host_path, startup_dir.display().to_string());
+        assert_eq!(
+            req.volumes[2].container_path,
+            "/var/ur/host-hooks/startup:ro"
+        );
+        assert_eq!(
+            req.volumes[3].host_path,
+            startup_bg_dir.display().to_string()
+        );
+        assert_eq!(
+            req.volumes[3].container_path,
+            "/var/ur/host-hooks/startup-bg:ro"
         );
     }
 

@@ -48,7 +48,7 @@ accepted, ticket stays open) — the exact agent-phrased dispatch text is covere
 
 **Image aliases are pre-resolved, so `resolve_image` is not under test.**
 `render_projects_toml` turns every `ProjectEntry.image` into a full, CI-tagged reference
-(`ur-worker-rust-codex:ci-<label>`) because the suite builds CI-tagged images — and
+(`ur-worker-codex:ci-<label>`) because the suite builds CI-tagged images — and
 `AgentType::resolve_image` passes any value containing `:` through unchanged. So no scenario
 exercises launch-time alias-to-tag resolution; `scenario_codex_image_template` pins that a full
 reference reaches `docker run` untouched per agent, and the alias path is unit-tested

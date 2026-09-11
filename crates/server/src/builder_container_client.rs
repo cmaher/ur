@@ -27,8 +27,8 @@ impl BuilderContainerClient {
 
     /// Launch a worker container with the given spec.
     ///
-    /// Returns `FailedPrecondition` if any volume source path is missing on the host.
-    /// Returns `Internal` on docker run failure.
+    /// Returns `FailedPrecondition` if a volume source is missing or the worker exits
+    /// before becoming healthy. Returns `Internal` on Docker launch or inspection failure.
     pub async fn launch_worker(
         &self,
         request: LaunchWorkerRequest,

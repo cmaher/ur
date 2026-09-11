@@ -127,4 +127,19 @@ mod tests {
         );
         assert!(!tmp.path().join(".gemini/config/settings.json").exists());
     }
+
+    #[test]
+    fn baked_codex_config_enables_vim_mode_by_default() {
+        let config = include_str!("../../../../containers/worker-codex/codex-config.toml")
+            .parse::<toml::Value>()
+            .expect("baked Codex config must be valid TOML");
+
+        assert_eq!(
+            config
+                .get("tui")
+                .and_then(|tui| tui.get("vim_mode_default"))
+                .and_then(toml::Value::as_bool),
+            Some(true)
+        );
+    }
 }

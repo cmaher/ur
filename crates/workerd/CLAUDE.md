@@ -4,21 +4,26 @@ Worker daemon running inside containers. The container entrypoint calls `exec wo
 making workerd PID 1 — the container lifecycle is tied to workerd.
 
 Three modes:
-- `workerd` (no args) — runs init, then daemon. Used by the base container entrypoint.
-- `workerd init` — synchronous initialization only (skills, git hooks, hostexec shims). Used by image-specific entrypoints that need to launch background processes between init and daemon.
-- `workerd daemon` — daemon without init (expects `workerd init` to have been called already). Used by image-specific entrypoints after init + background processes.
+- `workerd` (no args) — runs init, startup hooks, then daemon. Used by every agent container entrypoint.
+- `workerd init` — synchronous initialization only (skills, git hooks, hostexec shims).
+- `workerd daemon` — daemon without init or startup hooks (expects initialization to have been handled by the caller).
 
 Startup sequence (daemon mode):
-1. Resolves `let agent = AgentType::from_env()` (reads `UR_AGENT_TYPE`, defaults to claude). Creates tmux session `agent` (220x55), sets status line with worker ID
-2. Launches the agent via `tmux send-keys(agent.spawn_command(model))`. For Claude, when `UR_WORKER_MODEL` is set, this produces `claude --model <name>` — the model is passed via CLI flag (NOT settings.json), because Claude Code rewrites `~/.claude/settings.json` on startup and silently drops the `model` key.
-3. Spawns healthz HTTP server on port 9119 (Docker HEALTHCHECK)
-4. Starts gRPC server on port 9120 (long-lived, keeps the process alive)
+1. Runs initialization, including hostexec shim creation.
+2. Runs executable startup hooks through `StartupHooksManager`: synchronous hooks first, then detached background hooks. In-repo hooks live under `/workspace/ur-hooks/{startup,startup-bg}/`; host overlays under `/var/ur/host-hooks/{startup,startup-bg}/` win on filename conflicts.
+3. Resolves `let agent = AgentType::from_env()` (reads `UR_AGENT_TYPE`, defaults to claude). Creates tmux session `agent` (220x55), sets status line with worker ID.
+4. Launches the agent via `tmux send-keys(agent.spawn_command(model))`. For Claude, when `UR_WORKER_MODEL` is set, this produces `claude --model <name>` — the model is passed via CLI flag (NOT settings.json), because Claude Code rewrites `~/.claude/settings.json` on startup and silently drops the `model` key.
+5. Spawns healthz HTTP server on port 9119 (Docker HEALTHCHECK).
+6. Starts gRPC server on port 9120 (long-lived, keeps the process alive).
+
+The worker health check becomes healthy only after startup hooks complete. Builderd waits for
+that transition during `LaunchWorker`; if a synchronous hook fails, it returns the container
+logs through gRPC and removes the failed container before the server records a worker row.
 
 The exit watcher (`AgentWatchState`/`advance_agent_watch_state`) that shuts down a design worker's container is deliberately agent-agnostic — it matches shell-vs-non-shell foreground processes (`is_shell_process`), never the agent's binary name. Claude Code's foreground process is `node`, not `claude`, so `AgentType` deliberately carries no binary-name accessor for this code to reach for.
 
-Image-specific background processes (e.g., bacon, cargo sweep for rust variant) are launched
-by the image's entrypoint.sh between `workerd init` and `exec workerd daemon` — NOT by workerd
-itself. This keeps workerd image-agnostic.
+Project-specific background processes are expressed as generic startup hooks. This repository's
+`ur-hooks/startup-bg/` starts cargo sweep and bacon without requiring toolchain-specific images.
 
 ## Sending commands to the agent (`NotifyIdle`)
 

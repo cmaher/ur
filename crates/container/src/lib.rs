@@ -75,6 +75,8 @@ pub trait ContainerRuntime {
     /// Return the Docker HEALTHCHECK status string (e.g. "healthy", "starting", "unhealthy").
     /// Returns an empty string when no health check is configured.
     fn health_status(&self, id: &ContainerId) -> Result<String>;
+    /// Return the last 100 lines emitted by the container on stdout and stderr.
+    fn logs(&self, id: &ContainerId) -> Result<String>;
     /// Inspect a container's run state, resolving a name or ID reference.
     ///
     /// `Ok(None)` means the runtime answered definitively: no such container.

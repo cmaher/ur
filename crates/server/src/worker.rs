@@ -13,7 +13,9 @@ use workflow_db::WorkerRepo;
 use crate::network_manager::NetworkManager;
 
 use tonic::Code;
-use ur_rpc::proto::builder_container::{InspectWorkerRequest, StopWorkerRequest};
+use ur_rpc::proto::builder_container::{
+    InspectWorkerRequest, LaunchWorkerRequest, StopWorkerRequest,
+};
 
 use crate::RepoPoolManager;
 use crate::builder_container_client::BuilderContainerClient;
@@ -857,46 +859,6 @@ impl WorkerManager {
         // Generate worker secret for worker auth
         let worker_secret = Uuid::new_v4().to_string();
 
-        let env_vars = build_worker_env_vars(
-            &config,
-            &worker_secret,
-            &self.network_config,
-            self.worker_port,
-        );
-
-        // Resolve project instruction file: use explicit config, fall back to convention path
-        let agent =
-            ur_config::AgentType::parse(&config.agent_type).unwrap_or(ur_config::AgentType::Claude);
-        let project_instruction = resolve_project_instruction(
-            &config.instruction_md,
-            &config.project_key,
-            &self.host_config_dir,
-            agent,
-        );
-
-        // Resolve project memory dir: use explicit config or convention path
-        let memory_dir = resolve_memory_dir(
-            &config.memory_dir,
-            &config.project_key,
-            &self.host_config_dir,
-        );
-
-        // Resolve brain dir: explicit project config, workspace default, or convention path
-        let brain_dir = resolve_brain_dir(
-            &config.brain_dir,
-            &config.workspace_brain_dir,
-            &config.project_key,
-            &self.host_config_dir,
-        );
-
-        // Derive the shim host path from the config dir. The shim is materialized
-        // at server startup; we only need the path here for volume mounting.
-        let shim_host_path = self
-            .host_config_dir
-            .join(ur_config::HOSTEXEC_DIR)
-            .join("script-shim.sh");
-
-        // Build RunOpts via the builder
         let container_name = format!("{}{}", self.network_config.worker_prefix, config.process_id);
 
         // Remove any stopped/orphaned container with this name before launching.
@@ -912,9 +874,93 @@ impl WorkerManager {
             "pre-launch cleanup",
         )?;
 
-        let opts = RunOptsBuilder::new(
+        let opts = self.build_launch_request(&config, &worker_secret, &container_name)?;
+
+        // Workerd authenticates with the server during initialization, before
+        // its health endpoint comes up. Persist the credential first so that
+        // builderd can wait for readiness without deadlocking authentication.
+        self.record_provisioning_worker(&config, &container_name, &worker_secret)
+            .await?;
+
+        // Launch the container via builderd on the host, which stats each volume
+        // source against the host filesystem before calling docker run.
+        let launch_resp = match self.builder_container_client.launch_worker(opts).await {
+            Ok(response) => response,
+            Err(status) => {
+                let error = format!("launch_worker gRPC error: {status}");
+                return Err(self
+                    .remove_provisioning_worker(&config.worker_id, error)
+                    .await);
+            }
+        };
+        let container_id = launch_resp.container_id;
+
+        info!(
+            process_id = config.process_id,
+            worker_id = %config.worker_id,
+            container_id,
+            "process launched"
+        );
+
+        if let Err(error) = self.finalize_worker_launch(&config, &container_id).await {
+            let stop_error = self
+                .builder_container_client
+                .stop_worker(StopWorkerRequest {
+                    container_id: container_id.clone(),
+                })
+                .await
+                .err()
+                .map(|status| format!("; failed to clean up container: {status}"))
+                .unwrap_or_default();
+            return Err(self
+                .remove_provisioning_worker(&config.worker_id, format!("{error}{stop_error}"))
+                .await);
+        }
+
+        Ok((container_id, worker_secret))
+    }
+
+    /// Resolve all host paths and configuration needed by builderd to launch
+    /// one worker container.
+    fn build_launch_request(
+        &self,
+        config: &WorkerConfig,
+        worker_secret: &str,
+        container_name: &str,
+    ) -> Result<LaunchWorkerRequest, String> {
+        let env_vars = build_worker_env_vars(
+            config,
+            worker_secret,
+            &self.network_config,
+            self.worker_port,
+        );
+        let agent =
+            ur_config::AgentType::parse(&config.agent_type).unwrap_or(ur_config::AgentType::Claude);
+        let project_instruction = resolve_project_instruction(
+            &config.instruction_md,
+            &config.project_key,
+            &self.host_config_dir,
+            agent,
+        );
+        let memory_dir = resolve_memory_dir(
+            &config.memory_dir,
+            &config.project_key,
+            &self.host_config_dir,
+        );
+        let brain_dir = resolve_brain_dir(
+            &config.brain_dir,
+            &config.workspace_brain_dir,
+            &config.project_key,
+            &self.host_config_dir,
+        );
+        let shim_host_path = self
+            .host_config_dir
+            .join(ur_config::HOSTEXEC_DIR)
+            .join("script-shim.sh");
+
+        Ok(RunOptsBuilder::new(
             config.image_id.clone(),
-            container_name,
+            container_name.to_owned(),
             self.network_manager.network_name().to_string(),
         )
         .cpus(config.cpus)
@@ -940,56 +986,37 @@ impl WorkerManager {
         .add_project_hostexec_scripts(
             &config.hostexec_scripts,
             &shim_host_path,
-            // Builderd's LaunchWorker validates volume mount sources against the host
-            // filesystem, so no local existence check is needed here.
+            // Builderd validates volume sources against the host filesystem.
             None,
         )?
         .add_ports(&config.ports)
         .add_env_vars(env_vars)
-        .build();
-
-        // Launch the container via builderd on the host, which stats each volume
-        // source against the host filesystem before calling docker run.
-        let launch_resp = self
-            .builder_container_client
-            .launch_worker(opts)
-            .await
-            .map_err(|s| format!("launch_worker gRPC error: {s}"))?;
-        let container_id = launch_resp.container_id;
-
-        info!(
-            process_id = config.process_id,
-            worker_id = %config.worker_id,
-            container_id,
-            "process launched"
-        );
-
-        self.record_worker(config, container_id.clone(), worker_secret.clone())
-            .await?;
-
-        Ok((container_id, worker_secret))
+        .build())
     }
 
-    /// Persist a newly launched worker to the database and link it to its pool
-    /// slot (if any). Called immediately after the container starts running.
-    async fn record_worker(
+    /// Persist the worker credential before container launch so workerd can
+    /// authenticate while builderd waits for its health endpoint.
+    async fn record_provisioning_worker(
         &self,
-        config: WorkerConfig,
-        container_id: String,
-        worker_secret: String,
+        config: &WorkerConfig,
+        container_name: &str,
+        worker_secret: &str,
     ) -> Result<(), String> {
         let now = Utc::now().to_rfc3339();
         let worker = workflow_db::model::Worker {
-            worker_id: config.worker_id.0,
-            process_id: config.process_id,
-            project_key: config.project_key,
-            container_id: container_id.clone(),
-            worker_secret: worker_secret.clone(),
+            worker_id: config.worker_id.0.clone(),
+            process_id: config.process_id.clone(),
+            project_key: config.project_key.clone(),
+            container_id: container_name.to_owned(),
+            worker_secret: worker_secret.to_owned(),
             strategy: config.strategy.name().to_owned(),
-            agent_type: config.agent_type,
-            container_status: "running".to_owned(),
+            agent_type: config.agent_type.clone(),
+            container_status: "provisioning".to_owned(),
             agent_status: "starting".to_owned(),
-            workspace_path: config.workspace_dir.map(|p| p.display().to_string()),
+            workspace_path: config
+                .workspace_dir
+                .as_ref()
+                .map(|path| path.display().to_string()),
             created_at: now.clone(),
             updated_at: now,
             idle_redispatch_count: 0,
@@ -999,14 +1026,36 @@ impl WorkerManager {
             .await
             .map_err(|e| format!("failed to record worker: {e}"))?;
 
+        Ok(())
+    }
+
+    /// Store Docker's immutable container ID, mark the worker running, and
+    /// link it to its pool slot after startup succeeds.
+    async fn finalize_worker_launch(
+        &self,
+        config: &WorkerConfig,
+        container_id: &str,
+    ) -> Result<(), String> {
+        self.worker_repo
+            .finalize_worker_launch(&config.worker_id.0, container_id)
+            .await
+            .map_err(|e| format!("failed to finalize worker launch: {e}"))?;
+
         // Link worker to slot if launched from a pool slot
         if let Some(ref slot_id) = config.slot_id {
             self.worker_repo
-                .link_worker_slot(&worker.worker_id, slot_id)
+                .link_worker_slot(&config.worker_id.0, slot_id)
                 .await
                 .map_err(|e| format!("failed to link worker to slot: {e}"))?;
         }
         Ok(())
+    }
+
+    async fn remove_provisioning_worker(&self, worker_id: &WorkerId, error: String) -> String {
+        match self.worker_repo.delete_worker(&worker_id.0).await {
+            Ok(_) => error,
+            Err(cleanup) => format!("{error}; failed to remove provisional worker: {cleanup}"),
+        }
     }
 
     /// Stop a running worker process by worker ID. Stops + removes the container.
@@ -1696,7 +1745,10 @@ mod tests {
     /// worker holds it now.
     #[tokio::test]
     async fn stop_unknown_process_errors_when_runtime_unreachable() {
-        let (mgr, _workspace, _test_db) = test_manager().await;
+        let (mut mgr, _workspace, _test_db) = test_manager().await;
+        let unreachable =
+            tonic::transport::Channel::from_static("http://127.0.0.1:0").connect_lazy();
+        mgr.builder_container_client = BuilderContainerClient::new(unreachable);
         let result = mgr.stop("nonexistent").await;
         let err = result.unwrap_err();
         assert!(
@@ -1797,7 +1849,7 @@ mod tests {
         WorkerConfig {
             process_id: "test-proc".into(),
             worker_id: WorkerId("test-proc-ab12".into()),
-            image_id: "ur-worker-rust-claude:latest".into(),
+            image_id: "ur-worker-claude:latest".into(),
             cpus: 1,
             memory: "512m".into(),
             workspace_dir: None,

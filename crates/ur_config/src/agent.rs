@@ -159,12 +159,15 @@ impl AgentType {
     /// Resolve a config `container.image` value for this agent.
     ///
     /// A known alias (one of [`crate::IMAGE_ALIASES`]) becomes
-    /// `<alias>-<agent-name>:latest`. A value containing `:` or `/` is a full
-    /// image reference and is returned unchanged — it can never disagree with
-    /// the agent, since it names an image outside the alias system entirely.
+    /// `<alias>-<agent-name>:latest`. The retired `ur-worker-rust` alias maps to
+    /// the base per-agent image for compatibility. A value containing `:` or `/`
+    /// is a full image reference and is returned unchanged.
     pub fn resolve_image(&self, raw: &str) -> Result<String, UnknownAliasError> {
         if raw.contains(':') || raw.contains('/') {
             return Ok(raw.to_string());
+        }
+        if raw == crate::LEGACY_RUST_IMAGE_ALIAS {
+            return Ok(format!("ur-worker-{}:latest", self.name()));
         }
         if crate::IMAGE_ALIASES.contains(&raw) {
             return Ok(format!("{raw}-{}:latest", self.name()));
@@ -177,12 +180,10 @@ impl AgentType {
 
     /// Image used when a project configures none.
     ///
-    /// Deliberately the rust-toolchain alias — resolving the plain `ur-worker`
-    /// alias here instead would silently drop the rust toolchain from default
-    /// launches.
+    /// Toolchain-specific behavior is supplied by per-project startup hooks.
     pub fn fallback_image(&self) -> String {
-        self.resolve_image("ur-worker-rust")
-            .expect("'ur-worker-rust' is always a valid alias")
+        self.resolve_image("ur-worker")
+            .expect("'ur-worker' is always a valid alias")
     }
 
     /// Full shell command to launch the agent in the tmux pane, with the
@@ -553,7 +554,7 @@ mod tests {
             AgentType::Agy.resolve_image("ur-worker").unwrap(),
             "ur-worker-agy:latest"
         );
-        assert_eq!(AgentType::Agy.fallback_image(), "ur-worker-rust-agy:latest");
+        assert_eq!(AgentType::Agy.fallback_image(), "ur-worker-agy:latest");
         assert_eq!(
             AgentType::Agy
                 .resolve_image("registry.example/worker:v1")

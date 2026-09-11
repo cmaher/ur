@@ -130,7 +130,7 @@ enum ProjectCommands {
         /// Path to a git repository directory (e.g. "." for current directory).
         /// With --local, any directory — it need not be a git repo.
         path: PathBuf,
-        /// Container image alias (e.g. "ur-worker", "ur-worker-rust") or full image reference
+        /// Container image alias (`ur-worker`) or full image reference
         /// [default: ur-worker]
         #[arg(long)]
         image: Option<String>,

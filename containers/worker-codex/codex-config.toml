@@ -17,6 +17,11 @@ sandbox_mode = "danger-full-access"
 # override supplied by ur takes precedence.
 model_reasoning_effort = "high"
 
+# Start the composer in Vim normal mode. `/vim` remains available as a
+# per-session toggle.
+[tui]
+vim_mode_default = true
+
 # Skip the interactive trust prompt for the workspace mount — every worker
 # mounts its repo at /workspace. Table headers must come last: any key
 # written after a `[table]` header belongs to that table, not the top level.

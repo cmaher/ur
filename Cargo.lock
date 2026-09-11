@@ -3922,6 +3922,7 @@ dependencies = [
  "tempfile",
  "tmux",
  "tokio",
+ "toml",
  "tonic",
  "tracing",
  "tracing-appender",

@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+if [ -f Cargo.toml ]; then
+    exec cargo sweep --time 1
+fi

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use tonic::{Request, Response, Status};
 use tracing::{error, info, warn};
@@ -106,6 +107,85 @@ fn check_volume_sources(req: &LaunchWorkerRequest) -> Result<(), String> {
     Ok(())
 }
 
+enum StartupState {
+    Starting,
+    Ready,
+    Exited { logs: String },
+}
+
+fn wait_for_worker_startup(
+    timeout: Duration,
+    poll_interval: Duration,
+    mut probe: impl FnMut() -> Result<StartupState, String>,
+) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        match probe()? {
+            StartupState::Ready => return Ok(()),
+            StartupState::Exited { logs } => {
+                return Err(format!("worker container exited during startup: {logs}"));
+            }
+            StartupState::Starting if started.elapsed() >= timeout => {
+                return Err(format!(
+                    "timed out after {}s waiting for worker startup",
+                    timeout.as_secs()
+                ));
+            }
+            StartupState::Starting => {
+                std::thread::sleep(poll_interval);
+            }
+        }
+    }
+}
+
+fn probe_worker_startup(
+    runtime: &impl ContainerRuntime,
+    container_id: &ContainerId,
+) -> Result<StartupState, String> {
+    let state = runtime
+        .inspect_state(container_id)
+        .map_err(|error| format!("failed to inspect worker during startup: {error}"))?;
+    if !state.is_some_and(|state| state.running) {
+        let logs = runtime
+            .logs(container_id)
+            .unwrap_or_else(|error| format!("failed to read container logs: {error}"));
+        return Ok(StartupState::Exited { logs });
+    }
+
+    let health = runtime
+        .health_status(container_id)
+        .map_err(|error| format!("failed to inspect worker health during startup: {error}"))?;
+    match health.as_str() {
+        "healthy" | "" => Ok(StartupState::Ready),
+        "unhealthy" => Ok(StartupState::Starting),
+        _ => Ok(StartupState::Starting),
+    }
+}
+
+fn cleanup_failed_launch(
+    runtime: &impl ContainerRuntime,
+    container_id: &ContainerId,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    match runtime.inspect_state(container_id) {
+        Ok(Some(state)) if state.running => {
+            if let Err(error) = runtime.stop(container_id) {
+                errors.push(format!("failed to stop container: {error}"));
+            }
+        }
+        Ok(_) => {}
+        Err(error) => errors.push(format!("failed to inspect container for cleanup: {error}")),
+    }
+    if let Err(error) = runtime.rm(container_id) {
+        errors.push(format!("failed to remove container: {error}"));
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
 #[tonic::async_trait]
 impl BuilderContainerService for BuilderContainerHandler {
     async fn launch_worker(
@@ -134,6 +214,24 @@ impl BuilderContainerService for BuilderContainerHandler {
             error!(error = %e, name = %req.name, "docker run failed");
             Status::internal(format!("docker run failed: {e}"))
         })?;
+
+        let startup_runtime = self.runtime.clone();
+        let startup_container_id = container_id.clone();
+        let startup_result = tokio::task::spawn_blocking(move || {
+            wait_for_worker_startup(Duration::from_secs(60), Duration::from_millis(100), || {
+                probe_worker_startup(&startup_runtime, &startup_container_id)
+            })
+        })
+        .await
+        .map_err(|error| format!("worker startup check failed: {error}"))
+        .and_then(|result| result);
+        if let Err(error) = startup_result {
+            let cleanup = cleanup_failed_launch(&self.runtime, &container_id).map_or_else(
+                |cleanup| format!("; cleanup also failed: {cleanup}"),
+                |()| String::new(),
+            );
+            return Err(Status::failed_precondition(format!("{error}{cleanup}")));
+        }
 
         info!(container_id = %container_id.0, name = %req.name, "container launched");
         Ok(Response::new(LaunchWorkerResponse {
@@ -280,6 +378,8 @@ impl BuilderContainerService for BuilderContainerHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::time::Duration;
     use ur_rpc::proto::builder_container::{AddHost, EnvVar, Volume};
 
     fn make_request(volumes: Vec<Volume>) -> LaunchWorkerRequest {
@@ -380,5 +480,22 @@ mod tests {
         ));
         assert!(!is_no_such_container("docker stop failed: timeout"));
         assert!(!is_no_such_container(""));
+    }
+
+    #[test]
+    fn startup_wait_surfaces_container_exit_logs() {
+        let mut states = VecDeque::from([
+            StartupState::Starting,
+            StartupState::Exited {
+                logs: "startup hook 10-fail failed with status 7".into(),
+            },
+        ]);
+
+        let error = wait_for_worker_startup(Duration::from_secs(1), Duration::ZERO, || {
+            Ok(states.pop_front().unwrap())
+        })
+        .unwrap_err();
+
+        assert!(error.contains("startup hook 10-fail"), "{error}");
     }
 }

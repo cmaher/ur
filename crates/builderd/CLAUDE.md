@@ -12,4 +12,5 @@ already-validated requests from ur-server and acts on the host filesystem and Do
   - `BuilderDaemonService` (`proto/builder.proto`) — exec arbitrary commands on the host; used for worker hostexec (git, gh via the three-hop pipeline)
   - `BuilderContainerService` (`proto/builder_container.proto`) — worker container lifecycle (launch, stop, exec, network inspect); owns the Docker socket on behalf of the server
   - `BuilderPoolService` (`proto/builder_pool.proto`) — pool slot lifecycle (clone, reset, clean, branch checkout); owns all pool filesystem and git operations on behalf of `RepoPoolManager`
+- `LaunchWorker` does not report success immediately after `docker run`: it waits up to 60 seconds for the worker image's health check. An `unhealthy` result remains pending because synchronous startup hooks can outlast Docker's health-check start period. If the container exits, builderd captures its last 100 log lines, removes it, and returns `FailedPrecondition`.
 - `--config-dir` flag (default `~/.ur`) sets the root config directory; used by `BuilderPoolHandler` to locate local overlay files at `<config_dir>/projects/<project>/local/`

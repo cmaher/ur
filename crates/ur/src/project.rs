@@ -176,6 +176,9 @@ pub fn add(config: &ur_config::Config, req: &AddRequest<'_>, output: &OutputMana
         bail!("--pool-limit is not valid with --local (local projects have no repo pool)");
     }
 
+    ur_config::validate_image_alias(image)
+        .map_err(|error| anyhow::anyhow!("invalid container image: {error}"))?;
+
     // For a local project the directory need not be a git repo at all, so the key
     // comes from the directory basename rather than a remote URL.
     let repo = if local {
@@ -485,7 +488,7 @@ mod tests {
             &config,
             &AddRequest {
                 path: repo.path(),
-                image: "ur-worker-rust",
+                image: "registry.example/custom:v1",
                 key: Some("mykey"),
                 name: Some("My Project"),
                 pool_limit: Some(5),
@@ -500,7 +503,7 @@ mod tests {
         assert_eq!(proj.repo.as_deref(), Some("git@github.com:cmaher/ur.git"));
         assert_eq!(proj.name, "My Project");
         assert_eq!(proj.pool_limit, 5);
-        assert_eq!(proj.container.image, "ur-worker-rust");
+        assert_eq!(proj.container.image, "registry.example/custom:v1");
     }
 
     #[test]
@@ -558,15 +561,17 @@ image = "ur-worker"
     }
 
     #[test]
-    fn add_project_with_rust_image() {
+    fn add_project_rejects_invalid_image_without_changing_config() {
         let tmp = TempDir::new().unwrap();
         let config = write_config(&tmp, "");
         let repo = make_git_repo("git@github.com:cmaher/myproj.git");
-        add(
+        let original = std::fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
+
+        let error = add(
             &config,
             &AddRequest {
                 path: repo.path(),
-                image: "ur-worker-rust",
+                image: "not-a-valid-image-alias",
                 key: None,
                 name: None,
                 pool_limit: None,
@@ -574,10 +579,13 @@ image = "ur-worker"
             },
             &text_output(),
         )
-        .unwrap();
+        .unwrap_err();
 
-        let updated = ur_config::Config::load_from(tmp.path()).unwrap();
-        assert_eq!(updated.projects["myproj"].container.image, "ur-worker-rust");
+        assert!(error.to_string().contains("unknown image alias"));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("ur.toml")).unwrap(),
+            original
+        );
     }
 
     #[test]
@@ -589,7 +597,6 @@ image = "ur-worker"
     #[test]
     fn validate_image_alias_known_ok() {
         ur_config::validate_image_alias("ur-worker").unwrap();
-        ur_config::validate_image_alias("ur-worker-rust").unwrap();
     }
 
     #[test]

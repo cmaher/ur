@@ -1872,11 +1872,11 @@ mod tests {
         );
         assert_eq!(
             resolve_worker_image(ur_config::AgentType::Codex, "", "").unwrap(),
-            "ur-worker-rust-codex:latest"
+            "ur-worker-codex:latest"
         );
         assert_eq!(
             resolve_worker_image(ur_config::AgentType::Agy, "", "").unwrap(),
-            "ur-worker-rust-agy:latest"
+            "ur-worker-agy:latest"
         );
     }
 
@@ -1901,9 +1901,13 @@ mod tests {
     #[test]
     fn resolve_worker_image_requested_id_overrides_project_image_per_agent() {
         assert_eq!(
-            resolve_worker_image(ur_config::AgentType::Codex, "ur-worker-rust", "ur-worker")
-                .unwrap(),
-            "ur-worker-rust-codex:latest"
+            resolve_worker_image(
+                ur_config::AgentType::Codex,
+                "registry.example/custom-codex:v1",
+                "ur-worker"
+            )
+            .unwrap(),
+            "registry.example/custom-codex:v1"
         );
     }
 

@@ -225,8 +225,8 @@ worker_modes.<mode>.model / .effort
 
 ## Image Aliases (`container.image`)
 
-`container.image` (`[projects.<key>.container]`) holds a logical alias (`"ur-worker"` or
-`"ur-worker-rust"`) or a full image reference (containing `:` or `/`) — **exactly as written**.
+`container.image` (`[projects.<key>.container]`) holds the logical alias `"ur-worker"`
+or a full image reference (containing `:` or `/`) — **exactly as written**.
 Parse time (`validate_image_alias`, `crates/ur_config/src/lib.rs`) only checks that the value
 is syntactically valid; it does not resolve an alias to a tag, because the agent that will run
 the launch isn't known until `resolve_mode` runs at launch time (see [Agent Default
@@ -243,20 +243,19 @@ Resolution happens at the single point in the launch path where the agent is alr
 ```
 
 `resolve_worker_image` picks the raw value first (`ur --image` request field, else the
-project's `container.image`, else `AgentType::fallback_image()` — deliberately the
-rust-toolchain alias, so a project configuring nothing doesn't silently lose the rust
-toolchain), then resolves it against the launch's resolved agent. This is the same decision
+project's `container.image`, else `AgentType::fallback_image()`), then resolves it against the launch's resolved agent. Toolchain behavior is opt-in through project startup hooks rather than a separate image alias. This is the same decision
 point for both the project-configured image and the CLI override, so neither can end up
 resolved against the wrong agent.
 
-Because resolution is agent-derived, an alias can never disagree with the agent, and existing
-`ur.toml` files and `--image` flags keep working untouched — `"ur-worker"` and
-`"ur-worker-rust"` remain the only two alias names.
+Because resolution is agent-derived, the alias can never disagree with the agent.
+
+Existing configurations containing the retired `ur-worker-rust` alias remain valid for
+backward compatibility and resolve to the same base per-agent images shown below. New
+configuration should use `ur-worker`.
 
 | Alias | Claude | Codex | AGY |
 |---|---|---|---|
 | `ur-worker` | `ur-worker-claude:latest` | `ur-worker-codex:latest` | `ur-worker-agy:latest` |
-| `ur-worker-rust` | `ur-worker-rust-claude:latest` | `ur-worker-rust-codex:latest` | `ur-worker-rust-agy:latest` |
 
 ## Config Flow Through the System
 
@@ -276,7 +275,7 @@ WorkerConfig
     → RunOptsBuilder (crates/server/src/run_opts_builder.rs)
       .add_workspace()             — mounts workspace_dir → /workspace
       .add_credentials(agent)      — mounts credentials file; no-op if agent.auth() is None
-      .add_host_hooks_overlay()    — convention hook dirs → /var/ur/host-hooks/{git,skills}/:ro
+      .add_host_hooks_overlay()    — convention hook dirs → /var/ur/host-hooks/{git,skills,startup,startup-bg}/:ro
       .add_project_instruction(agent) — instruction_md convention fallback → mount or env var
       .add_mounts()                — mounts project-configured volumes (source → destination)
       .add_env_vars()              — proxy vars, worker ID, server addr, skills, UR_AGENT_TYPE

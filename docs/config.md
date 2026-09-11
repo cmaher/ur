@@ -281,14 +281,14 @@ Container configuration for the project's workers.
 
 ```toml
 [projects.ur.container]
-image = "ur-worker-rust"
+image = "ur-worker"
 mounts = ["/Users/me/.ur/data:/data:ro"]
 ports = ["8080:3000"]
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `image` | string | `"ur-worker"` | Container image name. Built-in aliases: `ur-worker`, `ur-worker-rust` (resolve to `:latest`). Custom images use full reference. |
+| `image` | string | `"ur-worker"` | Container image name. The built-in `ur-worker` alias resolves per agent to `:latest`; the retired `ur-worker-rust` alias remains accepted as a compatibility mapping to the same images. Custom images use a full reference. |
 | `mounts` | string[] | `[]` | Volume mounts (see format below) |
 | `ports` | string[] | `[]` | Port mappings in `"host_port:container_port"` format |
 
@@ -339,16 +339,20 @@ Template paths are validated at config load time. Unrecognized `%VAR%` patterns 
 
 ## Hook Convention Paths
 
-Git and skill hooks no longer use config fields. Instead, they are resolved automatically from two fixed locations per project:
+Git, skill, and startup hooks do not use config fields. Instead, they are resolved automatically from two fixed locations per project:
 
 | Layer | Host Path | Container Mount |
 |-------|-----------|----------------|
 | Host overlay — git | `~/.ur/projects/<key>/hooks/git/` | `/var/ur/host-hooks/git/:ro` |
 | Host overlay — skills | `~/.ur/projects/<key>/hooks/skills/` | `/var/ur/host-hooks/skills/:ro` |
+| Host overlay — startup | `~/.ur/projects/<key>/hooks/startup/` | `/var/ur/host-hooks/startup/:ro` |
+| Host overlay — background startup | `~/.ur/projects/<key>/hooks/startup-bg/` | `/var/ur/host-hooks/startup-bg/:ro` |
 | In-repo — git | `<workspace>/ur-hooks/git/` | accessed via `/workspace/ur-hooks/git/` |
 | In-repo — skills | `<workspace>/ur-hooks/skills/` | accessed via `/workspace/ur-hooks/skills/` |
+| In-repo — startup | `<workspace>/ur-hooks/startup/` | executed in place before agent launch |
+| In-repo — background startup | `<workspace>/ur-hooks/startup-bg/` | spawned detached before agent launch |
 
-The host overlay wins on identical filenames. Mounts are added only if the host directory exists. Workerd merges both sources into the active hook directory at container startup.
+The host overlay wins on identical filenames. Mounts are added only if the host directory exists. Workerd copies git and skill hooks to their active directories; executable startup hooks are run in place in lexical order with `/workspace` as cwd. A failing synchronous startup hook aborts startup.
 
 Workflow hooks (server-side, not container-mounted) follow the same pattern:
 
@@ -413,6 +417,6 @@ instruction_md = "%PROJECT%/CLAUDE.md"
 protected_branches = ["main", "master"]
 
 [projects.ur.container]
-image = "ur-worker-rust"
+image = "ur-worker"
 mounts = ["/Users/me/projects/ur/.tickets:/workspace/.tickets"]
 ```

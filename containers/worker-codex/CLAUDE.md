@@ -78,6 +78,8 @@ the `NotifyIdle` RPC) rather than trusting `codex` to complain about a bad event
   one path every worker actually mounts
 - `model_reasoning_effort = "high"` is a starting default for an autonomous coding agent, not a
   verified-optimal value — revisit if cost or latency becomes a concern
+- `[tui] vim_mode_default = true` starts each Codex worker composer in Vim normal mode; users can
+  still toggle the mode for the current session with `/vim`
 - Entrypoint runs `exec workerd`, making workerd PID 1 — same as `worker-claude`
 - Worker command binaries (`ur-ping`, `workertools`, `workerd`) are staged into `bin/` by
   `stage-workercmd.sh`, then copied into the image at `/usr/local/bin/`
