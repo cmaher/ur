@@ -417,6 +417,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn worker_tmux_config_advertises_hyperlink_support() {
+        let config = include_str!("../../../containers/worker-base/.tmux.conf");
+
+        assert!(
+            config
+                .lines()
+                .any(|line| line.trim() == "set -ga terminal-features \",*:hyperlinks\""),
+            "worker tmux config must advertise OSC 8 hyperlink support"
+        );
+    }
+
+    #[test]
     fn test_attach_command() {
         let session = Session {
             name: "agent".into(),
