@@ -91,7 +91,7 @@ Startup hooks execute in place after workerd initialization has created hostexec
 
 | Kind | In-repo source | Host overlay | Behavior |
 |---|---|---|---|
-| Synchronous | `/workspace/ur-hooks/startup/` | `/var/ur/host-hooks/startup/:ro` | Run serially with cwd `/workspace`; the first non-zero exit aborts startup |
+| Synchronous | `/workspace/ur-hooks/startup/` | `/var/ur/host-hooks/startup/:ro` | Run serially with cwd `/workspace`; the first non-zero exit aborts launch and its stderr is returned to the CLI |
 | Background | `/workspace/ur-hooks/startup-bg/` | `/var/ur/host-hooks/startup-bg/:ro` | Spawn detached with cwd `/workspace`; workerd logs each name and PID |
 
 The host sources are `<config_dir>/projects/<key>/hooks/startup/` and `<config_dir>/projects/<key>/hooks/startup-bg/`. As with other hook overlays, each mount is added only when its host directory exists.

@@ -1343,6 +1343,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_custom_mode_model_override(&env);
         scenario_launch_without_project(&env);
         scenario_startup_background_hook(&env);
+        scenario_failing_startup_hook(&env);
         scenario_local_project(&env);
         scenario_project_add_local(&env);
         scenario_project_add_image_flag(&env);
@@ -1431,6 +1432,7 @@ fn teardown_worker_containers(env: &TestEnv) {
         "design-test-2",
         "custom-model-test",
         "startup-hook-test",
+        "startup-hook-failure-test",
         "hotreload-test",
         "script-pool-test",
         "global-skill-test",
@@ -2524,6 +2526,53 @@ fn scenario_startup_background_hook(env: &TestEnv) {
         force_remove_container(&env.runtime, &container_name);
         std::panic::resume_unwind(e);
     }
+}
+
+/// A synchronous startup-hook failure must fail the launch and include the hook error.
+fn scenario_failing_startup_hook(env: &TestEnv) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let ticket_id = "startup-hook-failure-test";
+    let container_name = env.container_name(ticket_id);
+    let hook_dir = env.config_path.join("projects/rustproj/hooks/startup");
+    std::fs::create_dir_all(&hook_dir).expect("failed to create startup hook overlay");
+    let hook = hook_dir.join("05-fail");
+    std::fs::write(
+        &hook,
+        "#!/bin/sh\necho acceptance-startup-hook-failure >&2\nexit 7\n",
+    )
+    .expect("failed to write failing startup hook");
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to make startup hook executable");
+
+    let output = run_cmd(
+        &env.ur,
+        &["worker", "launch", "-p", "rustproj", ticket_id],
+        &env.env(),
+    );
+    std::fs::remove_file(&hook).expect("failed to remove failing startup hook");
+    assert!(
+        !output.status.success(),
+        "launch with a failing startup hook unexpectedly succeeded"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("acceptance-startup-hook-failure"),
+        "{combined}"
+    );
+
+    let inspect = Command::new(&env.runtime)
+        .args(["inspect", &container_name])
+        .output()
+        .expect("failed to inspect failed startup container");
+    assert!(
+        !inspect.status.success(),
+        "failed startup container was not removed"
+    );
 }
 
 /// Create a bare git repository with one commit containing README.md and a

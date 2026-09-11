@@ -288,7 +288,7 @@ ports = ["8080:3000"]
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `image` | string | `"ur-worker"` | Container image name. The built-in `ur-worker` alias resolves per agent to `:latest`; custom images use a full reference. |
+| `image` | string | `"ur-worker"` | Container image name. The built-in `ur-worker` alias resolves per agent to `:latest`; the retired `ur-worker-rust` alias remains accepted as a compatibility mapping to the same images. Custom images use a full reference. |
 | `mounts` | string[] | `[]` | Volume mounts (see format below) |
 | `ports` | string[] | `[]` | Port mappings in `"host_port:container_port"` format |
 

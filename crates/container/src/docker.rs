@@ -85,6 +85,19 @@ impl DockerRuntime {
         vec!["rm".into(), id.0.clone()]
     }
 
+    pub fn logs_args(id: &ContainerId) -> Vec<String> {
+        vec!["logs".into(), "--tail".into(), "100".into(), id.0.clone()]
+    }
+
+    pub fn health_status_args(id: &ContainerId) -> Vec<String> {
+        vec![
+            "inspect".into(),
+            "--format".into(),
+            "{{if .State.Health}}{{.State.Health.Status}}{{end}}".into(),
+            id.0.clone(),
+        ]
+    }
+
     pub fn exec_args(id: &ContainerId, opts: &ExecOpts) -> Vec<String> {
         let mut args = vec!["exec".into()];
         if let Some(workdir) = &opts.workdir {
@@ -169,11 +182,29 @@ impl ContainerRuntime for DockerRuntime {
     }
 
     fn health_status(&self, id: &ContainerId) -> Result<String> {
+        self.exec(&Self::health_status_args(id))
+            .with_context(|| format!("failed to inspect health for container {}", id.0))
+    }
+
+    fn logs(&self, id: &ContainerId) -> Result<String> {
+        let args = Self::logs_args(id);
         let output = Command::new(&self.command)
-            .args(["inspect", "--format", "{{.State.Health.Status}}", &id.0])
+            .args(&args)
             .output()
-            .with_context(|| format!("failed to inspect container {}", id.0))?;
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .with_context(|| format!("failed to read logs for container {}", id.0))?;
+        if !output.status.success() {
+            bail!(
+                "{} logs failed for container {}: {}",
+                self.command,
+                id.0,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 
     fn inspect_state(&self, id: &ContainerId) -> Result<Option<ContainerState>> {
@@ -263,6 +294,27 @@ mod tests {
         assert!(parse_inspect_state("true").is_err());
         assert!(parse_inspect_state("maybe abc123").is_err());
         assert!(parse_inspect_state("true  ").is_err());
+    }
+
+    #[test]
+    fn logs_command_args() {
+        assert_eq!(
+            DockerRuntime::logs_args(&ContainerId("abc123".into())),
+            vec![s("logs"), s("--tail"), s("100"), s("abc123")]
+        );
+    }
+
+    #[test]
+    fn health_status_command_handles_images_without_a_healthcheck() {
+        assert_eq!(
+            DockerRuntime::health_status_args(&ContainerId("abc123".into())),
+            vec![
+                s("inspect"),
+                s("--format"),
+                s("{{if .State.Health}}{{.State.Health.Status}}{{end}}"),
+                s("abc123"),
+            ]
+        );
     }
 
     fn sample_build_opts() -> BuildOpts {

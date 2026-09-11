@@ -345,7 +345,7 @@ Both `memory_dir` and `brain_dir` are `create_dir_all`'d and chowned to the work
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `image` | string | **yes** | Container image alias or full reference. The `"ur-worker"` alias resolves per-agent at launch time; see the table below. Use `"image:tag"` or `"registry/image:tag"` for a full reference, used unchanged for any agent |
+| `image` | string | **yes** | Container image alias or full reference. The `"ur-worker"` alias resolves per-agent at launch time; the retired `"ur-worker-rust"` alias remains accepted and maps to the same base images for compatibility. Use `"image:tag"` or `"registry/image:tag"` for a full reference, used unchanged for any agent |
 | `mounts` | string[] | no | Extra volume mounts: `"source:destination"`. Source supports `%URCONFIG%/...` or absolute paths (`%PROJECT%` **not allowed** here) |
 | `ports` | string[] | no | Port mappings: `"host_port:container_port"` |
 

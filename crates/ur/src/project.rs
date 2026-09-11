@@ -176,6 +176,9 @@ pub fn add(config: &ur_config::Config, req: &AddRequest<'_>, output: &OutputMana
         bail!("--pool-limit is not valid with --local (local projects have no repo pool)");
     }
 
+    ur_config::validate_image_alias(image)
+        .map_err(|error| anyhow::anyhow!("invalid container image: {error}"))?;
+
     // For a local project the directory need not be a git repo at all, so the key
     // comes from the directory basename rather than a remote URL.
     let repo = if local {
@@ -558,15 +561,17 @@ image = "ur-worker"
     }
 
     #[test]
-    fn config_rejects_removed_rust_image_alias_after_add() {
+    fn add_project_rejects_invalid_image_without_changing_config() {
         let tmp = TempDir::new().unwrap();
         let config = write_config(&tmp, "");
         let repo = make_git_repo("git@github.com:cmaher/myproj.git");
-        add(
+        let original = std::fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
+
+        let error = add(
             &config,
             &AddRequest {
                 path: repo.path(),
-                image: "ur-worker-rust",
+                image: "not-a-valid-image-alias",
                 key: None,
                 name: None,
                 pool_limit: None,
@@ -574,10 +579,13 @@ image = "ur-worker"
             },
             &text_output(),
         )
-        .unwrap();
+        .unwrap_err();
 
-        let error = ur_config::Config::load_from(tmp.path()).unwrap_err();
         assert!(error.to_string().contains("unknown image alias"));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("ur.toml")).unwrap(),
+            original
+        );
     }
 
     #[test]

@@ -249,6 +249,10 @@ resolved against the wrong agent.
 
 Because resolution is agent-derived, the alias can never disagree with the agent.
 
+Existing configurations containing the retired `ur-worker-rust` alias remain valid for
+backward compatibility and resolve to the same base per-agent images shown below. New
+configuration should use `ur-worker`.
+
 | Alias | Claude | Codex | AGY |
 |---|---|---|---|
 | `ur-worker` | `ur-worker-claude:latest` | `ur-worker-codex:latest` | `ur-worker-agy:latest` |

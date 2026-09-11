@@ -1099,12 +1099,15 @@ impl DatabaseConfig {
 /// resolution time (see [`AgentType::resolve_image`]), not stored here.
 pub const IMAGE_ALIASES: &[&str] = &["ur-worker"];
 
+/// Retired image alias accepted for backward compatibility with existing configs.
+pub const LEGACY_RUST_IMAGE_ALIAS: &str = "ur-worker-rust";
+
 /// Returns the default image alias (first entry in [`IMAGE_ALIASES`]).
 pub fn default_image_alias() -> &'static str {
     IMAGE_ALIASES[0]
 }
 
-/// Validate that the given string is a known image alias or a full image reference.
+/// Validate that the given string is a known or legacy image alias, or a full image reference.
 /// Returns `Ok(())` if valid, or an error describing the valid aliases.
 ///
 /// This is a parse-time syntactic check only — it cannot resolve the alias to a
@@ -1115,7 +1118,7 @@ pub fn validate_image_alias(raw: &str) -> anyhow::Result<()> {
     if raw.contains(':') || raw.contains('/') {
         return Ok(());
     }
-    if IMAGE_ALIASES.contains(&raw) {
+    if IMAGE_ALIASES.contains(&raw) || raw == LEGACY_RUST_IMAGE_ALIAS {
         return Ok(());
     }
     anyhow::bail!(
@@ -4082,7 +4085,7 @@ image = "ur-worker"
     }
 
     #[test]
-    fn removed_rust_image_alias_is_rejected() {
+    fn legacy_rust_image_alias_loads_and_resolves_to_base_image() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
@@ -4095,10 +4098,12 @@ image = "ur-worker-rust"
 "#,
         )
         .unwrap();
-        let error = Config::load_from(tmp.path()).unwrap_err().to_string();
-        assert!(
-            error.contains("unknown image alias 'ur-worker-rust'"),
-            "{error}"
+        let config = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            AgentType::Claude
+                .resolve_image(&config.projects["ur"].container.image)
+                .unwrap(),
+            "ur-worker-claude:latest"
         );
     }
 

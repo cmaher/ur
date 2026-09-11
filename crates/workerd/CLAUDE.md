@@ -16,6 +16,10 @@ Startup sequence (daemon mode):
 5. Spawns healthz HTTP server on port 9119 (Docker HEALTHCHECK).
 6. Starts gRPC server on port 9120 (long-lived, keeps the process alive).
 
+The worker health check becomes healthy only after startup hooks complete. Builderd waits for
+that transition during `LaunchWorker`; if a synchronous hook fails, it returns the container
+logs through gRPC and removes the failed container before the server records a worker row.
+
 The exit watcher (`AgentWatchState`/`advance_agent_watch_state`) that shuts down a design worker's container is deliberately agent-agnostic — it matches shell-vs-non-shell foreground processes (`is_shell_process`), never the agent's binary name. Claude Code's foreground process is `node`, not `claude`, so `AgentType` deliberately carries no binary-name accessor for this code to reach for.
 
 Project-specific background processes are expressed as generic startup hooks. This repository's

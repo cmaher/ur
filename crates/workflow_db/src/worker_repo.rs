@@ -169,6 +169,37 @@ impl WorkerRepo {
         Ok(())
     }
 
+    /// Replace the provisional container name with Docker's immutable ID and
+    /// mark the worker running after its health check succeeds.
+    pub async fn finalize_worker_launch(
+        &self,
+        worker_id: &str,
+        container_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE worker SET container_id = $1, container_status = 'running', updated_at = $2 WHERE worker_id = $3",
+        )
+        .bind(container_id)
+        .bind(&now)
+        .bind(worker_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        Ok(())
+    }
+
+    /// Delete one worker row. Associated slot links are cascade-deleted.
+    pub async fn delete_worker(&self, worker_id: &str) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM worker WHERE worker_id = $1")
+            .bind(worker_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn update_worker_agent_status(
         &self,
         worker_id: &str,
@@ -737,6 +768,27 @@ mod tests {
 
         let fetched = repo.get_worker("w-agent-type").await.unwrap().unwrap();
         assert_eq!(fetched.agent_type, "claude");
+    }
+
+    #[tokio::test]
+    async fn finalize_and_delete_provisioning_worker() {
+        let test_db = TestDb::new().await;
+        let repo = WorkerRepo::new(test_db.workflow_pool().clone());
+
+        let mut worker = test_worker("w-provisioning", "claude");
+        worker.container_id = "ur-worker-provisioning".to_owned();
+        worker.container_status = "provisioning".to_owned();
+        repo.insert_worker(&worker).await.unwrap();
+
+        repo.finalize_worker_launch("w-provisioning", "sha256:launched")
+            .await
+            .unwrap();
+        let finalized = repo.get_worker("w-provisioning").await.unwrap().unwrap();
+        assert_eq!(finalized.container_id, "sha256:launched");
+        assert_eq!(finalized.container_status, "running");
+
+        assert_eq!(repo.delete_worker("w-provisioning").await.unwrap(), 1);
+        assert!(repo.get_worker("w-provisioning").await.unwrap().is_none());
     }
 
     #[tokio::test]
