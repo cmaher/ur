@@ -634,9 +634,8 @@ async fn init_managers(
     ur_server::hostexec::materialize_shim(&cfg.config_dir)
         .map_err(|e| anyhow::anyhow!("failed to materialize hostexec script shim: {e}"))?;
 
-    let hostexec_config =
-        ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir, &cfg.hostexec)
-            .expect("failed to load hostexec config");
+    let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir)
+        .expect("failed to load hostexec config");
     let project_registry = ProjectRegistry::new(cfg.projects.clone(), hostexec_config);
 
     let repo_pool_manager = RepoPoolManager::new(

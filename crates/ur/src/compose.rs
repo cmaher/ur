@@ -640,7 +640,6 @@ mod tests {
             },
             worker_port: 10000,
             builderd_port: ur_config::DEFAULT_BUILDERD_PORT,
-            hostexec: ur_config::HostExecConfig::default(),
             db: ur_config::DatabaseConfig {
                 host: ur_config::DEFAULT_DB_HOST.to_string(),
                 port: ur_config::DEFAULT_DB_PORT,
@@ -1214,7 +1213,6 @@ mod tests {
             },
             worker_port: 10000,
             builderd_port: ur_config::DEFAULT_BUILDERD_PORT,
-            hostexec: ur_config::HostExecConfig::default(),
             db: ur_config::DatabaseConfig {
                 host: ur_config::DEFAULT_DB_HOST.to_string(),
                 port: ur_config::DEFAULT_DB_PORT,
