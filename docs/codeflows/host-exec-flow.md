@@ -14,7 +14,7 @@ allowlist checks.
 2. Bash shim at `/home/worker/.local/bin/git` runs `workertools host-exec git status`
 3. `workertools` captures CWD, sends `HostExecRequest` to ur-server (per-worker gRPC)
 4. ur-server `HostExecServiceHandler`:
-   a. Checks command against merged allowlist (defaults + `[hostexec.commands]` from ur.toml)
+   a. Checks command against the built-in defaults plus commands granted by the project
    b. Maps CWD: `/workspace/...` -> `%WORKSPACE%/...` (template prefix, not a resolved host path)
    c. Runs Lua transform if configured (validates/modifies args)
    d. Forwards `BuilderDaemonExecRequest` to builderd
@@ -133,12 +133,49 @@ as PATH commands.
 
 ## Configuration (command flow)
 
-- Built-in defaults: git (with git.lua), gh (with gh.lua), cargo (with cargo.lua)
-- Global hostexec commands: `[hostexec.commands]` section in `ur.toml` (commands with optional Lua transforms)
-- Per-project passthrough commands: `hostexec = ["jq"]` in `ur.toml` `[projects.<key>]`
-- Custom Lua scripts: ~/.ur/hostexec/<name>.lua (referenced from `[hostexec.commands]`)
-- Passthrough commands: `command = {}` in `[hostexec.commands]` (no Lua transform)
-- Merge order: built-in defaults -> global `[hostexec.commands]` -> per-project hostexec list (passthrough only, does not override existing commands)
+`HostExecConfigManager` starts with the 11 baked-in commands (`git`, `gh`,
+`cargo`, `docker`, `ur`, `make`, `go`, `bazel`, `npm`, `pnpm`, and `tsc`). It
+then scans `$UR_CONFIG/hostexec/*.lua`; each filename stem is the command name,
+so `daemon.lua` registers `daemon`. A discovered file with a built-in name, such
+as `git.lua`, shadows that built-in entirely. Non-Lua files and subdirectories
+are ignored.
+
+Discovery populates the registry but does not grant access. Every project gets
+the built-ins automatically. A project grants an additional discovered command
+with its existing array:
+
+```toml
+[projects.myproject]
+hostexec = ["daemon", "jq"]
+```
+
+A granted name with no discovered Lua file remains a plain passthrough command.
+A discovered name absent from the project's grant array is unreachable by that
+project. The effective merge order is therefore baked-in defaults → discovered
+Lua overlay → per-project grant filter.
+
+Lua scripts declare process metadata as top-level globals. Both default to
+`false`; `bidi = true` requires `long_lived = true`.
+
+```lua
+-- $UR_CONFIG/hostexec/daemon.lua
+long_lived = true
+bidi = true
+
+function transform(command, args, working_dir, worker_context)
+  return { command = command, args = args, working_dir = working_dir }
+end
+```
+
+The server executes each script once in the restricted transform sandbox during
+startup and config reload. A syntax error, non-boolean metadata value, invalid
+`bidi`/`long_lived` combination, or missing `transform` function aborts the load
+and names the offending file.
+
+The `[hostexec]` TOML section has been removed. Upgrading with that section still
+present is a hard config error that lists the old command keys and directs the
+operator to delete the section after placing transforms at
+`$UR_CONFIG/hostexec/<command>.lua`; it is never silently ignored.
 
 ## Key Files
 

@@ -1,6 +1,6 @@
 ---
 name: ur:config
-description: Reference for all ur.toml configuration options — top-level fields, [projects], [skills], [worker_modes], [worker_models], [hostexec], [tui], [server], [db], networking, proxy, template paths, and convention-based file layout. Use when adding or modifying ur configuration, debugging config errors, or explaining what a field does.
+description: Use when adding or modifying ur configuration, debugging config errors, or explaining ur.toml fields and convention-based files.
 ---
 
 # ur Configuration Reference
@@ -268,44 +268,42 @@ manual = { model = "claude-opus-5[1m]", effort = "high" }
 
 ---
 
-## `[hostexec]` Section
+## Hostexec Lua discovery
 
-Register custom host-exec commands and configure Lua transform scripts. Workers invoke these commands via the three-hop gRPC pipeline (worker shim → ur-server → builderd).
+Workers invoke host commands through the three-hop gRPC pipeline (worker shim →
+ur-server → builderd). Custom Lua transforms live at
+`$UR_CONFIG/hostexec/<command>.lua`; the filename stem registers the command.
+Only top-level `*.lua` files are discovered.
 
-**Built-in defaults** (always available, no config needed): `git`, `gh`, `cargo`, `docker`, `ur`, `make`, `go`, `bazel`.
+**Built-in defaults** (always available, no config needed): `git`, `gh`,
+`cargo`, `docker`, `ur`, `make`, `go`, `bazel`, `npm`, `pnpm`, and `tsc`. A
+discovered file with the same name shadows the built-in transform.
 
-### `[hostexec.commands.<name>]`
+Lua metadata is declared as top-level globals. Both flags default to `false`,
+and `bidi = true` requires `long_lived = true`:
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `lua` | string | — | Path to a Lua script relative to `$UR_CONFIG/hostexec/` |
-| `default_script` | bool | `false` | Use the built-in default Lua script for this command |
-| `long_lived` | bool | `false` | Process runs indefinitely (daemon mode) |
-| `bidi` | bool | `false` | Use bidirectional streaming (requires `long_lived = true`) |
-
-```toml
-# Simple passthrough (no Lua transform)
-[hostexec.commands.jq]
-
-# Custom Lua transform
-[hostexec.commands.git]
-lua = "my-git.lua"          # reads from ~/.ur/hostexec/my-git.lua
-
-# Restore built-in default script
-[hostexec.commands.cargo]
-default_script = true
-
-# Long-running daemon with bidi streaming
-[hostexec.commands.my-daemon]
+```lua
+-- $UR_CONFIG/hostexec/my-daemon.lua
 long_lived = true
 bidi = true
+
+function transform(command, args, working_dir, worker_context)
+  return { command = command, args = args, working_dir = working_dir }
+end
 ```
 
-**Per-project access control:** Registering a command in `[hostexec]` adds it to the global registry but does **not** grant it to any project. Grant it to a project via `[projects.<key>].hostexec = ["jq"]`. Commands not in the registry are added as plain passthrough when granted.
+Scripts run once in the restricted transform sandbox at server start and config
+reload. Syntax errors, non-boolean metadata, `bidi` without `long_lived`, and a
+missing `transform` function are hard errors naming the file.
 
-**Lua transform signature:** `function transform(command, args, worker_id) ... end`. Return modified `args` table. Omitting a return allows the command through unchanged.
+**Per-project access control:** Discovery only populates the registry. Grant a
+custom command via `[projects.<key>].hostexec = ["my-daemon"]`. A discovered
+command without a grant is unreachable; a granted name without a Lua file is a
+plain passthrough command. Built-ins are auto-granted.
 
-Lua scripts live in `$UR_CONFIG/hostexec/` (i.e., `~/.ur/hostexec/`).
+The top-level `[hostexec]` section has been removed. If it remains in `ur.toml`,
+config load fails with the old command keys and instructions to move transforms
+to command-named Lua files and delete the section.
 
 ---
 
@@ -491,7 +489,7 @@ Several behaviors trigger automatically when files exist at expected paths under
 | `~/.ur/projects/<key>/hooks/skills/` | Host overlay for skill hooks — mounted at `/var/ur/host-hooks/skills/:ro`, wins over in-repo `ur-hooks/skills/` |
 | `~/.ur/projects/<key>/hooks/workflow/pre-push` | Host overlay for workflow verify hook — wins over in-repo `ur-hooks/workflow/pre-push` |
 | `~/.ur/projects/<key>/local/` | Files here are recursively copied into pool slot workspaces at acquire time (mirrors workspace root; pool mode only) |
-| `~/.ur/hostexec/<script.lua>` | Referenced by filename from `[hostexec.commands.<name>].lua` |
+| `~/.ur/hostexec/<command>.lua` | Registers a hostexec Lua transform by filename stem; project access still requires a `hostexec` grant |
 
 **Local files example** — to enable sccache for all pool workers without touching ur.toml:
 
@@ -618,12 +616,6 @@ ur-config = "%URCONFIG%/skills/ur:config"
 
 [skills.code]
 implement = "%URCONFIG%/skills/implement"
-
-[hostexec.commands.jq]
-# passthrough — no Lua transform needed
-
-[hostexec.commands.rg]
-# passthrough
 
 [projects.myrepo]
 repo = "https://github.com/org/myrepo.git"
