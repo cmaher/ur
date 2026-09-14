@@ -30,6 +30,13 @@ pub struct TransformResult {
     pub env: HashMap<String, String>,
 }
 
+/// Flags a hostexec Lua script declares about itself.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LuaCommandMetadata {
+    pub long_lived: bool,
+    pub bidi: bool,
+}
+
 #[derive(Clone, Default)]
 pub struct LuaTransformManager {
     // Lua VM is not Clone; create per-request or use a pool.
@@ -50,11 +57,7 @@ impl LuaTransformManager {
         working_dir: &str,
         worker_context: Option<&WorkerContext>,
     ) -> Result<TransformResult> {
-        let lua = Lua::new_with(
-            StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::UTF8,
-            mlua::LuaOptions::default(),
-        )
-        .map_err(|e| anyhow::anyhow!("creating lua vm: {e}"))?;
+        let lua = create_sandbox()?;
 
         lua.load(lua_source)
             .exec()
@@ -128,6 +131,49 @@ impl LuaTransformManager {
             _ => anyhow::bail!("lua transform must return a table"),
         }
     }
+
+    /// Execute a Lua script in the transform sandbox and read its metadata.
+    pub fn read_metadata(&self, lua_source: &str) -> Result<LuaCommandMetadata> {
+        let lua = create_sandbox()?;
+        lua.load(lua_source)
+            .exec()
+            .map_err(|e| anyhow::anyhow!("loading lua script: {e}"))?;
+
+        let globals = lua.globals();
+        let transform: Value = globals
+            .get("transform")
+            .map_err(|e| anyhow::anyhow!("reading transform function: {e}"))?;
+        if !matches!(transform, Value::Function(_)) {
+            anyhow::bail!("lua script must define a transform function");
+        }
+
+        let long_lived = read_boolean_global(&globals, "long_lived")?;
+        let bidi = read_boolean_global(&globals, "bidi")?;
+        if bidi && !long_lived {
+            anyhow::bail!("bidi requires long_lived to be true");
+        }
+
+        Ok(LuaCommandMetadata { long_lived, bidi })
+    }
+}
+
+fn create_sandbox() -> Result<Lua> {
+    Lua::new_with(
+        StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::UTF8,
+        mlua::LuaOptions::default(),
+    )
+    .map_err(|e| anyhow::anyhow!("creating lua vm: {e}"))
+}
+
+fn read_boolean_global(globals: &mlua::Table, key: &str) -> Result<bool> {
+    match globals
+        .get::<Value>(key)
+        .map_err(|e| anyhow::anyhow!("reading {key}: {e}"))?
+    {
+        Value::Nil => Ok(false),
+        Value::Boolean(value) => Ok(value),
+        _ => anyhow::bail!("{key} must be a boolean"),
+    }
 }
 
 fn extract_args(value: Value) -> Result<Vec<String>> {
@@ -169,6 +215,86 @@ fn extract_env(value: Value) -> Result<HashMap<String, String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const VALID_TRANSFORM: &str = r#"
+        function transform(command, args, working_dir)
+            return { command = command, args = args, working_dir = working_dir }
+        end
+    "#;
+
+    #[test]
+    fn metadata_defaults_to_false() {
+        let metadata = LuaTransformManager::new()
+            .read_metadata(VALID_TRANSFORM)
+            .unwrap();
+
+        assert_eq!(metadata, LuaCommandMetadata::default());
+    }
+
+    #[test]
+    fn metadata_reads_declared_flags() {
+        let script = format!("long_lived = true\nbidi = true\n{VALID_TRANSFORM}");
+
+        let metadata = LuaTransformManager::new().read_metadata(&script).unwrap();
+
+        assert_eq!(
+            metadata,
+            LuaCommandMetadata {
+                long_lived: true,
+                bidi: true,
+            }
+        );
+    }
+
+    #[test]
+    fn metadata_rejects_bidi_without_long_lived() {
+        let script = format!("bidi = true\n{VALID_TRANSFORM}");
+
+        let error = LuaTransformManager::new()
+            .read_metadata(&script)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("bidi"));
+        assert!(error.to_string().contains("long_lived"));
+    }
+
+    #[test]
+    fn metadata_rejects_non_boolean_flag() {
+        let script = format!("long_lived = 'yes'\n{VALID_TRANSFORM}");
+
+        let error = LuaTransformManager::new()
+            .read_metadata(&script)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("long_lived"));
+    }
+
+    #[test]
+    fn metadata_rejects_syntax_error() {
+        let error = LuaTransformManager::new()
+            .read_metadata("function transform(")
+            .unwrap_err();
+
+        assert!(error.to_string().contains("loading lua script"));
+    }
+
+    #[test]
+    fn metadata_requires_transform_function() {
+        let error = LuaTransformManager::new()
+            .read_metadata("long_lived = false")
+            .unwrap_err();
+
+        assert!(error.to_string().contains("transform function"));
+    }
+
+    #[test]
+    fn metadata_uses_restricted_standard_library() {
+        let script = format!(
+            "assert(io == nil)\nassert(os == nil)\nassert(package == nil)\n{VALID_TRANSFORM}"
+        );
+
+        LuaTransformManager::new().read_metadata(&script).unwrap();
+    }
 
     #[test]
     fn test_passthrough_transform() {
