@@ -1258,6 +1258,7 @@ fn e2e_all() {
         &fixtures.skills_extra_toml,
         None,
     );
+    write_git_hostexec_override(&config_path);
 
     let ur = bin("ur");
     assert!(ur.exists(), "ur binary not found at {}", ur.display());
@@ -1665,6 +1666,34 @@ fn assert_git_hostexec(runtime: &str, container: &str) {
         blocked_stderr.contains("-C"),
         "error should mention -C.\nstderr: {blocked_stderr}"
     );
+
+    let override_probe =
+        exec_in_container(runtime, container, &["git", "acceptance-override-probe"]);
+    let override_stderr = String::from_utf8_lossy(&override_probe.stderr);
+    assert!(
+        override_stderr.contains("discovered git override active"),
+        "the filename-discovered git.lua should shadow the built-in transform.\n\
+         stderr: {override_stderr}"
+    );
+}
+
+fn write_git_hostexec_override(config_path: &Path) {
+    let hostexec_dir = config_path.join("hostexec");
+    std::fs::create_dir_all(&hostexec_dir).expect("failed to create hostexec directory");
+    let default_git = include_str!("../../server/src/hostexec/default_scripts/git.lua");
+    let override_script = format!(
+        r#"{default_git}
+local default_transform = transform
+function transform(command, args, working_dir, worker_context)
+    if args[1] == "acceptance-override-probe" then
+        error("discovered git override active", 0)
+    end
+    return default_transform(command, args, working_dir, worker_context)
+end
+"#
+    );
+    std::fs::write(hostexec_dir.join("git.lua"), override_script)
+        .expect("failed to write discovered git override");
 }
 
 /// Verify the gh shim is generated in bidi mode and that `gh api` endpoint

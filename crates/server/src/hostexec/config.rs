@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use super::{LuaDiscoveryManager, LuaTransformManager};
+use super::LuaDiscoveryManager;
 
 #[derive(Debug, Clone)]
 pub struct CommandConfig {
@@ -15,19 +15,30 @@ pub struct CommandConfig {
 #[derive(Clone)]
 pub struct HostExecConfigManager {
     commands: HashMap<String, CommandConfig>,
+    discovery: Option<LuaDiscoveryManager>,
 }
 
 impl HostExecConfigManager {
     /// Build the baked-in defaults overlaid by discovered Lua scripts.
-    pub fn load(config_dir: &Path) -> Result<Self> {
+    pub fn load(config_dir: &Path, discovery: &LuaDiscoveryManager) -> Result<Self> {
         let mut commands = Self::defaults();
         let hostexec_dir = config_dir.join(ur_config::HOSTEXEC_DIR);
-        let discovery = LuaDiscoveryManager::new(hostexec_dir, LuaTransformManager::new());
-        for (name, command) in discovery.discover()? {
+        for (name, command) in discovery.discover(&hostexec_dir)? {
             commands.insert(name, command);
         }
 
-        Ok(Self { commands })
+        Ok(Self {
+            commands,
+            discovery: Some(discovery.clone()),
+        })
+    }
+
+    pub fn reload(&self, config_dir: &Path) -> Result<Self> {
+        let discovery = self
+            .discovery
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("hostexec discovery is not configured"))?;
+        Self::load(config_dir, discovery)
     }
 
     /// Create an empty config manager with no commands.
@@ -36,13 +47,15 @@ impl HostExecConfigManager {
     pub fn empty() -> Self {
         Self {
             commands: HashMap::new(),
+            discovery: None,
         }
     }
 
     /// Create a new config manager containing only the built-in default commands.
     pub fn defaults_only(&self) -> Self {
         Self {
-            commands: Self::defaults(),
+            commands: self.effective_defaults(),
+            discovery: self.discovery.clone(),
         }
     }
 
@@ -54,7 +67,7 @@ impl HostExecConfigManager {
     /// registry are added as passthrough (no Lua, not long_lived, not bidi).
     /// Default commands (git, gh, cargo, docker, ur) are always included.
     pub fn with_project_commands(&self, granted: &[String]) -> Self {
-        let mut commands = Self::defaults();
+        let mut commands = self.effective_defaults();
         for name in granted {
             if let Some(cfg) = self.commands.get(name) {
                 commands.insert(name.clone(), cfg.clone());
@@ -66,7 +79,22 @@ impl HostExecConfigManager {
                 });
             }
         }
-        Self { commands }
+        Self {
+            commands,
+            discovery: self.discovery.clone(),
+        }
+    }
+
+    fn effective_defaults(&self) -> HashMap<String, CommandConfig> {
+        Self::defaults()
+            .into_keys()
+            .filter_map(|name| {
+                self.commands
+                    .get(&name)
+                    .cloned()
+                    .map(|config| (name, config))
+            })
+            .collect()
     }
 
     fn defaults() -> HashMap<String, CommandConfig> {
@@ -216,10 +244,15 @@ mod tests {
         fs::write(hostexec_dir.join(format!("{name}.lua")), source).unwrap();
     }
 
+    fn load(temp: &TempDir) -> HostExecConfigManager {
+        let discovery = LuaDiscoveryManager::new(LuaTransformManager::new());
+        HostExecConfigManager::load(temp.path(), &discovery).unwrap()
+    }
+
     #[test]
     fn load_includes_all_built_in_defaults() {
         let tmp = TempDir::new().unwrap();
-        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let mgr = load(&tmp);
 
         assert_eq!(
             mgr.command_names(),
@@ -235,10 +268,25 @@ mod tests {
         let script = format!("-- user git transform\n{TRANSFORM}");
         write_lua(&tmp, "git", &script);
 
-        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let mgr = load(&tmp);
 
         assert_eq!(
             mgr.get("git").unwrap().lua_source.as_deref(),
+            Some(script.as_str())
+        );
+    }
+
+    #[test]
+    fn discovered_script_shadows_built_in_for_project_without_explicit_grant() {
+        let tmp = TempDir::new().unwrap();
+        let script = format!("-- user git transform\n{TRANSFORM}");
+        write_lua(&tmp, "git", &script);
+
+        let mgr = load(&tmp);
+        let project = mgr.with_project_commands(&[]);
+
+        assert_eq!(
+            project.get("git").unwrap().lua_source.as_deref(),
             Some(script.as_str())
         );
     }
@@ -249,7 +297,7 @@ mod tests {
         let script = format!("long_lived = true\nbidi = true\n{TRANSFORM}");
         write_lua(&tmp, "daemon", &script);
 
-        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let mgr = load(&tmp);
         let project = mgr.with_project_commands(&["daemon".into()]);
         let daemon = project.get("daemon").unwrap();
 
@@ -261,7 +309,7 @@ mod tests {
     #[test]
     fn granted_unknown_command_remains_passthrough() {
         let tmp = TempDir::new().unwrap();
-        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let mgr = load(&tmp);
         let project = mgr.with_project_commands(&["rg".into()]);
         let rg = project.get("rg").unwrap();
 
@@ -274,7 +322,7 @@ mod tests {
     fn discovered_command_requires_project_grant() {
         let tmp = TempDir::new().unwrap();
         write_lua(&tmp, "private", TRANSFORM);
-        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let mgr = load(&tmp);
 
         assert!(mgr.is_allowed("private"));
         assert!(!mgr.with_project_commands(&[]).is_allowed("private"));
@@ -284,7 +332,7 @@ mod tests {
     fn defaults_only_excludes_discovered_commands() {
         let tmp = TempDir::new().unwrap();
         write_lua(&tmp, "private", TRANSFORM);
-        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let mgr = load(&tmp);
 
         assert!(mgr.defaults_only().is_allowed("git"));
         assert!(!mgr.defaults_only().is_allowed("private"));
@@ -295,7 +343,7 @@ mod tests {
     #[test]
     fn test_gh_default_is_bidi() {
         let tmp = TempDir::new().unwrap();
-        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let mgr = load(&tmp);
         let gh_cfg = mgr.get("gh").unwrap();
         assert!(gh_cfg.bidi, "gh must be bidi so --input - receives stdin");
         assert!(!gh_cfg.long_lived);

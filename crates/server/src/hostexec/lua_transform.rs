@@ -149,9 +149,6 @@ impl LuaTransformManager {
 
         let long_lived = read_boolean_global(&globals, "long_lived")?;
         let bidi = read_boolean_global(&globals, "bidi")?;
-        if bidi && !long_lived {
-            anyhow::bail!("bidi requires long_lived to be true");
-        }
 
         Ok(LuaCommandMetadata { long_lived, bidi })
     }
@@ -247,15 +244,18 @@ mod tests {
     }
 
     #[test]
-    fn metadata_rejects_bidi_without_long_lived() {
+    fn metadata_allows_bidi_without_long_lived() {
         let script = format!("bidi = true\n{VALID_TRANSFORM}");
 
-        let error = LuaTransformManager::new()
-            .read_metadata(&script)
-            .unwrap_err();
+        let metadata = LuaTransformManager::new().read_metadata(&script).unwrap();
 
-        assert!(error.to_string().contains("bidi"));
-        assert!(error.to_string().contains("long_lived"));
+        assert_eq!(
+            metadata,
+            LuaCommandMetadata {
+                long_lived: false,
+                bidi: true,
+            }
+        );
     }
 
     #[test]

@@ -119,8 +119,9 @@ built-in name shadows its baked-in transform. Discovery alone does not grant a
 project access; use `projects.<key>.hostexec` below. A granted command without a
 Lua file is a passthrough command.
 
-Scripts may declare `long_lived` and `bidi` as top-level booleans; both default
-to `false`, and `bidi = true` requires `long_lived = true`:
+Scripts may declare `long_lived` and `bidi` as independent top-level booleans;
+both default to `false`. Short-lived commands may enable `bidi` when they need
+stdin:
 
 ```lua
 -- $UR_CONFIG/hostexec/bacon.lua

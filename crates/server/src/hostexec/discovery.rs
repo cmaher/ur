@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
@@ -9,41 +9,40 @@ use super::lua_transform::LuaTransformManager;
 
 #[derive(Clone)]
 pub struct LuaDiscoveryManager {
-    hostexec_dir: PathBuf,
     lua: LuaTransformManager,
 }
 
 impl LuaDiscoveryManager {
-    pub fn new(hostexec_dir: PathBuf, lua: LuaTransformManager) -> Self {
-        Self { hostexec_dir, lua }
+    pub fn new(lua: LuaTransformManager) -> Self {
+        Self { lua }
     }
 
     /// Discover and validate top-level Lua transforms by filename.
-    pub fn discover(&self) -> Result<HashMap<String, CommandConfig>> {
-        let entries = match std::fs::read_dir(&self.hostexec_dir) {
+    pub fn discover(&self, hostexec_dir: &Path) -> Result<HashMap<String, CommandConfig>> {
+        let entries = match std::fs::read_dir(hostexec_dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
             Err(error) => {
                 return Err(error).with_context(|| {
-                    format!("reading hostexec directory {}", self.hostexec_dir.display())
+                    format!("reading hostexec directory {}", hostexec_dir.display())
                 });
             }
         };
 
         let mut entries = entries
             .collect::<std::io::Result<Vec<_>>>()
-            .with_context(|| {
-                format!("reading hostexec directory {}", self.hostexec_dir.display())
-            })?;
+            .with_context(|| format!("reading hostexec directory {}", hostexec_dir.display()))?;
         entries.sort_by_key(std::fs::DirEntry::path);
 
         let mut commands = HashMap::new();
         for entry in entries {
             let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .with_context(|| format!("reading file type for {}", path.display()))?;
-            if !file_type.is_file() || path.extension() != Some(OsStr::new("lua")) {
+            if path.extension() != Some(OsStr::new("lua")) {
+                continue;
+            }
+            let metadata = std::fs::metadata(&path)
+                .with_context(|| format!("reading metadata for {}", path.display()))?;
+            if !metadata.is_file() {
                 continue;
             }
 
@@ -96,8 +95,8 @@ mod tests {
         end
     "#;
 
-    fn manager(path: &std::path::Path) -> LuaDiscoveryManager {
-        LuaDiscoveryManager::new(path.to_path_buf(), LuaTransformManager::new())
+    fn manager() -> LuaDiscoveryManager {
+        LuaDiscoveryManager::new(LuaTransformManager::new())
     }
 
     #[test]
@@ -109,9 +108,23 @@ mod tests {
         fs::create_dir(temp.path().join("nested")).unwrap();
         fs::write(temp.path().join("nested/hidden.lua"), TRANSFORM).unwrap();
 
-        let discovered = manager(temp.path()).discover().unwrap();
+        let discovered = manager().discover(temp.path()).unwrap();
 
         assert_eq!(discovered.len(), 1);
+        assert!(discovered.contains_key("foo"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovers_symlinked_lua_files() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("transform"), TRANSFORM).unwrap();
+        std::os::unix::fs::symlink(source.join("transform"), temp.path().join("foo.lua")).unwrap();
+
+        let discovered = manager().discover(temp.path()).unwrap();
+
         assert!(discovered.contains_key("foo"));
     }
 
@@ -121,7 +134,7 @@ mod tests {
         let script = format!("long_lived = true\n{TRANSFORM}");
         fs::write(temp.path().join("daemon.lua"), &script).unwrap();
 
-        let discovered = manager(temp.path()).discover().unwrap();
+        let discovered = manager().discover(temp.path()).unwrap();
         let command = discovered.get("daemon").unwrap();
 
         assert_eq!(command.lua_source.as_deref(), Some(script.as_str()));
@@ -134,7 +147,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         fs::write(temp.path().join("my command.lua"), TRANSFORM).unwrap();
 
-        let error = manager(temp.path()).discover().unwrap_err();
+        let error = manager().discover(temp.path()).unwrap_err();
 
         assert!(error.to_string().contains("my command.lua"));
     }
@@ -145,7 +158,7 @@ mod tests {
         fs::write(temp.path().join("z bad.lua"), TRANSFORM).unwrap();
         fs::write(temp.path().join("a bad.lua"), TRANSFORM).unwrap();
 
-        let error = manager(temp.path()).discover().unwrap_err();
+        let error = manager().discover(temp.path()).unwrap_err();
 
         assert!(error.to_string().contains("a bad.lua"));
     }
@@ -155,7 +168,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         fs::write(temp.path().join("broken.lua"), "function transform(").unwrap();
 
-        let error = manager(temp.path()).discover().unwrap_err();
+        let error = manager().discover(temp.path()).unwrap_err();
 
         assert!(error.to_string().contains("broken.lua"));
     }
@@ -163,7 +176,7 @@ mod tests {
     #[test]
     fn missing_directory_is_empty() {
         let temp = TempDir::new().unwrap();
-        let discovered = manager(&temp.path().join("missing")).discover().unwrap();
+        let discovered = manager().discover(&temp.path().join("missing")).unwrap();
 
         assert!(discovered.is_empty());
     }
@@ -171,7 +184,7 @@ mod tests {
     #[test]
     fn empty_directory_is_empty() {
         let temp = TempDir::new().unwrap();
-        let discovered = manager(temp.path()).discover().unwrap();
+        let discovered = manager().discover(temp.path()).unwrap();
 
         assert!(discovered.is_empty());
     }

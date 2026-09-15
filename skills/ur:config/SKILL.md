@@ -279,8 +279,8 @@ Only top-level `*.lua` files are discovered.
 `cargo`, `docker`, `ur`, `make`, `go`, `bazel`, `npm`, `pnpm`, and `tsc`. A
 discovered file with the same name shadows the built-in transform.
 
-Lua metadata is declared as top-level globals. Both flags default to `false`,
-and `bidi = true` requires `long_lived = true`:
+Lua metadata is declared as independent top-level globals. Both flags default
+to `false`; short-lived commands may enable `bidi` when they need stdin:
 
 ```lua
 -- $UR_CONFIG/hostexec/my-daemon.lua
@@ -293,8 +293,8 @@ end
 ```
 
 Scripts run once in the restricted transform sandbox at server start and config
-reload. Syntax errors, non-boolean metadata, `bidi` without `long_lived`, and a
-missing `transform` function are hard errors naming the file.
+reload. Syntax errors, non-boolean metadata, and a missing `transform` function
+are hard errors naming the file.
 
 **Per-project access control:** Discovery only populates the registry. Grant a
 custom command via `[projects.<key>].hostexec = ["my-daemon"]`. A discovered

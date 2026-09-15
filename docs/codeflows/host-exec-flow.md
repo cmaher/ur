@@ -154,8 +154,8 @@ A discovered name absent from the project's grant array is unreachable by that
 project. The effective merge order is therefore baked-in defaults → discovered
 Lua overlay → per-project grant filter.
 
-Lua scripts declare process metadata as top-level globals. Both default to
-`false`; `bidi = true` requires `long_lived = true`.
+Lua scripts declare process metadata as independent top-level globals. Both
+default to `false`; short-lived commands may enable `bidi` when they need stdin.
 
 ```lua
 -- $UR_CONFIG/hostexec/daemon.lua
@@ -168,9 +168,8 @@ end
 ```
 
 The server executes each script once in the restricted transform sandbox during
-startup and config reload. A syntax error, non-boolean metadata value, invalid
-`bidi`/`long_lived` combination, or missing `transform` function aborts the load
-and names the offending file.
+startup and config reload. A syntax error, non-boolean metadata value, or
+missing `transform` function aborts the load and names the offending file.
 
 The `[hostexec]` TOML section has been removed. Upgrading with that section still
 present is a hard config error that lists the old command keys and directs the

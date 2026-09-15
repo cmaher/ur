@@ -91,7 +91,7 @@ impl ProjectRegistry {
     }
 
     fn apply(&self, config: ur_config::Config) -> Result<ReloadReport> {
-        let new_hostexec = HostExecConfigManager::load(&config.config_dir)?;
+        let new_hostexec = self.hostexec_config().reload(&config.config_dir)?;
         let new_projects = config.projects;
 
         let mut inner = self.inner.write().expect("ProjectRegistry lock poisoned");
@@ -122,6 +122,12 @@ mod tests {
         fs::write(dir.join("ur.toml"), full).unwrap();
     }
 
+    fn load_hostexec(dir: &Path) -> HostExecConfigManager {
+        let discovery =
+            crate::hostexec::LuaDiscoveryManager::new(crate::hostexec::LuaTransformManager::new());
+        HostExecConfigManager::load(dir, &discovery).unwrap()
+    }
+
     fn toml_with_project(key: &str) -> String {
         format!(
             r#"
@@ -147,7 +153,7 @@ image = "ur-worker"
     fn registry_from_toml(dir: &Path, content: &str) -> ProjectRegistry {
         write_toml(dir, content);
         let config = ur_config::Config::load_from(dir).unwrap();
-        let hostexec = HostExecConfigManager::load(dir).unwrap();
+        let hostexec = load_hostexec(dir);
         ProjectRegistry::new(config.projects, hostexec)
     }
 
@@ -192,7 +198,7 @@ image = "ur-worker"
         write_toml(tmp.path(), &toml_with_project("alpha"));
 
         let config = ur_config::Config::load_from(tmp.path()).unwrap();
-        let hostexec = HostExecConfigManager::load(tmp.path()).unwrap();
+        let hostexec = load_hostexec(tmp.path());
         let registry = ProjectRegistry::new(config.projects, hostexec);
 
         assert!(registry.get("alpha").is_some());
@@ -220,7 +226,7 @@ image = "ur-worker"
         write_toml(tmp.path(), &toml_with_project("alpha"));
 
         let config = ur_config::Config::load_from(tmp.path()).unwrap();
-        let hostexec = HostExecConfigManager::load(tmp.path()).unwrap();
+        let hostexec = load_hostexec(tmp.path());
         let registry = ProjectRegistry::new(config.projects, hostexec);
 
         // Write invalid TOML
@@ -248,7 +254,7 @@ image = "ur-worker"
         write_toml(tmp.path(), &toml);
 
         let config = ur_config::Config::load_from(tmp.path()).unwrap();
-        let hostexec = HostExecConfigManager::load(tmp.path()).unwrap();
+        let hostexec = load_hostexec(tmp.path());
         let registry = ProjectRegistry::new(config.projects, hostexec);
 
         let map = registry.projects();
@@ -263,7 +269,7 @@ image = "ur-worker"
         write_toml(tmp.path(), &toml_with_project("alpha"));
 
         let config = ur_config::Config::load_from(tmp.path()).unwrap();
-        let hostexec = HostExecConfigManager::load(tmp.path()).unwrap();
+        let hostexec = load_hostexec(tmp.path());
         let registry = ProjectRegistry::new(config.projects, hostexec);
 
         let hec = registry.hostexec_config();
