@@ -5,7 +5,10 @@ description: Use when adding or modifying ur configuration, debugging config err
 
 # ur Configuration Reference
 
-All user configuration lives in a single file: `$UR_CONFIG/ur.toml` (default `~/.ur/ur.toml`). Do **not** create separate config files — extend `ur.toml` instead.
+User configuration lives in `$UR_CONFIG/ur.toml` (default `~/.ur/ur.toml`),
+except for hostexec Lua transforms discovered at
+`$UR_CONFIG/hostexec/<command>.lua`. Do **not** create separate config files for
+other settings — extend `ur.toml` instead.
 
 Config is loaded by `Config::load()` in `crates/ur_config/src/lib.rs`. Missing file → error ("run 'ur init'"). Missing keys → field-specific defaults.
 
