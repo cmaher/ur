@@ -37,7 +37,6 @@ fn test_config(dir: &Path, workspace: &Path) -> ur_config::Config {
             allowlist: vec![],
         },
         network: test_network_config(),
-        hostexec: ur_config::HostExecConfig::default(),
         db: ur_config::DatabaseConfig {
             host: ur_config::DEFAULT_DB_HOST.to_string(),
             port: ur_config::DEFAULT_DB_PORT,

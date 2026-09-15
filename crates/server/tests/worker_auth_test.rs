@@ -33,7 +33,6 @@ fn make_test_config(dir: &Path, workspace: &Path) -> (ur_config::Config, ur_conf
             allowlist: vec![],
         },
         network: network_config.clone(),
-        hostexec: ur_config::HostExecConfig::default(),
         db: ur_config::DatabaseConfig {
             host: ur_config::DEFAULT_DB_HOST.to_string(),
             port: ur_config::DEFAULT_DB_PORT,

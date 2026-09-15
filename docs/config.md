@@ -106,30 +106,37 @@ retain_count = 3
 | `interval_minutes` | u64 | `30` | Interval between backups in minutes |
 | `retain_count` | u64 | `3` | Number of backup files to retain (older ones deleted) |
 
-## `[hostexec]`
+## Hostexec Lua discovery
 
-Host execution command configuration. Commands defined here allow workers to execute processes on the host via gRPC.
+Hostexec transforms are not configured in a top-level TOML section. Put each
+transform at `$UR_CONFIG/hostexec/<command>.lua`; the filename stem registers
+the command. For example, `$UR_CONFIG/hostexec/bacon.lua` registers `bacon`.
+Only top-level `*.lua` files are considered.
 
-Built-in default commands (have default Lua scripts): `git`, `gh`, `cargo`, `docker`, `ur`.
+The 11 built-ins (`git`, `gh`, `cargo`, `docker`, `ur`, `make`, `go`, `bazel`,
+`npm`, `pnpm`, and `tsc`) are always registered. A discovered file with a
+built-in name shadows its baked-in transform. Discovery alone does not grant a
+project access; use `projects.<key>.hostexec` below. A granted command without a
+Lua file is a passthrough command.
 
-```toml
-[hostexec.commands.git]
-default_script = true
+Scripts may declare `long_lived` and `bidi` as independent top-level booleans;
+both default to `false`. Short-lived commands may enable `bidi` when they need
+stdin:
 
-[hostexec.commands.bacon]
-lua = "bacon.lua"
+```lua
+-- $UR_CONFIG/hostexec/bacon.lua
 long_lived = true
 bidi = true
+
+function transform(command, args, working_dir, worker_context)
+  return { command = command, args = args, working_dir = working_dir }
+end
 ```
 
-### `[hostexec.commands.<name>]`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `lua` | string | — | Path to Lua script, relative to `$UR_CONFIG/hostexec/` |
-| `default_script` | bool | `false` | Use built-in default Lua script for this command (if one exists) |
-| `long_lived` | bool | `false` | Process runs indefinitely (daemon) |
-| `bidi` | bool | `false` | Bidirectional streaming. Requires `long_lived = true` — config load fails if `bidi = true` and `long_lived = false` |
+Scripts are validated in a restricted Lua sandbox at server start and config
+reload. Syntax errors, invalid metadata, or a missing `transform` function fail
+the load. The removed `[hostexec]` TOML section is a hard migration error; move
+each transform to `<command>.lua` and delete the section.
 
 ## `[tui]`
 
@@ -387,15 +394,6 @@ max_implement_cycles = 6
 path = "/Users/me/.ur/backups"
 interval_minutes = 30
 retain_count = 3
-
-[hostexec.commands.git]
-default_script = true
-
-[hostexec.commands.gh]
-default_script = true
-
-[hostexec.commands.ur]
-default_script = true
 
 [tui]
 theme = "nord"

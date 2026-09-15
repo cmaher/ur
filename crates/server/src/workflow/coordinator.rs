@@ -509,7 +509,6 @@ mod tests {
                 server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
                 worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
             },
-            hostexec: ur_config::HostExecConfig::default(),
             db: ur_config::DatabaseConfig {
                 host: ur_config::DEFAULT_DB_HOST.to_string(),
                 port: ur_config::DEFAULT_DB_PORT,
