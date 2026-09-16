@@ -264,8 +264,8 @@ pub const BUILDERD_ADDR_ENV: &str = "UR_BUILDERD_ADDR";
 pub const HOSTEXEC_DIR: &str = "hostexec";
 
 /// Allowlist configuration filename within `HOSTEXEC_DIR`.
-/// Deprecated: hostexec commands are now configured in `ur.toml` under `[hostexec.commands]`.
-/// This constant is retained only for migration detection.
+/// Deprecated: hostexec commands are discovered from Lua filenames.
+/// This constant is retained for compatibility with legacy callers.
 pub const HOSTEXEC_ALLOWLIST_FILE: &str = "allowlist.toml";
 
 /// Default hostname for the Squid proxy container on the Docker network.
@@ -341,7 +341,6 @@ struct RawConfig {
     git_branch_prefix: Option<String>,
     proxy: Option<RawProxyConfig>,
     network: Option<RawNetworkConfig>,
-    hostexec: Option<RawHostExecConfig>,
     db: Option<RawDatabaseConfig>,
     ticket_db: Option<RawTicketDbConfig>,
     workflow_db: Option<RawWorkflowDbConfig>,
@@ -372,39 +371,6 @@ struct RawSkills {
     code: IndexMap<String, String>,
     #[serde(default)]
     design: IndexMap<String, String>,
-}
-
-/// Raw TOML representation for the `[hostexec]` section.
-#[derive(Debug, Default, Deserialize)]
-struct RawHostExecConfig {
-    #[serde(default)]
-    commands: HashMap<String, RawHostExecCommandConfig>,
-}
-
-/// Raw TOML representation for a single hostexec command entry.
-#[derive(Debug, Default, Deserialize)]
-struct RawHostExecCommandConfig {
-    /// Path to a Lua script (relative to `$UR_CONFIG/hostexec/`).
-    lua: Option<String>,
-    /// Use the built-in default Lua script for this command (if one exists).
-    default_script: Option<bool>,
-    /// When true, the process is expected to run indefinitely (e.g. a daemon).
-    long_lived: Option<bool>,
-    /// When true, the command uses bidirectional streaming (requires long_lived = true).
-    bidi: Option<bool>,
-}
-
-/// Resolved configuration for a single hostexec command.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostExecCommandConfig {
-    /// Path to a Lua script (relative to `$UR_CONFIG/hostexec/`).
-    pub lua: Option<String>,
-    /// Use the built-in default Lua script for this command (if one exists).
-    pub default_script: bool,
-    /// When true, the process is expected to run indefinitely (e.g. a daemon).
-    pub long_lived: bool,
-    /// When true, the command uses bidirectional streaming (requires long_lived = true).
-    pub bidi: bool,
 }
 
 /// A single resolved global skill: a named path on the host filesystem.
@@ -456,13 +422,6 @@ impl GlobalSkillsConfig {
         }
         skills
     }
-}
-
-/// Resolved hostexec configuration from the `[hostexec]` section of `ur.toml`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct HostExecConfig {
-    /// Named commands with optional Lua transform configuration.
-    pub commands: HashMap<String, HostExecCommandConfig>,
 }
 
 /// Raw TOML representation for a `[projects.<key>.container]` section.
@@ -1254,8 +1213,6 @@ pub struct Config {
     pub proxy: ProxyConfig,
     /// Docker network settings for container networking.
     pub network: NetworkConfig,
-    /// Global hostexec command configuration (from `[hostexec]` section).
-    pub hostexec: HostExecConfig,
     /// Database configuration (connection details + backup settings).
     pub db: DatabaseConfig,
     /// Ticket database configuration (connection details + backup settings).
@@ -1337,6 +1294,8 @@ impl Config {
     /// alongside the reload request — to avoid re-reading from a possibly
     /// stale view of the filesystem (Docker Desktop bind-mount lag on macOS).
     pub fn from_toml_str(contents: &str, config_dir: &Path) -> anyhow::Result<Self> {
+        let document: toml::Value = toml::from_str(contents)?;
+        reject_removed_hostexec_section(&document)?;
         let raw: RawConfig = toml::from_str(contents)?;
 
         let agent = resolve_top_level_agent(raw.agent.as_deref())?;
@@ -1352,11 +1311,6 @@ impl Config {
             .unwrap_or_else(|| config_dir.join("docker-compose.yml"));
         let proxy = resolve_proxy(raw.proxy);
         let network = resolve_network(raw.network);
-
-        let hostexec = match raw.hostexec {
-            Some(h) => resolve_hostexec_config(h)?,
-            None => HostExecConfig::default(),
-        };
 
         let db = resolve_database(raw.db, raw.backup);
         let ticket_db = resolve_ticket_db(raw.ticket_db);
@@ -1395,7 +1349,6 @@ impl Config {
             compose_file,
             proxy,
             network,
-            hostexec,
             db,
             ticket_db,
             workflow_db,
@@ -1408,6 +1361,34 @@ impl Config {
             workspace_brain_dir,
         })
     }
+}
+
+fn reject_removed_hostexec_section(document: &toml::Value) -> anyhow::Result<()> {
+    let Some(hostexec) = document.get("hostexec") else {
+        return Ok(());
+    };
+
+    let mut found = hostexec
+        .get("commands")
+        .and_then(toml::Value::as_table)
+        .map(|commands| {
+            commands
+                .keys()
+                .map(|name| format!("hostexec.commands.{name}"))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    found.sort();
+    if found.is_empty() {
+        found.push("hostexec".to_owned());
+    }
+
+    anyhow::bail!(
+        "ur.toml: the [hostexec] section has been removed. Lua transforms are now \
+         discovered from $UR_CONFIG/hostexec/<command>.lua by filename.\n\
+         Delete the [hostexec] section.\n  found: {}",
+        found.join(", ")
+    )
 }
 
 /// Resolve the top-level `agent` key: the default harness for every worker.
@@ -1678,25 +1659,6 @@ fn resolve_project_config(
         brain_dir: raw_proj.brain_dir,
     };
     Ok((key, resolved))
-}
-
-fn resolve_hostexec_config(raw: RawHostExecConfig) -> anyhow::Result<HostExecConfig> {
-    let mut commands = HashMap::new();
-    for (name, raw_cmd) in raw.commands {
-        let long_lived = raw_cmd.long_lived.unwrap_or(false);
-        let bidi = raw_cmd.bidi.unwrap_or(false);
-        if bidi && !long_lived {
-            anyhow::bail!("hostexec command '{name}': bidi = true requires long_lived = true");
-        }
-        let cmd = HostExecCommandConfig {
-            lua: raw_cmd.lua,
-            default_script: raw_cmd.default_script.unwrap_or(false),
-            long_lived,
-            bidi,
-        };
-        commands.insert(name, cmd);
-    }
-    Ok(HostExecConfig { commands })
 }
 
 fn resolve_proxy(raw: Option<RawProxyConfig>) -> ProxyConfig {
@@ -3552,87 +3514,28 @@ mounts = ["%INVALID%/bad:/workspace/bad"]
     }
 
     #[test]
-    fn hostexec_defaults_to_empty_when_absent() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert!(cfg.hostexec.commands.is_empty());
-    }
-
-    #[test]
-    fn hostexec_parses_passthrough_command() {
+    fn removed_hostexec_section_reports_migration_and_entries() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
 node_id = "n"
-[hostexec.commands]
-cargo = {}
+[hostexec.commands.paxdb]
+lua = "paxdb.lua"
+[hostexec.commands.jiratools]
+long_lived = true
 "#,
         )
         .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.hostexec.commands.len(), 1);
-        let cargo = &cfg.hostexec.commands["cargo"];
-        assert_eq!(cargo.lua, None);
-        assert!(!cargo.default_script);
-    }
 
-    #[test]
-    fn hostexec_parses_command_with_lua() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            r#"
-node_id = "n"
-[hostexec.commands]
-git = { lua = "my-git.lua" }
-"#,
-        )
-        .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        let git = &cfg.hostexec.commands["git"];
-        assert_eq!(git.lua.as_deref(), Some("my-git.lua"));
-        assert!(!git.default_script);
-    }
+        let error = Config::load_from(tmp.path()).unwrap_err();
+        let message = error.to_string();
 
-    #[test]
-    fn hostexec_parses_command_with_default_script() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            r#"
-node_id = "n"
-[hostexec.commands]
-git = { default_script = true }
-"#,
-        )
-        .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        let git = &cfg.hostexec.commands["git"];
-        assert!(git.default_script);
-        assert_eq!(git.lua, None);
-    }
-
-    #[test]
-    fn hostexec_parses_multiple_commands() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            r#"
-node_id = "n"
-[hostexec.commands]
-cargo = {}
-jq = {}
-rg = { lua = "rg-safe.lua" }
-"#,
-        )
-        .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.hostexec.commands.len(), 3);
-        assert!(cfg.hostexec.commands.contains_key("cargo"));
-        assert!(cfg.hostexec.commands.contains_key("jq"));
-        assert!(cfg.hostexec.commands.contains_key("rg"));
+        assert!(message.contains("[hostexec] section has been removed"));
+        assert!(message.contains("$UR_CONFIG/hostexec/<command>.lua"));
+        assert!(message.contains("Delete the [hostexec] section"));
+        assert!(message.contains("hostexec.commands.jiratools"));
+        assert!(message.contains("hostexec.commands.paxdb"));
     }
 
     #[test]
@@ -3898,80 +3801,6 @@ retain_count = 10
     }
 
     #[test]
-    fn hostexec_long_lived_defaults_false() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            r#"
-node_id = "n"
-[hostexec.commands]
-cargo = {}
-"#,
-        )
-        .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        let cargo = &cfg.hostexec.commands["cargo"];
-        assert!(!cargo.long_lived);
-        assert!(!cargo.bidi);
-    }
-
-    #[test]
-    fn hostexec_long_lived_parses_true() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            r#"
-node_id = "n"
-[hostexec.commands]
-daemon = { long_lived = true }
-"#,
-        )
-        .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        let daemon = &cfg.hostexec.commands["daemon"];
-        assert!(daemon.long_lived);
-        assert!(!daemon.bidi);
-    }
-
-    #[test]
-    fn hostexec_bidi_with_long_lived_parses() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            r#"
-node_id = "n"
-[hostexec.commands]
-daemon = { long_lived = true, bidi = true }
-"#,
-        )
-        .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        let daemon = &cfg.hostexec.commands["daemon"];
-        assert!(daemon.long_lived);
-        assert!(daemon.bidi);
-    }
-
-    #[test]
-    fn hostexec_bidi_without_long_lived_errors() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            r#"
-node_id = "n"
-[hostexec.commands]
-bad = { bidi = true }
-"#,
-        )
-        .unwrap();
-        let err = Config::load_from(tmp.path()).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("bidi = true requires long_lived = true"),
-            "{msg}"
-        );
-    }
-
-    #[test]
     fn project_workflow_fields_default() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
@@ -4042,24 +3871,6 @@ image = "ur-worker"
             msg.contains("docs/codeflows/project-file-mounting.md"),
             "error should mention the codeflow doc: {msg}"
         );
-    }
-
-    #[test]
-    fn hostexec_bidi_false_with_long_lived_false_ok() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            r#"
-node_id = "n"
-[hostexec.commands]
-tool = { long_lived = false, bidi = false }
-"#,
-        )
-        .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        let tool = &cfg.hostexec.commands["tool"];
-        assert!(!tool.long_lived);
-        assert!(!tool.bidi);
     }
 
     /// Parse time no longer resolves the alias to a tag — the agent isn't known

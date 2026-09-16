@@ -79,23 +79,28 @@ Hooks directories are configurable with:
 
 ### Host Commands
 
-Allow and configure more commands to run on the host. Commands are configured globally and allow-listed per-project.
+Custom commands are discovered from `$UR_CONFIG/hostexec/<command>.lua` and
+granted per project. For a long-running bidirectional `godot-mcp` command, add
+`$UR_CONFIG/hostexec/godot-mcp.lua`:
 
-Example configuration:
-
-```
-# configure the godot-mcp command
-[hostexec.commands.godot-mcp]
-# bidirectional - useful for stdio mcp
-bidi = true
-# keep the command alive
+```lua
 long_lived = true
+bidi = true
 
-# some godot project
+function transform(command, args, working_dir, worker_context)
+  return { command = command, args = args, working_dir = working_dir }
+end
+```
+
+Then grant it in `ur.toml`:
+
+```toml
 [projects.gd]
-# enable the use of godot-mcp
 hostexec = ["godot-mcp"]
 ```
+
+The removed top-level `[hostexec]` section now causes a migration error; delete
+it after moving each transform to its command-named Lua file.
 
 ### Database backup
 
