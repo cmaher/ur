@@ -235,7 +235,7 @@ fn check_credentials_seeded(
 ) -> Result<(), CoreError> {
     if agent
         .auth()
-        .is_some_and(|auth| auth.source == ur_config::AuthSource::InContainer)
+        .is_some_and(|auth| auth.allows_in_container_bootstrap)
     {
         return Ok(());
     }

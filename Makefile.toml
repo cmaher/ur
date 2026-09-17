@@ -125,6 +125,19 @@ dependencies = ["image-update-codex"]
 script_runner = "@shell"
 script = ["scripts/build/install.sh"]
 
+[tasks.image-update-agy]
+description = "Build all container images, forcing an AGY update in the worker image (keeps the base image cache)"
+dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]
+env = { "UR_UPDATE_AGENT" = "agy" }
+script_runner = "@shell"
+script = ["scripts/build/image.sh"]
+
+[tasks.install-update-agy]
+description = "Same as install but forces an AGY update in the worker image (no base rebuild)"
+dependencies = ["image-update-agy"]
+script_runner = "@shell"
+script = ["scripts/build/install.sh"]
+
 [tasks.image-force-base]
 description = "Build all container images, force-rebuilding the base image (no Docker cache)"
 dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]

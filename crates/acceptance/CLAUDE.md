@@ -60,10 +60,11 @@ stack would fail to start or the launch would fail to pull.
 
 ## AGY-agent acceptance coverage
 
-AGY has no host credential source. Its scenarios launch with a missing or empty
-`$UR_CONFIG/agy/antigravity-oauth-token`; the server creates and bind-mounts that one file and
-AGY waits for interactive Google sign-in. Dedicated `agyproj` and `rustagyproj` entries ensure
-the pre-resolved CI-tagged references select AGY images.
+AGY scenarios deliberately provide no host credential fixture. Although the CLI can seed AGY
+from the host OS keyring, `allows_in_container_bootstrap` permits these scenarios to launch with
+a missing or empty `$UR_CONFIG/agy/antigravity-oauth-token`; the server creates and bind-mounts
+that one file and AGY waits for interactive Google sign-in. Dedicated `agyproj` and
+`rustagyproj` entries ensure the pre-resolved CI-tagged references select AGY images.
 
 CI cannot complete interactive OAuth, so `scenario_agy_dispatch` verifies the image launch
 and workflow/CLI side while workerd unit tests pin the exact `/clear` then `/implement`

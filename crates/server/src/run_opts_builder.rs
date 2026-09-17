@@ -106,7 +106,7 @@ impl RunOptsBuilder {
         ensure_file_exists(&local_creds)
             .map_err(|e| format!("failed to ensure credentials file: {e}"))?;
         #[cfg(target_os = "linux")]
-        if auth.source == ur_config::AuthSource::InContainer {
+        if auth.allows_in_container_bootstrap {
             std::os::unix::fs::chown(
                 &local_creds,
                 Some(ur_config::WORKER_UID),

@@ -7,7 +7,9 @@ RUN mkdir -p /home/worker/.local/bin \
         /workspace && \
     chown -R worker:worker /home/worker/.local /home/worker/.gemini /workspace
 
-ARG CACHEBUST=0
+# Bumped when the bundled AGY must move past a cached release. Version 1.1.12
+# fixed wrapped OSC 8 links and selection inside hyperlink-capable tmux.
+ARG CACHEBUST=1
 COPY vendor/agy/install.sh /tmp/install-agy.sh
 USER worker
 RUN echo "CACHEBUST=$CACHEBUST" && \

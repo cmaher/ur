@@ -6,7 +6,8 @@ AGY-specific layer on `ur-worker-base:latest`, tagged `ur-worker-agy:latest`.
   despite its `/bin/sh` declaration it uses `pipefail` and `local`, which fail under Debian's
   dash. The installer resolves the architecture-specific manifest, verifies SHA-512, and a
   failed refresh fails the image build. There is no published musl build.
-- `CACHEBUST` refreshes AGY by rerunning the installer, never by calling `agy update`.
+- `CACHEBUST` refreshes AGY by rerunning the installer, never by calling `agy update`; use
+  `cargo make install-update-agy` to force that layer without rebuilding the base image.
 - `AGY_CLI_DISABLE_AUTO_UPDATE=1` prevents runtime update traffic.
 - The image bakes `cache/onboarding.json` and runtime `settings.json` to suppress onboarding
   and trust prompts. Do not bake `jetski_state.pbtxt`; it contains per-installation state.

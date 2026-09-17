@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use container::{ContainerId, ContainerRuntime, ExecOpts};
 use tracing::{debug, info, instrument};
-use ur_config::AgentType;
+use ur_config::{AgentAuth, AgentType, AuthSource};
 
 pub use agy::AgyCredentialManager;
 pub use claude::ClaudeCredentialManager;
@@ -26,6 +26,118 @@ pub(crate) fn home_relative_filename(path: &str) -> Result<&std::ffi::OsStr> {
     Path::new(path)
         .file_name()
         .with_context(|| format!("auth path '{path}' has no filename"))
+}
+
+/// Read an agent's native OAuth credentials from the host system.
+#[instrument(skip(agent, auth))]
+pub(crate) fn read_host_credentials(agent: AgentType, auth: AgentAuth) -> Result<String> {
+    read_platform_credentials(agent, auth)
+}
+
+#[cfg(target_os = "macos")]
+fn read_platform_credentials(agent: AgentType, auth: AgentAuth) -> Result<String> {
+    use std::process::Command;
+
+    let (service, account) = match auth.source {
+        AuthSource::Keychain {
+            service, account, ..
+        } => (service, account),
+        AuthSource::HostFile { path_from_home } => {
+            return read_host_file_credentials(agent, path_from_home);
+        }
+        AuthSource::InContainer => {
+            anyhow::bail!("in-container credentials have no macOS host source");
+        }
+    };
+    debug!(
+        agent = agent.name(),
+        "reading credentials from macOS Keychain"
+    );
+    let mut command = Command::new("security");
+    command.args(["find-generic-password", "-s", service]);
+    if let Some(account) = account {
+        command.args(["-a", account]);
+    }
+    let output = command
+        .arg("-w")
+        .output()
+        .context("failed to run `security` command")?;
+    if !output.status.success() {
+        tracing::warn!(
+            agent = agent.name(),
+            service,
+            "no credentials found in macOS Keychain"
+        );
+        anyhow::bail!(
+            "no credentials in macOS Keychain for service {service:?} — log in to {} on this machine first",
+            agent.name()
+        );
+    }
+    validated_secret(output.stdout, "macOS Keychain")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_platform_credentials(agent: AgentType, auth: AgentAuth) -> Result<String> {
+    let path_from_home = match auth.source {
+        AuthSource::Keychain {
+            service,
+            account,
+            linux_fallback,
+        } => {
+            let file_result = read_host_file_credentials(agent, linux_fallback);
+            #[cfg(target_os = "linux")]
+            if let Some(account) = account {
+                return file_result.or_else(|_| read_linux_keyring_credentials(service, account));
+            }
+            return file_result;
+        }
+        AuthSource::HostFile { path_from_home } => path_from_home,
+        AuthSource::InContainer => {
+            anyhow::bail!("in-container credentials have no Linux host source");
+        }
+    };
+    read_host_file_credentials(agent, path_from_home)
+}
+
+/// Read a go-keyring entry through the standard Secret Service CLI.
+#[cfg(target_os = "linux")]
+fn read_linux_keyring_credentials(service: &str, account: &str) -> Result<String> {
+    use std::process::Command;
+
+    let output = Command::new("secret-tool")
+        .args(["lookup", "service", service, "username", account])
+        .output()
+        .context("failed to run `secret-tool` command")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "no credentials in Linux Secret Service for service {service:?}, account {account:?}"
+        );
+    }
+    validated_secret(output.stdout, "Linux Secret Service")
+}
+
+fn validated_secret(bytes: Vec<u8>, source: &str) -> Result<String> {
+    let secret = String::from_utf8(bytes)
+        .with_context(|| format!("{source} credentials are not valid UTF-8"))?;
+    let trimmed = secret.trim().to_owned();
+    if trimmed.is_empty() {
+        anyhow::bail!("{source} credentials are empty");
+    }
+    Ok(trimmed)
+}
+
+fn read_host_file_credentials(agent: AgentType, path_from_home: &str) -> Result<String> {
+    let home = std::env::var("HOME").context("HOME not set")?;
+    let path = PathBuf::from(home).join(path_from_home);
+    debug!(agent = agent.name(), path = %path.display(), "reading credentials from agent's native config");
+    let contents = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let trimmed = contents.trim().to_owned();
+    if trimmed.is_empty() {
+        anyhow::bail!("{} is empty", path.display());
+    }
+    info!(path = %path.display(), "credentials read from agent's native config");
+    Ok(trimmed)
 }
 
 /// Per-agent credential management: seeding, extraction, and host path
@@ -147,6 +259,19 @@ pub(crate) fn write_file(path: &Path, contents: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validated_secret_trims_command_output() {
+        assert_eq!(
+            validated_secret(b"credential-payload\n".to_vec(), "test").unwrap(),
+            "credential-payload"
+        );
+    }
+
+    #[test]
+    fn validated_secret_rejects_empty_command_output() {
+        assert!(validated_secret(b" \n".to_vec(), "test").is_err());
+    }
 
     #[test]
     fn credential_manager_for_claude_returns_claude_manager() {

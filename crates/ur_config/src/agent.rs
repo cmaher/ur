@@ -5,9 +5,10 @@ use crate::UR_AGENT_TYPE_ENV;
 /// Where an agent's host-side credentials come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthSource {
-    /// macOS keychain, falling back to a home-relative file on Linux.
+    /// OS keyring, falling back to a home-relative file on Linux.
     Keychain {
         service: &'static str,
+        account: Option<&'static str>,
         linux_fallback: &'static str,
     },
     /// Plain file under the host user's home directory.
@@ -22,6 +23,9 @@ pub enum AuthSource {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AgentAuth {
     pub source: AuthSource,
+    /// Whether an empty mounted credential file may be populated by an
+    /// interactive sign-in inside the worker when the host has no credentials.
+    pub allows_in_container_bootstrap: bool,
     /// Credentials file, relative to the worker home. Bind-mounted into the container.
     pub credentials_path: &'static str,
     /// App config, relative to the worker home. Baked into the image.
@@ -340,8 +344,10 @@ impl AgentType {
             Self::Claude => Some(AgentAuth {
                 source: AuthSource::Keychain {
                     service: "Claude Code-credentials",
+                    account: None,
                     linux_fallback: ".claude/.credentials.json",
                 },
+                allows_in_container_bootstrap: false,
                 credentials_path: ".claude/.credentials.json",
                 app_config_path: ".claude.json",
             }),
@@ -349,11 +355,17 @@ impl AgentType {
                 source: AuthSource::HostFile {
                     path_from_home: ".codex/auth.json",
                 },
+                allows_in_container_bootstrap: false,
                 credentials_path: ".codex/auth.json",
                 app_config_path: ".codex/config.toml",
             }),
             Self::Agy => Some(AgentAuth {
-                source: AuthSource::InContainer,
+                source: AuthSource::Keychain {
+                    service: "gemini",
+                    account: Some("antigravity"),
+                    linux_fallback: ".gemini/antigravity-cli/antigravity-oauth-token",
+                },
+                allows_in_container_bootstrap: true,
                 credentials_path: ".gemini/antigravity-cli/antigravity-oauth-token",
                 app_config_path: ".gemini/antigravity-cli/settings.json",
             }),
@@ -382,7 +394,7 @@ impl AgentType {
         match self {
             Self::Claude => "log in to Claude Code on this machine",
             Self::Codex => "run `codex login` on this machine",
-            Self::Agy => "launch a worker and complete the sign-in in the pane",
+            Self::Agy => "run `agy` on this machine",
         }
     }
 
@@ -392,13 +404,6 @@ impl AgentType {
     /// when `auth()` is `Some` — an agent with no auth profile has nothing to
     /// remediate.
     pub fn credentials_remediation(&self) -> String {
-        if matches!(self, Self::Agy) {
-            return format!(
-                "no credentials for agent '{}' — {}",
-                self.name(),
-                self.login_instruction()
-            );
-        }
         format!(
             "no credentials for agent '{name}' — {login}, then run \
              `ur worker reseed-credentials --agent {name}`",
@@ -712,6 +717,7 @@ mod tests {
             auth.source,
             AuthSource::Keychain {
                 service: "Claude Code-credentials",
+                account: None,
                 linux_fallback: ".claude/.credentials.json",
             }
         );
@@ -741,7 +747,15 @@ mod tests {
             auth.app_config_path,
             ".gemini/antigravity-cli/settings.json"
         );
-        assert_eq!(auth.source, AuthSource::InContainer);
+        assert_eq!(
+            auth.source,
+            AuthSource::Keychain {
+                service: "gemini",
+                account: Some("antigravity"),
+                linux_fallback: ".gemini/antigravity-cli/antigravity-oauth-token",
+            }
+        );
+        assert!(auth.allows_in_container_bootstrap);
     }
 
     #[test]
@@ -802,7 +816,11 @@ mod tests {
         );
 
         let agy_msg = AgentType::Agy.credentials_remediation();
-        assert!(agy_msg.contains("sign-in in the pane"), "{agy_msg}");
+        assert!(agy_msg.contains("run `agy` on this machine"), "{agy_msg}");
+        assert!(
+            agy_msg.contains("ur worker reseed-credentials --agent agy"),
+            "{agy_msg}"
+        );
     }
 
     #[test]

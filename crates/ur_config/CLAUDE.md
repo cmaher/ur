@@ -163,10 +163,12 @@ message naming the valid agents) instead of reimplementing the logic. See
 are sourced and where its files live, for agents that need credentials at all (`None` means
 no auth profile).
 
-- `AgentAuth.source: AuthSource` — `Keychain { service, linux_fallback }` (macOS keychain,
-  falling back to a home-relative file on Linux), `HostFile { path_from_home }` (a plain host
-  file), or `InContainer` (the agent creates credentials in its bind-mounted cache file and
-  there is no host source to seed).
+- `AgentAuth.source: AuthSource` — `Keychain { service, account, linux_fallback }` (OS keyring,
+  with an optional account selector and a home-relative Linux file fallback),
+  `HostFile { path_from_home }` (a plain host file), or `InContainer` (no host source).
+- `AgentAuth.allows_in_container_bootstrap` is launch policy, separate from the source. AGY is
+  host-seedable but sets this true so an empty writable mount can still perform first sign-in;
+  do not infer bootstrap policy from the `AuthSource` variant.
 - `AgentAuth.credentials_path` / `AgentAuth.app_config_path` — both home-relative paths
   (e.g. `.claude/.credentials.json`, `.claude.json`), used as-is when joining onto the
   *worker's* home directory inside a container.

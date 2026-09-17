@@ -8,26 +8,25 @@ How `ur process launch` starts a worker container with agent credentials.
 Claude — macOS: Keychain ("Claude Code-credentials")
          Linux: ~/.claude/.credentials.json
 Codex  — any OS: ~/.codex/auth.json (no keychain integration)
-AGY    — no host source; first sign-in writes the mounted token cache in-container
+AGY    — macOS: Keychain (service "gemini", account "antigravity")
+         Linux: Secret Service, falling back to the native token cache file
     │
     ▼
 ur CLI: credential_manager_for(agent) -> Option<Box<dyn AgentCredentialManager>>
     │                                       [crates/ur/src/credential/mod.rs]
     │   None for a no-auth agent (agent.auth() is None) — every caller acknowledges
-    │   the no-auth path instead of the trait silently no-op'ing. AGY has an auth
-    │   profile with AuthSource::InContainer: its manager deliberately does no host
-    │   seed/save work.
-    │   ClaudeCredentialManager [credential/claude.rs] and CodexCredentialManager
-    │   [credential/codex.rs] each implement ensure_credentials(max_age): re-seeds
+    │   the no-auth path instead of the trait silently no-op'ing.
+    │   Every manager implements ensure_credentials(max_age): re-seeds
     │   if ~/.ur/{agent.name()}/{filename component of auth.credentials_path} is
     │   missing, empty, or older than max_age:
     │       Claude, macOS: runs: security find-generic-password -s "<service>" -w
     │       Claude, Linux: reads ~/.claude/.credentials.json directly
     │       Codex, any OS: reads ~/.codex/auth.json directly
-    │       writes result to ~/.ur/{claude,codex}/{credentials file}
-    │   AGY: ur init creates an empty, mode-600
-    │       ~/.ur/agy/antigravity-oauth-token. It is the persistent cache, not a
-    │       seed copied from another login.
+    │       writes result to ~/.ur/{agent}/{credentials file}
+    │   AGY: reads the host OS keyring (or Linux file fallback) and writes the
+    │       payload to ~/.ur/agy/antigravity-oauth-token. If the host has no AGY
+    │       login, ur init's empty mode-600 file remains a valid interactive
+    │       bootstrap cache that AGY can populate in-container.
     │   A missing host source (never logged into that agent) is a skip with a
     │   warning, not a failure — one agent's absent login must not break
     │   ur start for users of the other agent. A host source that exists but is
@@ -88,10 +87,11 @@ Container: Claude Code reads ~/.claude/.credentials.json
 
 **Session ownership:** Credentials are seeded from the host Claude Code installation (macOS Keychain or Linux credentials file) on `ur start` and on `ur worker launch` when the shared file is older than a day. Between re-seeds, containers own their token lifecycle — refreshes write back to the shared mount without touching the host credentials. The age check lets host re-logins propagate without clobbering fresh container-driven token refreshes on every launch. To force a re-seed without restarting, run `ur worker reseed-credentials`.
 
-**AGY bootstrap is intentionally different:** the pre-launch credential gate permits an empty
-token file. The first AGY worker prompts for OAuth in its pane and writes the renewable bundle
-in place; later workers reuse and refresh that same file. `ensure_credentials_for_all_agents`,
-`reseed-credentials`, and `save-credentials` do not seed or extract AGY credentials.
+**AGY bootstrap is intentionally permissive:** ur first tries to seed the host AGY login from
+macOS Keychain or Linux Secret Service/file storage. The pre-launch credential gate still
+permits an empty token file, so users without a host login can complete OAuth in the pane and
+write the renewable bundle in place. `reseed-credentials --agent agy` forces another host read;
+`save-credentials` remains unnecessary because the token file is already a read-write mount.
 
 ## Process Launch Sequence
 
@@ -103,8 +103,8 @@ ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
    ├── ensure_credentials_for_all_agents(max_age = 1 day)
    │   └── for each AgentType::ALL with an auth profile, re-seed from the host
    │       if ~/.ur/{agent.name()}/{credentials filename} is missing, empty, or
-   │       older than max_age (Claude: macOS Keychain / Linux ~/.claude/.credentials.json;
-   │       Codex: ~/.codex/auth.json on any OS)
+   │       older than max_age (Claude: macOS Keychain / Linux file; Codex: host file;
+   │       AGY: macOS Keychain / Linux Secret Service or file fallback)
    ├── connect() → gRPC channel to server at 127.0.0.1:<port>
    └── client.worker_launch(WorkerLaunchRequest { ... })
 
@@ -193,7 +193,7 @@ The Claude CLI install moved from the base image into the `worker-claude` layer 
 | `crates/ur/src/credential/mod.rs` | `AgentCredentialManager` trait, `credential_manager_for(agent)` factory, `ensure_credentials_for_all_agents`, shared file/container-read helpers |
 | `crates/ur/src/credential/claude.rs` | `ClaudeCredentialManager` impl (Keychain on macOS, home-relative file fallback on Linux) |
 | `crates/ur/src/credential/codex.rs` | `CodexCredentialManager` impl (always a home-relative host file, no keychain) |
-| `crates/ur/src/credential/agy.rs` | `AgyCredentialManager` impl (in-container OAuth; no host seed/save) |
+| `crates/ur/src/credential/agy.rs` | `AgyCredentialManager` impl (host OS-keyring seeding plus writable in-container OAuth fallback) |
 | `crates/ur/src/main.rs` | CLI entry; `process_launch()` and `start_server()` call `ensure_credentials_for_all_agents()` |
 | `crates/server/src/worker.rs` | WorkerManager: injects `UR_AGENT_TYPE`, launches containers |
 | `crates/server/src/run_opts_builder.rs` | `add_credentials` — mounts the credentials file, no-op when `agent.auth()` is `None` |
@@ -206,8 +206,8 @@ The Claude CLI install moved from the base image into the `worker-claude` layer 
 
 ## Manual Credential Management
 
-- `ur worker reseed-credentials [--agent claude|codex|agy]` — force re-seed a host-sourced agent's credentials (Claude: Keychain on macOS, `~/.claude/.credentials.json` on Linux; Codex: `~/.codex/auth.json` on any OS). AGY has no host source, so selecting it reports that sign-in happens in the pane. `--agent` defaults to the top-level `agent` key in `ur.toml` (claude when omitted).
+- `ur worker reseed-credentials [--agent claude|codex|agy]` — force re-seed credentials from the host (Claude: Keychain on macOS, `~/.claude/.credentials.json` on Linux; Codex: `~/.codex/auth.json`; AGY: the `gemini`/`antigravity` OS-keyring entry or Linux token-file fallback). `--agent` defaults to the top-level `agent` key in `ur.toml` (claude when omitted).
 - `ur worker save-credentials <id> [--agent claude|codex|agy]` — copy a host-sourced agent's credential files from a running container. AGY needs no save operation because its token is already a read-write host bind mount.
 
-  **Host-sourced agents are not from-nothing bootstraps.** `check_credentials_seeded` rejects a Claude or Codex launch whose host credential is absent. AGY is the exception: the gate permits its empty cache so the pane can perform first sign-in.
-- Delete `~/.ur/claude/.credentials.json` (or `~/.ur/codex/auth.json`) to force re-seeding from host credentials on next launch. Do not delete AGY's token for this purpose; it has no host seed.
+  **Host-sourced agents are not normally from-nothing bootstraps.** `check_credentials_seeded` rejects a Claude or Codex launch whose host credential is absent. AGY is the exception: even though it can seed from the host, the gate permits its empty cache so the pane can perform first sign-in.
+- Delete an agent's shared file under `~/.ur/<agent>/` to force host re-seeding on next launch. For AGY, leave it in place if there is no host login: it may contain the only worker-created renewable token bundle.

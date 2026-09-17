@@ -1,14 +1,14 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use container::{ContainerId, ContainerRuntime};
-use tracing::{debug, info, instrument, warn};
-use ur_config::{AgentAuth, AgentType, AuthSource};
+use tracing::{debug, info, instrument};
+use ur_config::{AgentAuth, AgentType};
 
 use super::{
-    AgentCredentialManager, home_relative_filename, save_file_from_container, worker_home,
-    write_file,
+    AgentCredentialManager, home_relative_filename, read_host_credentials,
+    save_file_from_container, worker_home, write_file,
 };
 
 /// Manages Claude Code credentials for container workers.
@@ -117,88 +117,6 @@ impl ClaudeCredentialManager {
             .join(self.agent_type().name())
             .join(home_relative_filename(self.auth.app_config_path)?))
     }
-}
-
-/// Read the agent's own OAuth credentials from the host system.
-///
-/// On macOS, reads from the Keychain. On Linux, reads directly from the
-/// agent's native credentials file in its own home directory (e.g.
-/// `~/.claude/.credentials.json` for Claude).
-///
-/// Takes the resolved [`AgentAuth`] rather than re-deriving it from `agent`:
-/// only a manager built by [`super::credential_manager_for`] can reach here, and
-/// that manager already holds the profile, so "this agent has no auth" is
-/// unrepresentable instead of being an unwrap.
-#[instrument(skip(agent, auth))]
-fn read_host_credentials(agent: AgentType, auth: AgentAuth) -> Result<String> {
-    read_platform_credentials(agent, auth)
-}
-
-#[cfg(target_os = "macos")]
-fn read_platform_credentials(agent: AgentType, auth: AgentAuth) -> Result<String> {
-    use std::process::Command;
-    let service = match auth.source {
-        AuthSource::Keychain { service, .. } => service,
-        AuthSource::HostFile { path_from_home } => {
-            return read_host_file_credentials(agent, path_from_home);
-        }
-        AuthSource::InContainer => {
-            anyhow::bail!("in-container credentials have no macOS host source");
-        }
-    };
-    debug!(
-        agent = agent.name(),
-        "reading credentials from macOS Keychain"
-    );
-    let output = Command::new("security")
-        .args(["find-generic-password", "-s", service, "-w"])
-        .output()
-        .context("failed to run `security` command")?;
-    if !output.status.success() {
-        warn!("no credentials found in macOS Keychain");
-        anyhow::bail!(
-            "no credentials in macOS Keychain for service {service:?} — \
-             log in to Claude Code on this machine first"
-        );
-    }
-    let json =
-        String::from_utf8(output.stdout).context("keychain credentials are not valid UTF-8")?;
-    let trimmed = json.trim().to_string();
-    if trimmed.is_empty() {
-        warn!("keychain credentials are empty");
-        anyhow::bail!("keychain credentials are empty");
-    }
-    info!("credentials read from macOS Keychain");
-    Ok(trimmed)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn read_platform_credentials(agent: AgentType, auth: AgentAuth) -> Result<String> {
-    let path_from_home = match auth.source {
-        AuthSource::Keychain { linux_fallback, .. } => linux_fallback,
-        AuthSource::HostFile { path_from_home } => path_from_home,
-        AuthSource::InContainer => {
-            anyhow::bail!("in-container credentials have no Linux host source");
-        }
-    };
-    read_host_file_credentials(agent, path_from_home)
-}
-
-/// Read credentials from a plain file under the host user's home directory,
-/// used both for [`AuthSource::HostFile`] agents and as the Linux fallback
-/// for [`AuthSource::Keychain`] agents.
-fn read_host_file_credentials(agent: AgentType, path_from_home: &str) -> Result<String> {
-    let home = std::env::var("HOME").context("HOME not set")?;
-    let path = PathBuf::from(home).join(path_from_home);
-    debug!(agent = agent.name(), path = %path.display(), "reading credentials from agent's native config");
-    let contents = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    let trimmed = contents.trim().to_string();
-    if trimmed.is_empty() {
-        anyhow::bail!("{} is empty", path.display());
-    }
-    info!(path = %path.display(), "credentials read from agent's native config");
-    Ok(trimmed)
 }
 
 #[cfg(test)]
