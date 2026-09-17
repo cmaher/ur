@@ -21,13 +21,12 @@ Pass body text INLINE, or via stdin:
     gh pr edit <pr> --body "$(cat body.md)"
     gh pr comment <pr> --body-file - < body.md
 
-Inline PR review comments (nested comments[] needs --input, not -f/-F):
-    gh api /repos/<o>/<r>/pulls/<n>/reviews -X POST --input - <<'JSON'
-    {"commit_id":"<sha>","event":"COMMENT","body":"...",
-     "comments":[{"path":"a.go","line":42,"side":"RIGHT","body":"..."}]}
-    JSON
-A single inline comment can also use flat fields on
-/repos/<o>/<r>/pulls/<n>/comments (-f path=... -F line=... -f side=RIGHT).
+Inline PR comments use the individual comment endpoint:
+    gh api /repos/<o>/<r>/pulls/<n>/comments -X POST \
+      -f body="..." -f commit_id="<sha>" -f path="a.go" \
+      -F line=42 -f side=RIGHT
+Update an existing conversation or inline comment with PATCH to
+/repos/<o>/<r>/issues/comments/<id> or /repos/<o>/<r>/pulls/comments/<id>.
 Endpoints may be written with or without the leading slash.
 
 Allowed (read + collaborative; destructive ops are workflow-only):
@@ -38,8 +37,8 @@ Allowed (read + collaborative; destructive ops are workflow-only):
   gh pr review --comment                review comment only
                                         (--approve/--request-changes blocked)
   gh run view|list                      CI run status and logs
-  gh api <endpoint>                     GET always; POST/PATCH only to
-                                        comment/review endpoints
+  gh api <endpoint>                     GET always; POST creates comments or
+                                        replies; PATCH updates comments
 Blocked: gh pr merge|close|delete and any other subcommand.]]
 
 -- Raise a rejection with the standard help block appended. Level 0 keeps the
@@ -60,17 +59,17 @@ local allowed_subcommands = {
     ["api"] = true,  -- special: method + endpoint validation below
 }
 
--- Comment/review API endpoint patterns that allow POST/PATCH
--- These match GitHub REST API paths for issue comments, PR comments,
--- and PR review comments.
-local comment_endpoint_patterns = {
-    "^/repos/[^/]+/[^/]+/issues/%d+/comments",
-    "^/repos/[^/]+/[^/]+/pulls/%d+/comments",
-    "^/repos/[^/]+/[^/]+/pulls/%d+/reviews/%d+/comments",
-    "^/repos/[^/]+/[^/]+/pulls/%d+/reviews$",
+-- Exact API endpoint patterns for creating comments and replies.
+local post_endpoint_patterns = {
+    "^/repos/[^/]+/[^/]+/issues/%d+/comments$",
+    "^/repos/[^/]+/[^/]+/pulls/%d+/comments$",
+    "^/repos/[^/]+/[^/]+/pulls/%d+/comments/%d+/replies$",
+}
+
+-- Exact API endpoint patterns for updating existing comments.
+local patch_endpoint_patterns = {
     "^/repos/[^/]+/[^/]+/issues/comments/%d+$",
     "^/repos/[^/]+/[^/]+/pulls/comments/%d+$",
-    "^/repos/[^/]+/[^/]+/pulls/%d+/comments/%d+/replies$",
 }
 
 -- Normalize an endpoint to the "/repos/..." form the patterns above expect.
@@ -88,10 +87,10 @@ local function normalize_endpoint(endpoint)
     return "/" .. endpoint
 end
 
--- Check if an API endpoint matches an allowed comment/review pattern
-local function is_comment_endpoint(endpoint)
+-- Check if an API endpoint matches one of the patterns allowed for a method.
+local function matches_endpoint(endpoint, patterns)
     local normalized = normalize_endpoint(endpoint)
-    for _, pattern in ipairs(comment_endpoint_patterns) do
+    for _, pattern in ipairs(patterns) do
         if normalized:match(pattern) then
             return true
         end
@@ -229,26 +228,25 @@ function transform(command, args, working_dir, worker_context)
     if top == "api" then
         local method = extract_method(args)
 
-        if method == "DELETE" then
-            fail("blocked: gh api with DELETE method is not allowed")
-        end
-
         -- --input <path> cannot work: gh runs on the host and cannot read the
         -- worker filesystem. --input - reads forwarded stdin and is the
-        -- supported way to send a nested JSON body (e.g. a review's
-        -- comments[] array, which flat -f/-F fields cannot express).
+        -- supported way to send a JSON body when flat -f/-F fields are not
+        -- sufficient.
         local input_value = extract_input_value(args)
         if input_value ~= nil and input_value ~= "-" then
             fail("blocked flag: --input " .. input_value .. " (gh runs on the host and cannot read worker files; pipe it instead: --input - < " .. input_value .. ")")
         end
 
-        if method == "POST" or method == "PATCH" or method == "PUT" then
+        if method ~= "GET" then
             local endpoint = extract_api_endpoint(args)
             if endpoint == nil then
                 fail("blocked: gh api write request requires an endpoint")
             end
-            if not is_comment_endpoint(endpoint) then
-                fail("blocked: gh api " .. method .. " to " .. endpoint .. " is not allowed (only comment/review endpoints permitted)")
+
+            local allowed_write = method == "POST" and matches_endpoint(endpoint, post_endpoint_patterns)
+                or method == "PATCH" and matches_endpoint(endpoint, patch_endpoint_patterns)
+            if not allowed_write then
+                fail("blocked: gh api " .. method .. " to " .. endpoint .. " is not allowed (POST may create comments/replies; PATCH may update comments)")
             end
         end
         -- GET (default) is allowed, fall through

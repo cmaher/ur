@@ -1110,7 +1110,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("only comment/review endpoints permitted")
+                .contains("POST may create comments/replies")
         );
     }
 
@@ -1130,7 +1130,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("DELETE method is not allowed")
+                .contains("DELETE to /repos/owner/repo/pulls/1 is not allowed")
         );
     }
 
@@ -1149,7 +1149,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("only comment/review endpoints permitted")
+                .contains("PATCH may update comments")
         );
     }
 
@@ -1281,7 +1281,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gh_allows_api_post_pr_review_comments() {
+    fn test_gh_blocks_api_post_pr_review_comments_collection() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/gh.lua");
         let args: Vec<String> = vec![
@@ -1290,10 +1290,11 @@ mod tests {
             "POST".into(),
             "/repos/owner/repo/pulls/7/reviews/99/comments".into(),
         ];
-        let result = mgr
+        let err = mgr
             .run_transform(script, "gh", &args, "/workspace", None)
-            .unwrap();
-        assert_eq!(result.args, args);
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is not allowed"), "unexpected error: {err}");
     }
 
     #[test]
@@ -1327,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gh_allows_api_post_pr_reviews() {
+    fn test_gh_blocks_api_post_pr_reviews() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/gh.lua");
         let args: Vec<String> = vec![
@@ -1336,17 +1337,18 @@ mod tests {
             "POST".into(),
             "/repos/owner/repo/pulls/7/reviews".into(),
         ];
-        let result = mgr
+        let err = mgr
             .run_transform(script, "gh", &args, "/workspace", None)
-            .unwrap();
-        assert_eq!(result.args, args);
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is not allowed"), "unexpected error: {err}");
     }
 
     /// `gh api` accepts endpoints without a leading slash. The allowlist
     /// patterns are anchored to `^/repos/`, so an unslashed endpoint used to be
     /// rejected against an allowlist that actually permits it.
     #[test]
-    fn test_gh_allows_api_post_pr_reviews_without_leading_slash() {
+    fn test_gh_blocks_api_post_pr_reviews_without_leading_slash() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/gh.lua");
         let args: Vec<String> = vec![
@@ -1355,10 +1357,11 @@ mod tests {
             "--method".into(),
             "POST".into(),
         ];
-        let result = mgr
+        let err = mgr
             .run_transform(script, "gh", &args, "/workspace", None)
-            .unwrap();
-        assert_eq!(result.args, args);
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is not allowed"), "unexpected error: {err}");
     }
 
     #[test]
@@ -1378,7 +1381,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gh_allows_api_post_full_url_endpoint() {
+    fn test_gh_blocks_api_post_full_url_reviews_endpoint() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/gh.lua");
         let args: Vec<String> = vec![
@@ -1387,10 +1390,11 @@ mod tests {
             "-X".into(),
             "POST".into(),
         ];
-        let result = mgr
+        let err = mgr
             .run_transform(script, "gh", &args, "/workspace", None)
-            .unwrap();
-        assert_eq!(result.args, args);
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is not allowed"), "unexpected error: {err}");
     }
 
     /// Normalization must not widen the allowlist to non-comment endpoints.
@@ -1436,7 +1440,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gh_allows_api_post_reviews_with_stdin_input() {
+    fn test_gh_blocks_api_post_reviews_with_stdin_input() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/gh.lua");
         let args: Vec<String> = vec![
@@ -1447,10 +1451,45 @@ mod tests {
             "--input".into(),
             "-".into(),
         ];
-        let result = mgr
+        let err = mgr
             .run_transform(script, "gh", &args, "/workspace", None)
-            .unwrap();
-        assert_eq!(result.args, args);
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is not allowed"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn test_gh_blocks_api_post_allowed_path_with_suffix() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "-X".into(),
+            "POST".into(),
+            "/repos/owner/repo/issues/42/comments/delete-all".into(),
+        ];
+        let err = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is not allowed"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn test_gh_blocks_api_put_comment() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "-X".into(),
+            "PUT".into(),
+            "/repos/owner/repo/issues/comments/456".into(),
+        ];
+        let err = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is not allowed"), "unexpected error: {err}");
     }
 
     /// gh runs on the host and cannot read the worker filesystem, so a path
