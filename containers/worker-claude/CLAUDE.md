@@ -32,24 +32,28 @@ gh pr comment <pr> --body-file - < body.md
 
 Do **not** use `--body-file <path>` — the shim rejects a path for `gh pr` and points you at inline `--body` or the `-` form.
 
-### Inline PR review comments
+### PR review and inline comments
 
-A review with multiple inline comments needs a nested `comments[]` array, which `gh`'s flat `-f`/`-F` fields cannot express. Use `--input -`:
+Submit a review body as a comment-only review:
 
 ```bash
-gh api /repos/<owner>/<repo>/pulls/<n>/reviews -X POST --input - <<'JSON'
-{"commit_id": "<sha>", "event": "COMMENT", "body": "...",
- "comments": [{"path": "a.go", "line": 42, "side": "RIGHT", "body": "..."}]}
-JSON
+gh pr review <pr> --comment --body "$(cat review.md)"
 ```
 
-A *single* inline comment can instead use flat fields on `/repos/<owner>/<repo>/pulls/<n>/comments`:
+Raw `POST` requests to `/repos/<owner>/<repo>/pulls/<n>/reviews` are blocked because their JSON event could approve a PR or request changes. Post each inline comment through the individual comment endpoint:
 
 ```bash
 gh api /repos/<owner>/<repo>/pulls/<n>/comments -X POST \
   -f commit_id=<sha> -f path=a.go -F line=42 -f side=RIGHT -f body="..."
 ```
 
+Existing conversation and inline comments may be updated with `PATCH`:
+
+```bash
+gh api /repos/<owner>/<repo>/issues/comments/<comment-id> -X PATCH -f body="..."
+gh api /repos/<owner>/<repo>/pulls/comments/<comment-id> -X PATCH -f body="..."
+```
+
 Endpoints may be written with or without the leading slash, and as full `https://api.github.com/...` URLs.
 
-Allowed `gh`: `pr view|checks|list|status|diff|comment|edit|create`, `pr review --comment`, `run view|list`, and `gh api` (GET always; POST/PATCH only to comment/review endpoints). Destructive ops (`pr merge|close|delete`) are workflow-only and blocked. `git` blocks `worktree`, `checkout`/`switch` (use `git restore`), `--no-verify`, `--git-dir`/`--work-tree`, and pushes to branches other than your own. Any blocked command returns a message listing exactly what is allowed.
+Allowed `gh`: `pr view|checks|list|status|diff|comment|edit|create`, `pr review --comment`, `run view|list`, and `gh api` (GET always; POST creates comments or replies; PATCH updates comments). Destructive ops (`pr merge|close|delete`) and review decisions (`--approve`, `--request-changes`, or raw review creation) are blocked. `git` blocks `worktree`, `checkout`/`switch` (use `git restore`), `--no-verify`, `--git-dir`/`--work-tree`, and pushes to branches other than your own. Any blocked command returns a message listing exactly what is allowed.

@@ -1735,10 +1735,10 @@ fn assert_gh_hostexec(runtime: &str, container: &str) {
         "--input <path> should steer to the stdin form.\nstderr: {input_path_err}"
     );
 
-    // `gh api` accepts endpoints without a leading slash; the allowlist must
-    // too. This call fails later (no credentials / no such PR), but it must not
-    // be rejected by the transform.
-    let unslashed = exec_in_container(
+    // Raw review creation can carry APPROVE or REQUEST_CHANGES in a JSON body,
+    // so it must be rejected before gh runs even when the endpoint is written
+    // without a leading slash.
+    let raw_review = exec_in_container(
         runtime,
         container,
         &[
@@ -1747,15 +1747,56 @@ fn assert_gh_hostexec(runtime: &str, container: &str) {
             "repos/owner/repo/pulls/7/reviews",
             "-X",
             "POST",
-            "--input",
-            "-",
         ],
     );
-    let unslashed_err = String::from_utf8_lossy(&unslashed.stderr);
+    let raw_review_err = String::from_utf8_lossy(&raw_review.stderr);
     assert!(
-        !unslashed_err.contains("is not allowed"),
-        "unslashed reviews endpoint must not be blocked by the transform.\n\
-         stderr: {unslashed_err}"
+        raw_review_err.contains("is not allowed"),
+        "raw review creation must be blocked by the transform.\n\
+         stderr: {raw_review_err}"
+    );
+
+    // Individual inline comments remain allowed. This reaches gh and fails
+    // later without credentials, but must pass transform validation.
+    let inline_comment = exec_in_container(
+        runtime,
+        container,
+        &[
+            "gh",
+            "api",
+            "repos/owner/repo/pulls/7/comments",
+            "-X",
+            "POST",
+            "-f",
+            "body=comment",
+        ],
+    );
+    let inline_comment_err = String::from_utf8_lossy(&inline_comment.stderr);
+    assert!(
+        !inline_comment_err.contains("is not allowed"),
+        "inline comment creation must pass transform validation.\n\
+         stderr: {inline_comment_err}"
+    );
+
+    // Existing inline comments may be updated through their exact resource.
+    let update_comment = exec_in_container(
+        runtime,
+        container,
+        &[
+            "gh",
+            "api",
+            "/repos/owner/repo/pulls/comments/99",
+            "-X",
+            "PATCH",
+            "-f",
+            "body=updated",
+        ],
+    );
+    let update_comment_err = String::from_utf8_lossy(&update_comment.stderr);
+    assert!(
+        !update_comment_err.contains("is not allowed"),
+        "comment updates must pass transform validation.\n\
+         stderr: {update_comment_err}"
     );
 
     // A genuinely disallowed endpoint must still be blocked, slash or not.
