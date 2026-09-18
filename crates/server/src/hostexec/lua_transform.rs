@@ -3517,4 +3517,436 @@ mod tests {
             .unwrap();
         assert_eq!(result.args, vec!["commit", "-m", "[ur-man-0] hi"]);
     }
+
+    // --- tea.lua tests ---
+
+    #[test]
+    fn test_tea_allows_pr_list_and_injects_json() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args: Vec<String> = vec!["pr".into(), "ls".into()];
+        let result = mgr
+            .run_transform(script, "tea", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, vec!["pr", "ls", "--output", "json"]);
+    }
+
+    #[test]
+    fn test_tea_allows_pr_view_and_preserves_explicit_json() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args: Vec<String> = vec![
+            "pulls".into(),
+            "view".into(),
+            "42".into(),
+            "--output".into(),
+            "json".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "tea", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_tea_blocks_pr_list_non_json_output() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args: Vec<String> = vec!["pr".into(), "ls".into(), "--output".into(), "yaml".into()];
+        let result = mgr.run_transform(script, "tea", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("JSON output"));
+    }
+
+    #[test]
+    fn test_tea_allows_pr_diff() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args: Vec<String> = vec!["pr".into(), "diff".into(), "42".into()];
+        let result = mgr
+            .run_transform(script, "tea", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, vec!["pr", "diff", "42"]);
+    }
+
+    #[test]
+    fn test_tea_allows_pr_checks_and_injects_json() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args: Vec<String> = vec!["pr".into(), "checks".into(), "42".into()];
+        let result = mgr
+            .run_transform(script, "tea", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, vec!["pr", "checks", "42", "--output", "json"]);
+    }
+
+    #[test]
+    fn test_tea_allows_pr_create_with_title() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args: Vec<String> = vec![
+            "pr".into(),
+            "create".into(),
+            "--title".into(),
+            "Fix bug".into(),
+            "--description".into(),
+            "Details here".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "tea", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_tea_blocks_pr_create_without_title() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args: Vec<String> = vec!["pr".into(), "create".into()];
+        let result = mgr.run_transform(script, "tea", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("requires --title"));
+    }
+
+    #[test]
+    fn test_tea_allows_pr_edit_with_index() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args: Vec<String> = vec![
+            "pr".into(),
+            "edit".into(),
+            "42".into(),
+            "--title".into(),
+            "Updated".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "tea", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_tea_blocks_pr_edit_without_index() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args: Vec<String> = vec![
+            "pr".into(),
+            "edit".into(),
+            "--title".into(),
+            "Updated".into(),
+        ];
+        let result = mgr.run_transform(script, "tea", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("requires a pull request index")
+        );
+    }
+
+    #[test]
+    fn test_tea_allows_pr_close_and_reopen() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args1: Vec<String> = vec!["pr".into(), "close".into(), "42".into()];
+        let result1 = mgr
+            .run_transform(script, "tea", &args1, "/workspace", None)
+            .unwrap();
+        assert_eq!(result1.args, args1);
+
+        let args2: Vec<String> = vec!["pr".into(), "reopen".into(), "42".into()];
+        let result2 = mgr
+            .run_transform(script, "tea", &args2, "/workspace", None)
+            .unwrap();
+        assert_eq!(result2.args, args2);
+    }
+
+    #[test]
+    fn test_tea_allows_pr_review_with_action_flag() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args: Vec<String> = vec![
+            "pr".into(),
+            "review".into(),
+            "42".into(),
+            "--approve".into(),
+            "--comment".into(),
+            "LGTM".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "tea", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_tea_blocks_pr_review_without_action_flag() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args: Vec<String> = vec!["pr".into(), "review".into(), "42".into()];
+        let result = mgr.run_transform(script, "tea", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("requires an action flag")
+        );
+    }
+
+    #[test]
+    fn test_tea_allows_pr_approve_and_reject() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args1: Vec<String> = vec!["pr".into(), "approve".into(), "42".into(), "lgtm".into()];
+        let result1 = mgr
+            .run_transform(script, "tea", &args1, "/workspace", None)
+            .unwrap();
+        assert_eq!(result1.args, args1);
+
+        let args2: Vec<String> = vec![
+            "pr".into(),
+            "reject".into(),
+            "42".into(),
+            "please fix".into(),
+        ];
+        let result2 = mgr
+            .run_transform(script, "tea", &args2, "/workspace", None)
+            .unwrap();
+        assert_eq!(result2.args, args2);
+    }
+
+    #[test]
+    fn test_tea_allows_pr_comment_and_comments() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args1: Vec<String> = vec![
+            "pr".into(),
+            "comment".into(),
+            "42".into(),
+            "nice work".into(),
+        ];
+        let result1 = mgr
+            .run_transform(script, "tea", &args1, "/workspace", None)
+            .unwrap();
+        assert_eq!(result1.args, args1);
+
+        let args2: Vec<String> = vec!["pr".into(), "comments".into(), "42".into()];
+        let result2 = mgr
+            .run_transform(script, "tea", &args2, "/workspace", None)
+            .unwrap();
+        assert_eq!(
+            result2.args,
+            vec!["pr", "comments", "42", "--output", "json"]
+        );
+    }
+
+    #[test]
+    fn test_tea_allows_pr_review_comments() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args: Vec<String> = vec!["pr".into(), "review-comments".into(), "42".into()];
+        let result = mgr
+            .run_transform(script, "tea", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(
+            result.args,
+            vec!["pr", "review-comments", "42", "--output", "json"]
+        );
+    }
+
+    #[test]
+    fn test_tea_allows_pr_resolve_and_unresolve() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args1: Vec<String> = vec!["pr".into(), "resolve".into(), "42".into(), "1001".into()];
+        let result1 = mgr
+            .run_transform(script, "tea", &args1, "/workspace", None)
+            .unwrap();
+        assert_eq!(result1.args, args1);
+
+        let args2: Vec<String> = vec!["pr".into(), "unresolve".into(), "42".into(), "1001".into()];
+        let result2 = mgr
+            .run_transform(script, "tea", &args2, "/workspace", None)
+            .unwrap();
+        assert_eq!(result2.args, args2);
+    }
+
+    #[test]
+    fn test_tea_blocks_pr_resolve_without_args() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args: Vec<String> = vec!["pr".into(), "resolve".into(), "42".into()];
+        let result = mgr.run_transform(script, "tea", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("requires a pull request index and comment id")
+        );
+    }
+
+    #[test]
+    fn test_tea_allows_pr_merge_with_supported_styles() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        for style in ["merge", "rebase", "squash", "rebase-merge"] {
+            let args: Vec<String> = vec![
+                "pr".into(),
+                "merge".into(),
+                "42".into(),
+                "--style".into(),
+                style.into(),
+            ];
+            let result = mgr
+                .run_transform(script, "tea", &args, "/workspace", None)
+                .unwrap();
+            assert_eq!(result.args, args);
+        }
+    }
+
+    #[test]
+    fn test_tea_blocks_pr_merge_without_style() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args: Vec<String> = vec!["pr".into(), "merge".into(), "42".into()];
+        let result = mgr.run_transform(script, "tea", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("requires an explicit --style")
+        );
+    }
+
+    #[test]
+    fn test_tea_blocks_pr_merge_unsupported_style() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args: Vec<String> = vec![
+            "pr".into(),
+            "merge".into(),
+            "42".into(),
+            "--style".into(),
+            "fast-forward".into(),
+        ];
+        let result = mgr.run_transform(script, "tea", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported merge style")
+        );
+    }
+
+    #[test]
+    fn test_tea_blocks_git_operations() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args1: Vec<String> = vec!["pr".into(), "checkout".into(), "42".into()];
+        assert!(
+            mgr.run_transform(script, "tea", &args1, "/workspace", None)
+                .is_err()
+        );
+
+        let args2: Vec<String> = vec!["pr".into(), "clean".into(), "42".into()];
+        assert!(
+            mgr.run_transform(script, "tea", &args2, "/workspace", None)
+                .is_err()
+        );
+
+        let args3: Vec<String> = vec!["clone".into(), "repo".into()];
+        assert!(
+            mgr.run_transform(script, "tea", &args3, "/workspace", None)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_tea_blocks_auth_and_admin() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        for cmd in ["login", "logout", "auth", "admin", "org", "repo", "migrate"] {
+            let args: Vec<String> = vec![cmd.into()];
+            let result = mgr.run_transform(script, "tea", &args, "/workspace", None);
+            assert!(result.is_err(), "Expected {} to be blocked", cmd);
+        }
+    }
+
+    #[test]
+    fn test_tea_blocks_insecure_interactive_and_secrets() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        for bad_flag in [
+            "--insecure",
+            "-k",
+            "--interactive",
+            "-i",
+            "--token",
+            "--token=secret",
+            "--password",
+            "--password=secret",
+            "--secret=xyz",
+            "--key=abc",
+        ] {
+            let args: Vec<String> = vec!["pr".into(), "ls".into(), bad_flag.into()];
+            let result = mgr.run_transform(script, "tea", &args, "/workspace", None);
+            assert!(result.is_err(), "Expected flag {} to be blocked", bad_flag);
+        }
+    }
+
+    #[test]
+    fn test_tea_allows_runs_and_actions() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let args1: Vec<String> = vec!["runs".into(), "ls".into()];
+        let result1 = mgr
+            .run_transform(script, "tea", &args1, "/workspace", None)
+            .unwrap();
+        assert_eq!(result1.args, vec!["runs", "ls", "--output", "json"]);
+
+        let args2: Vec<String> = vec!["actions".into(), "runs".into()];
+        let result2 = mgr
+            .run_transform(script, "tea", &args2, "/workspace", None)
+            .unwrap();
+        assert_eq!(result2.args, vec!["actions", "runs", "--output", "json"]);
+    }
+
+    #[test]
+    fn test_tea_dash_c_handling() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+        let ctx = WorkerContext {
+            worker_id: "test-w1".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+            branch: "test-w1".into(),
+        };
+
+        // -C with matching workspace rewrites
+        let args: Vec<String> = vec!["-C".into(), "/workspace".into(), "pr".into(), "ls".into()];
+        let result = mgr
+            .run_transform(script, "tea", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(
+            result.args,
+            vec![
+                "-C",
+                "/home/user/.ur/workspace/pool/ur/0",
+                "pr",
+                "ls",
+                "--output",
+                "json"
+            ]
+        );
+
+        // -C without context fails
+        let err = mgr.run_transform(script, "tea", &args, "/workspace", None);
+        assert!(err.is_err());
+    }
 }

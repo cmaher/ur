@@ -18,10 +18,14 @@ pub struct HostExecConfigManager {
     discovery: Option<LuaDiscoveryManager>,
 }
 
+pub const DEFAULT_COMMAND_NAMES: &[&str] = &[
+    "bazel", "cargo", "docker", "gh", "git", "go", "make", "npm", "pnpm", "tsc", "ur",
+];
+
 impl HostExecConfigManager {
     /// Build the baked-in defaults overlaid by discovered Lua scripts.
     pub fn load(config_dir: &Path, discovery: &LuaDiscoveryManager) -> Result<Self> {
-        let mut commands = Self::defaults();
+        let mut commands = Self::builtins();
         let hostexec_dir = config_dir.join(ur_config::HOSTEXEC_DIR);
         for (name, command) in discovery.discover(&hostexec_dir)? {
             commands.insert(name, command);
@@ -91,18 +95,18 @@ impl HostExecConfigManager {
     }
 
     fn effective_defaults(&self) -> HashMap<String, CommandConfig> {
-        Self::defaults()
-            .into_keys()
-            .filter_map(|name| {
+        DEFAULT_COMMAND_NAMES
+            .iter()
+            .filter_map(|&name| {
                 self.commands
-                    .get(&name)
+                    .get(name)
                     .cloned()
-                    .map(|config| (name, config))
+                    .map(|config| (name.to_string(), config))
             })
             .collect()
     }
 
-    fn defaults() -> HashMap<String, CommandConfig> {
+    fn builtins() -> HashMap<String, CommandConfig> {
         let mut commands = HashMap::new();
         commands.insert(
             "git".into(),
@@ -196,6 +200,14 @@ impl HostExecConfigManager {
                 bidi: false,
             },
         );
+        commands.insert(
+            "tea".into(),
+            CommandConfig {
+                lua_source: Some(include_str!("default_scripts/tea.lua").into()),
+                long_lived: false,
+                bidi: false,
+            },
+        );
         commands
     }
 
@@ -255,16 +267,38 @@ mod tests {
     }
 
     #[test]
-    fn load_includes_all_built_in_defaults() {
+    fn load_includes_all_built_ins() {
         let tmp = TempDir::new().unwrap();
         let mgr = load(&tmp);
 
         assert_eq!(
             mgr.command_names(),
             vec![
+                "bazel", "cargo", "docker", "gh", "git", "go", "make", "npm", "pnpm", "tea", "tsc",
+                "ur"
+            ]
+        );
+        // Built-in defaults do not include optional tea
+        assert_eq!(
+            mgr.defaults_only().command_names(),
+            vec![
                 "bazel", "cargo", "docker", "gh", "git", "go", "make", "npm", "pnpm", "tsc", "ur"
             ]
         );
+        // Empty project grant does not include tea
+        assert_eq!(
+            mgr.with_project_commands(&[], &[]).command_names(),
+            vec![
+                "bazel", "cargo", "docker", "gh", "git", "go", "make", "npm", "pnpm", "tsc", "ur"
+            ]
+        );
+        // Project explicitly granting tea receives tea with its built-in script
+        let project = mgr.with_project_commands(&["tea".into()], &[]);
+        assert!(project.is_allowed("tea"));
+        let tea_cfg = project.get("tea").unwrap();
+        assert!(tea_cfg.lua_source.is_some());
+        assert!(!tea_cfg.long_lived);
+        assert!(!tea_cfg.bidi);
     }
 
     #[test]
