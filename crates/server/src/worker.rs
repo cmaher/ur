@@ -665,26 +665,18 @@ impl WorkerManager {
         self.worker_modes.resolve_mode(mode, requested_agent)
     }
 
-    /// Merge global skills with mode-resolved skills.
-    ///
-    /// Returns `(merged_names, extra_mounts)`:
-    /// - `merged_names`: `mode_skills` → common globals → strategy-specific globals, deduped
-    ///   by name (first occurrence wins).
-    /// - `extra_mounts`: every global entry whose name is NOT already in `mode_skills`,
-    ///   in the order they appear from `for_strategy` (common first, then strategy-specific).
-    ///
-    /// Skills already present in `mode_skills` are expected to be served from the baked
-    /// `potential-skills/` directory — no extra mount is needed for them. Global skills
-    /// that are new (not already in `mode_skills`) receive a bind mount so `workerd init`
-    /// can copy them from the mounted host directory.
     /// Merge project-required skills and global skills into `mode_skills`.
     ///
     /// Precedence order:
-    /// 1. mode_skills (mode default or explicit launch override)
-    /// 2. project_skills (from project configuration)
-    /// 3. global_skills (from [skills] in ur.toml for the strategy)
+    /// 1. `mode_skills` (mode default or explicit launch override)
+    /// 2. `project_skills` (from project configuration)
+    /// 3. `global_skills` (from `[skills]` in `ur.toml` for the strategy)
     ///
     /// Duplicate names preserve the earliest source.
+    ///
+    /// Returns `(merged_names, extra_mounts)`:
+    /// - `merged_names`: deduplicated skill names in precedence order.
+    /// - `extra_mounts`: host paths for new global skill entries that need bind mounts.
     pub fn merge_skills(
         &self,
         strategy: WorkerStrategy,

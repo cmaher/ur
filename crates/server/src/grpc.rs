@@ -301,6 +301,18 @@ fn local_launch_rejection_reason(
     None
 }
 
+#[derive(Default)]
+struct ProjectLaunchFields {
+    instruction_md: Option<String>,
+    mounts: Vec<ur_config::MountConfig>,
+    ports: Vec<ur_config::PortMapping>,
+    resolved_image: String,
+    hostexec_scripts: Vec<String>,
+    memory_dir: Option<String>,
+    brain_dir: Option<String>,
+    project_skills: Vec<String>,
+}
+
 impl LaunchManager {
     /// Validate context repo keys and acquire shared slots in parallel.
     ///
@@ -599,41 +611,19 @@ impl LaunchManager {
     }
 
     /// Extracted from `launch` to keep method body within the line limit.
-    #[allow(clippy::type_complexity)]
-    fn extract_project_launch_fields(
-        &self,
-        project_key: &str,
-    ) -> (
-        Option<String>,
-        Vec<ur_config::MountConfig>,
-        Vec<ur_config::PortMapping>,
-        String,
-        Vec<String>,
-        Option<String>,
-        Option<String>,
-        Vec<String>,
-    ) {
+    fn extract_project_launch_fields(&self, project_key: &str) -> ProjectLaunchFields {
         match self.project_registry.get(project_key) {
-            Some(proj) if !project_key.is_empty() => (
-                proj.instruction_md.clone(),
-                proj.container.mounts.clone(),
-                proj.container.ports.clone(),
-                proj.container.image.clone(),
-                proj.hostexec_scripts.clone(),
-                proj.memory_dir.clone(),
-                proj.brain_dir.clone(),
-                proj.skills.clone(),
-            ),
-            _ => (
-                None,
-                Vec::new(),
-                Vec::new(),
-                String::new(),
-                Vec::new(),
-                None,
-                None,
-                Vec::new(),
-            ),
+            Some(proj) if !project_key.is_empty() => ProjectLaunchFields {
+                instruction_md: proj.instruction_md.clone(),
+                mounts: proj.container.mounts.clone(),
+                ports: proj.container.ports.clone(),
+                resolved_image: proj.container.image.clone(),
+                hostexec_scripts: proj.hostexec_scripts.clone(),
+                memory_dir: proj.memory_dir.clone(),
+                brain_dir: proj.brain_dir.clone(),
+                project_skills: proj.skills.clone(),
+            },
+            _ => ProjectLaunchFields::default(),
         }
     }
 
@@ -661,16 +651,7 @@ impl LaunchManager {
         workspace_dir: Option<PathBuf>,
         context_mounts: Vec<(String, std::path::PathBuf)>,
     ) -> Result<crate::WorkerConfig, CoreError> {
-        let (
-            instruction_md,
-            mounts,
-            ports,
-            resolved_image,
-            hostexec_scripts,
-            memory_dir,
-            brain_dir,
-            project_skills,
-        ) = self.extract_project_launch_fields(&project_key);
+        let fields = self.extract_project_launch_fields(&project_key);
         let mode_skills = if req.skills.is_empty() {
             resolved_skills
         } else {
@@ -678,8 +659,8 @@ impl LaunchManager {
         };
         let (skills, extra_skill_mounts) =
             self.worker_manager
-                .merge_skills(strategy, mode_skills, &project_skills);
-        let image_id = resolve_worker_image(agent, &req.image_id, &resolved_image)?;
+                .merge_skills(strategy, mode_skills, &fields.project_skills);
+        let image_id = resolve_worker_image(agent, &req.image_id, &fields.resolved_image)?;
         let cpus = if req.cpus == 0 {
             ur_config::DEFAULT_WORKER_CPUS
         } else {
@@ -704,15 +685,15 @@ impl LaunchManager {
             skills,
             model,
             effort,
-            instruction_md,
-            mounts,
-            ports,
+            instruction_md: fields.instruction_md,
+            mounts: fields.mounts,
+            ports: fields.ports,
             slot_id,
             context_mounts,
-            hostexec_scripts,
+            hostexec_scripts: fields.hostexec_scripts,
             extra_skill_mounts,
-            memory_dir,
-            brain_dir,
+            memory_dir: fields.memory_dir,
+            brain_dir: fields.brain_dir,
             workspace_brain_dir: self.workspace_brain_dir.clone(),
         })
     }

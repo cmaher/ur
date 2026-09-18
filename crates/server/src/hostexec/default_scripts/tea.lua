@@ -65,6 +65,13 @@ local flags_with_value = {
     ["--labels"] = true, ["-L"] = true,
     ["--milestone"] = true, ["-M"] = true,
     ["--comment"] = true, ["-c"] = true,
+    ["--state"] = true,
+    ["--limit"] = true,
+    ["--kind"] = true,
+    ["--fields"] = true,
+    ["--author"] = true,
+    ["--page"] = true,
+    ["--sort"] = true,
     ["-C"] = true,
 }
 
@@ -232,6 +239,13 @@ function transform(command, args, working_dir, worker_context)
             if not idx or not idx:match("^%d+$") then
                 fail("blocked: tea pr comment requires a pull request index")
             end
+            local body = positionals[4] or get_flag_value(args, "--message", "-m")
+                or get_flag_value(args, "--body", "-b")
+                or get_flag_value(args, "--description", "-d")
+                or get_flag_value(args, "--comment", "-c")
+            if not body or body == "" then
+                fail("blocked: tea pr comment requires comment text to run non-interactively")
+            end
         elseif sub == "comments" then
             local idx = positionals[3]
             if not idx or not idx:match("^%d+$") then
@@ -261,6 +275,13 @@ function transform(command, args, working_dir, worker_context)
             if not idx or not idx:match("^%d+$") then
                 fail("blocked: tea issues comment requires an issue index")
             end
+            local body = positionals[4] or get_flag_value(args, "--message", "-m")
+                or get_flag_value(args, "--body", "-b")
+                or get_flag_value(args, "--description", "-d")
+                or get_flag_value(args, "--comment", "-c")
+            if not body or body == "" then
+                fail("blocked: tea issues comment requires comment text to run non-interactively")
+            end
         elseif sub == "close" or sub == "reopen" then
             local idx = positionals[3]
             if not idx or not idx:match("^%d+$") then
@@ -274,6 +295,13 @@ function transform(command, args, working_dir, worker_context)
         local idx = positionals[2]
         if not idx or not idx:match("^%d+$") then
             fail("blocked: tea comment requires an issue or pull request index")
+        end
+        local body = positionals[3] or get_flag_value(args, "--message", "-m")
+            or get_flag_value(args, "--body", "-b")
+            or get_flag_value(args, "--description", "-d")
+            or get_flag_value(args, "--comment", "-c")
+        if not body or body == "" then
+            fail("blocked: tea comment requires comment text to run non-interactively")
         end
 
     elseif top == "comments" then

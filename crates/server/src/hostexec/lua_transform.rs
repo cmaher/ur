@@ -3743,6 +3743,62 @@ mod tests {
     }
 
     #[test]
+    fn test_tea_blocks_comment_without_body() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+
+        // pr comment without body
+        let pr_comment = vec!["pr".into(), "comment".into(), "42".into()];
+        let err1 = mgr
+            .run_transform(script, "tea", &pr_comment, "/workspace", None)
+            .unwrap_err();
+        assert!(err1.to_string().contains("requires comment text"));
+
+        // top-level comment without body
+        let top_comment = vec!["comment".into(), "42".into()];
+        let err2 = mgr
+            .run_transform(script, "tea", &top_comment, "/workspace", None)
+            .unwrap_err();
+        assert!(err2.to_string().contains("requires comment text"));
+
+        // issues comment without body
+        let issue_comment = vec!["issues".into(), "comment".into(), "42".into()];
+        let err3 = mgr
+            .run_transform(script, "tea", &issue_comment, "/workspace", None)
+            .unwrap_err();
+        assert!(err3.to_string().contains("requires comment text"));
+    }
+
+    #[test]
+    fn test_tea_filtering_flags_with_values_do_not_corrupt_positionals() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/tea.lua");
+
+        // --state flag with value on pr ls
+        let args1 = vec!["pr".into(), "ls".into(), "--state".into(), "open".into()];
+        let result1 = mgr
+            .run_transform(script, "tea", &args1, "/workspace", None)
+            .unwrap();
+        assert_eq!(
+            result1.args,
+            vec!["pr", "ls", "--state", "open", "--output", "json"]
+        );
+
+        // flags preceding positional index on pr edit
+        let args2 = vec![
+            "pr".into(),
+            "edit".into(),
+            "--state".into(),
+            "closed".into(),
+            "42".into(),
+        ];
+        let result2 = mgr
+            .run_transform(script, "tea", &args2, "/workspace", None)
+            .unwrap();
+        assert_eq!(result2.args, args2);
+    }
+
+    #[test]
     fn test_tea_allows_pr_review_comments() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/tea.lua");
