@@ -59,14 +59,16 @@ impl HostExecConfigManager {
         }
     }
 
-    /// Create a new config with only default commands plus project-granted commands.
+    /// Create a new config with only default commands plus project-granted commands,
+    /// minus project-denied commands.
     ///
     /// Per-project `hostexec` arrays in `ur.toml` grant workers access to commands.
+    /// Per-project `hostexec_deny` arrays in `ur.toml` deny commands (e.g. built-in defaults like `gh`).
     /// Granted commands that exist in the discovered registry use
     /// their configured settings (lua, long_lived, bidi). Granted commands not in the
     /// registry are added as passthrough (no Lua, not long_lived, not bidi).
-    /// Default commands (git, gh, cargo, docker, ur) are always included.
-    pub fn with_project_commands(&self, granted: &[String]) -> Self {
+    /// Denied commands are removed even if they are defaults.
+    pub fn with_project_commands(&self, granted: &[String], denied: &[String]) -> Self {
         let mut commands = self.effective_defaults();
         for name in granted {
             if let Some(cfg) = self.commands.get(name) {
@@ -78,6 +80,9 @@ impl HostExecConfigManager {
                     bidi: false,
                 });
             }
+        }
+        for name in denied {
+            commands.remove(name);
         }
         Self {
             commands,
@@ -283,7 +288,7 @@ mod tests {
         write_lua(&tmp, "git", &script);
 
         let mgr = load(&tmp);
-        let project = mgr.with_project_commands(&[]);
+        let project = mgr.with_project_commands(&[], &[]);
 
         assert_eq!(
             project.get("git").unwrap().lua_source.as_deref(),
@@ -298,7 +303,7 @@ mod tests {
         write_lua(&tmp, "daemon", &script);
 
         let mgr = load(&tmp);
-        let project = mgr.with_project_commands(&["daemon".into()]);
+        let project = mgr.with_project_commands(&["daemon".into()], &[]);
         let daemon = project.get("daemon").unwrap();
 
         assert_eq!(daemon.lua_source.as_deref(), Some(script.as_str()));
@@ -310,7 +315,7 @@ mod tests {
     fn granted_unknown_command_remains_passthrough() {
         let tmp = TempDir::new().unwrap();
         let mgr = load(&tmp);
-        let project = mgr.with_project_commands(&["rg".into()]);
+        let project = mgr.with_project_commands(&["rg".into()], &[]);
         let rg = project.get("rg").unwrap();
 
         assert!(rg.lua_source.is_none());
@@ -325,7 +330,41 @@ mod tests {
         let mgr = load(&tmp);
 
         assert!(mgr.is_allowed("private"));
-        assert!(!mgr.with_project_commands(&[]).is_allowed("private"));
+        assert!(!mgr.with_project_commands(&[], &[]).is_allowed("private"));
+    }
+
+    #[test]
+    fn project_can_deny_default_gh() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = load(&tmp);
+
+        let project = mgr.with_project_commands(&[], &["gh".into()]);
+        assert!(!project.is_allowed("gh"));
+        assert!(project.is_allowed("git"));
+        assert!(!project.command_names().contains(&"gh".to_string()));
+        assert!(project.command_entries().iter().all(|e| e.name != "gh"));
+    }
+
+    #[test]
+    fn project_deny_removes_granted_command() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = load(&tmp);
+
+        let project = mgr.with_project_commands(&["rg".into()], &["rg".into()]);
+        assert!(!project.is_allowed("rg"));
+        assert!(!project.command_names().contains(&"rg".to_string()));
+    }
+
+    #[test]
+    fn different_projects_independent_denial() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = load(&tmp);
+
+        let proj_a = mgr.with_project_commands(&[], &["gh".into()]);
+        let proj_b = mgr.with_project_commands(&[], &[]);
+
+        assert!(!proj_a.is_allowed("gh"));
+        assert!(proj_b.is_allowed("gh"));
     }
 
     #[test]

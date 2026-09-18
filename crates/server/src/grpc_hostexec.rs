@@ -525,14 +525,14 @@ impl HostExecServiceHandler {
                     branch,
                 };
 
-                // Grant only defaults + project-granted commands
+                // Grant only defaults + project-granted commands minus project-denied commands
                 let config = self.project_registry.hostexec_config();
-                let extra = self
+                let (extra, denied) = self
                     .project_registry
                     .get(project_key)
-                    .map(|p| p.hostexec.clone())
+                    .map(|p| (p.hostexec.clone(), p.hostexec_deny.clone()))
                     .unwrap_or_default();
-                let merged_config = config.with_project_commands(&extra);
+                let merged_config = config.with_project_commands(&extra, &denied);
 
                 (Some(lua_ctx), merged_config)
             }
