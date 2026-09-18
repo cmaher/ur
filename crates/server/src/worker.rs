@@ -677,17 +677,28 @@ impl WorkerManager {
     /// `potential-skills/` directory — no extra mount is needed for them. Global skills
     /// that are new (not already in `mode_skills`) receive a bind mount so `workerd init`
     /// can copy them from the mounted host directory.
+    /// Merge project-required skills and global skills into `mode_skills`.
     ///
-    /// Globals are always appended even when the launch supplied an explicit `--skills`
-    /// override — `[skills]` in `ur.toml` declares "I want these everywhere."
-    pub fn merge_global_skills(
+    /// Precedence order:
+    /// 1. mode_skills (mode default or explicit launch override)
+    /// 2. project_skills (from project configuration)
+    /// 3. global_skills (from [skills] in ur.toml for the strategy)
+    ///
+    /// Duplicate names preserve the earliest source.
+    pub fn merge_skills(
         &self,
         strategy: WorkerStrategy,
         mode_skills: Vec<String>,
+        project_skills: &[String],
     ) -> (Vec<String>, Vec<(String, PathBuf)>) {
-        let globals = self.global_skills.for_strategy(strategy.name());
         let mut seen: std::collections::HashSet<String> = mode_skills.iter().cloned().collect();
         let mut merged = mode_skills;
+        for skill in project_skills {
+            if seen.insert(skill.clone()) {
+                merged.push(skill.clone());
+            }
+        }
+        let globals = self.global_skills.for_strategy(strategy.name());
         let mut extra_mounts: Vec<(String, PathBuf)> = Vec::new();
         for global in globals {
             if seen.insert(global.name.clone()) {
@@ -696,6 +707,18 @@ impl WorkerManager {
             }
         }
         (merged, extra_mounts)
+    }
+
+    /// Merge global skills from `ur.toml` into `mode_skills` based on the resolved strategy.
+    ///
+    /// Globals are always appended even when the launch supplied an explicit `--skills`
+    /// override — `[skills]` in `ur.toml` declares "I want these everywhere."
+    pub fn merge_global_skills(
+        &self,
+        strategy: WorkerStrategy,
+        mode_skills: Vec<String>,
+    ) -> (Vec<String>, Vec<(String, PathBuf)>) {
+        self.merge_skills(strategy, mode_skills, &[])
     }
 
     /// Generate a new unique worker ID for the given process_id.
@@ -3235,5 +3258,142 @@ agent = "claude"
             mgr.merge_global_skills(WorkerStrategy::Code, vec!["custom-skill".into()]);
         assert_eq!(merged, vec!["custom-skill", "common-skill"]);
         assert_eq!(extra, vec![("common-skill".to_string(), host)]);
+    }
+
+    #[tokio::test]
+    async fn merge_skills_order_mode_project_globals() {
+        let global_path = std::path::PathBuf::from("/host/skills/global");
+        let globals = GlobalSkillsConfig {
+            common: vec![ur_config::GlobalSkill {
+                name: "global-skill".into(),
+                host_path: global_path.clone(),
+            }],
+            code: vec![],
+            design: vec![],
+        };
+        let (mgr, _ws, _db) = test_manager_with_globals(globals).await;
+        let mode_skills = vec!["mode-a".to_string(), "mode-b".to_string()];
+        let project_skills = vec!["proj-c".to_string(), "proj-d".to_string()];
+
+        let (merged, extra) = mgr.merge_skills(WorkerStrategy::Code, mode_skills, &project_skills);
+        assert_eq!(
+            merged,
+            vec!["mode-a", "mode-b", "proj-c", "proj-d", "global-skill"]
+        );
+        assert_eq!(extra, vec![("global-skill".to_string(), global_path)]);
+    }
+
+    #[tokio::test]
+    async fn merge_skills_duplicates_preserve_earliest_source() {
+        let global_path = std::path::PathBuf::from("/host/skills/shared");
+        let globals = GlobalSkillsConfig {
+            common: vec![ur_config::GlobalSkill {
+                name: "shared-b".into(),
+                host_path: global_path.clone(),
+            }],
+            code: vec![],
+            design: vec![],
+        };
+        let (mgr, _ws, _db) = test_manager_with_globals(globals).await;
+        // "shared-a" is in mode and project -> mode wins (earliest)
+        // "shared-b" is in project and global -> project wins (earliest)
+        let mode_skills = vec!["shared-a".to_string(), "mode-only".to_string()];
+        let project_skills = vec!["shared-a".to_string(), "shared-b".to_string()];
+
+        let (merged, extra) = mgr.merge_skills(WorkerStrategy::Code, mode_skills, &project_skills);
+        assert_eq!(merged, vec!["shared-a", "mode-only", "shared-b"]);
+        assert!(
+            extra.is_empty(),
+            "shared-b already in project skills -> no extra mount"
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_skills_explicit_override_retains_project_skills() {
+        let global_path = std::path::PathBuf::from("/host/skills/global");
+        let globals = GlobalSkillsConfig {
+            common: vec![ur_config::GlobalSkill {
+                name: "global-skill".into(),
+                host_path: global_path.clone(),
+            }],
+            code: vec![],
+            design: vec![],
+        };
+        let (mgr, _ws, _db) = test_manager_with_globals(globals).await;
+        let explicit_skills = vec!["explicit-override".to_string()];
+        let project_skills = vec!["gitea".to_string()];
+
+        let (merged, extra) =
+            mgr.merge_skills(WorkerStrategy::Code, explicit_skills, &project_skills);
+        assert_eq!(merged, vec!["explicit-override", "gitea", "global-skill"]);
+        assert_eq!(extra, vec![("global-skill".to_string(), global_path)]);
+    }
+
+    #[tokio::test]
+    async fn merge_skills_empty_project_skills_preserves_behavior() {
+        let global_path = std::path::PathBuf::from("/host/skills/global");
+        let globals = GlobalSkillsConfig {
+            common: vec![ur_config::GlobalSkill {
+                name: "global-skill".into(),
+                host_path: global_path.clone(),
+            }],
+            code: vec![],
+            design: vec![],
+        };
+        let (mgr, _ws, _db) = test_manager_with_globals(globals).await;
+        let mode_skills = vec!["implement".to_string()];
+
+        let (merged_explicit_empty, extra1) =
+            mgr.merge_skills(WorkerStrategy::Code, mode_skills.clone(), &[]);
+        let (merged_global, extra2) = mgr.merge_global_skills(WorkerStrategy::Code, mode_skills);
+
+        assert_eq!(merged_explicit_empty, merged_global);
+        assert_eq!(extra1, extra2);
+    }
+
+    #[tokio::test]
+    async fn merge_skills_applies_to_all_strategies() {
+        let code_path = std::path::PathBuf::from("/host/skills/code");
+        let design_path = std::path::PathBuf::from("/host/skills/design");
+        let globals = GlobalSkillsConfig {
+            common: vec![],
+            code: vec![ur_config::GlobalSkill {
+                name: "code-global".into(),
+                host_path: code_path.clone(),
+            }],
+            design: vec![ur_config::GlobalSkill {
+                name: "design-global".into(),
+                host_path: design_path.clone(),
+            }],
+        };
+        let (mgr, _ws, _db) = test_manager_with_globals(globals).await;
+        let project_skills = vec!["gitea".to_string()];
+
+        // Code strategy
+        let (merged_code, _) = mgr.merge_skills(
+            WorkerStrategy::Code,
+            vec!["code-mode".into()],
+            &project_skills,
+        );
+        assert_eq!(merged_code, vec!["code-mode", "gitea", "code-global"]);
+
+        // Design strategy
+        let (merged_design, _) = mgr.merge_skills(
+            WorkerStrategy::Design,
+            vec!["design-mode".into()],
+            &project_skills,
+        );
+        assert_eq!(merged_design, vec!["design-mode", "gitea", "design-global"]);
+
+        // Manual strategy (receives common + code + design globals)
+        let (merged_manual, _) = mgr.merge_skills(
+            WorkerStrategy::Manual,
+            vec!["manual-mode".into()],
+            &project_skills,
+        );
+        assert_eq!(
+            merged_manual,
+            vec!["manual-mode", "gitea", "code-global", "design-global"]
+        );
     }
 }

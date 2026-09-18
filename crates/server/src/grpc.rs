@@ -611,6 +611,7 @@ impl LaunchManager {
         Vec<String>,
         Option<String>,
         Option<String>,
+        Vec<String>,
     ) {
         match self.project_registry.get(project_key) {
             Some(proj) if !project_key.is_empty() => (
@@ -621,6 +622,7 @@ impl LaunchManager {
                 proj.hostexec_scripts.clone(),
                 proj.memory_dir.clone(),
                 proj.brain_dir.clone(),
+                proj.skills.clone(),
             ),
             _ => (
                 None,
@@ -630,6 +632,7 @@ impl LaunchManager {
                 Vec::new(),
                 None,
                 None,
+                Vec::new(),
             ),
         }
     }
@@ -658,14 +661,6 @@ impl LaunchManager {
         workspace_dir: Option<PathBuf>,
         context_mounts: Vec<(String, std::path::PathBuf)>,
     ) -> Result<crate::WorkerConfig, CoreError> {
-        let mode_skills = if req.skills.is_empty() {
-            resolved_skills
-        } else {
-            req.skills.clone()
-        };
-        let (skills, extra_skill_mounts) = self
-            .worker_manager
-            .merge_global_skills(strategy, mode_skills);
         let (
             instruction_md,
             mounts,
@@ -674,7 +669,16 @@ impl LaunchManager {
             hostexec_scripts,
             memory_dir,
             brain_dir,
+            project_skills,
         ) = self.extract_project_launch_fields(&project_key);
+        let mode_skills = if req.skills.is_empty() {
+            resolved_skills
+        } else {
+            req.skills.clone()
+        };
+        let (skills, extra_skill_mounts) =
+            self.worker_manager
+                .merge_skills(strategy, mode_skills, &project_skills);
         let image_id = resolve_worker_image(agent, &req.image_id, &resolved_image)?;
         let cpus = if req.cpus == 0 {
             ur_config::DEFAULT_WORKER_CPUS
