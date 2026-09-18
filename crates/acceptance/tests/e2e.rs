@@ -227,6 +227,12 @@ struct ProjectEntry {
     memory_dir: Option<String>,
     /// Optional `brain_dir` path to include in the project config.
     brain_dir: Option<String>,
+    /// Optional `skills` array to include in the project config.
+    skills: Vec<String>,
+    /// Optional `hostexec` commands to grant to this project.
+    hostexec: Vec<String>,
+    /// Optional `hostexec_deny` commands to deny to this project.
+    hostexec_deny: Vec<String>,
 }
 
 /// Configuration names for a test stack, preventing container/network collisions
@@ -290,6 +296,28 @@ fn render_projects_toml(projects: &[ProjectEntry]) -> String {
         } else {
             format!("{}-{}:{}", proj.image, proj.agent, tag)
         };
+        let skills_line = if proj.skills.is_empty() {
+            String::new()
+        } else {
+            let quoted: Vec<String> = proj.skills.iter().map(|s| format!("\"{s}\"")).collect();
+            format!("skills = [{}]\n", quoted.join(", "))
+        };
+        let hostexec_line = if proj.hostexec.is_empty() {
+            String::new()
+        } else {
+            let quoted: Vec<String> = proj.hostexec.iter().map(|s| format!("\"{s}\"")).collect();
+            format!("hostexec = [{}]\n", quoted.join(", "))
+        };
+        let hostexec_deny_line = if proj.hostexec_deny.is_empty() {
+            String::new()
+        } else {
+            let quoted: Vec<String> = proj
+                .hostexec_deny
+                .iter()
+                .map(|s| format!("\"{s}\""))
+                .collect();
+            format!("hostexec_deny = [{}]\n", quoted.join(", "))
+        };
         let scripts_line = if proj.hostexec_scripts.is_empty() {
             String::new()
         } else {
@@ -323,9 +351,12 @@ fn render_projects_toml(projects: &[ProjectEntry]) -> String {
             format!("repo = \"{}\"\n", proj.repo)
         };
         projects_toml.push_str(&format!(
-            "\n[projects.{key}]\n{identity}{scripts}{memory_dir}{brain_dir}\n[projects.{key}.container]\nimage = \"{image}\"\n{mounts}",
+            "\n[projects.{key}]\n{identity}{skills}{hostexec}{hostexec_deny}{scripts}{memory_dir}{brain_dir}\n[projects.{key}.container]\nimage = \"{image}\"\n{mounts}",
             key = proj.key,
             identity = identity_line,
+            skills = skills_line,
+            hostexec = hostexec_line,
+            hostexec_deny = hostexec_deny_line,
             scripts = scripts_line,
             memory_dir = memory_dir_line,
             brain_dir = brain_dir_line,
@@ -701,6 +732,9 @@ fn setup_mount_projects(config_path: &Path) -> (tempfile::TempDir, Vec<ProjectEn
             mounts: vec![format!("{}:/mnt/test:ro", host_mount_path.display())],
             memory_dir: None,
             brain_dir: None,
+            skills: vec![],
+            hostexec: vec![],
+            hostexec_deny: vec![],
         },
         ProjectEntry {
             key: "badmountproj".into(),
@@ -712,6 +746,9 @@ fn setup_mount_projects(config_path: &Path) -> (tempfile::TempDir, Vec<ProjectEn
             mounts: vec![format!("{}:/mnt/test:ro", missing_mount_path.display())],
             memory_dir: None,
             brain_dir: None,
+            skills: vec![],
+            hostexec: vec![],
+            hostexec_deny: vec![],
         },
     ];
     (host_mount_dir, projects)
@@ -763,6 +800,9 @@ fn setup_memory_projects(config_path: &Path) -> (MemoryDirInfo, Vec<ProjectEntry
         mounts: vec![],
         memory_dir: Some(memory_path.to_string_lossy().into_owned()),
         brain_dir: None,
+        skills: vec![],
+        hostexec: vec![],
+        hostexec_deny: vec![],
     }];
 
     (
@@ -820,6 +860,9 @@ fn setup_brain_projects(config_path: &Path) -> (BrainDirInfo, Vec<ProjectEntry>)
         mounts: vec![],
         memory_dir: None,
         brain_dir: Some(brain_path.to_string_lossy().into_owned()),
+        skills: vec![],
+        hostexec: vec![],
+        hostexec_deny: vec![],
     }];
 
     (
@@ -1015,6 +1058,9 @@ fn setup_hook_overlay_projects(config_path: &Path) -> Vec<ProjectEntry> {
         mounts: vec![],
         memory_dir: None,
         brain_dir: None,
+        skills: vec![],
+        hostexec: vec![],
+        hostexec_deny: vec![],
     }]
 }
 
@@ -1063,6 +1109,9 @@ fn create_codex_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
             mounts: vec![],
             memory_dir: None,
             brain_dir: None,
+            skills: vec![],
+            hostexec: vec![],
+            hostexec_deny: vec![],
         },
         ProjectEntry {
             key: "rustcodexproj".into(),
@@ -1074,6 +1123,9 @@ fn create_codex_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
             mounts: vec![],
             memory_dir: None,
             brain_dir: None,
+            skills: vec![],
+            hostexec: vec![],
+            hostexec_deny: vec![],
         },
     ]
 }
@@ -1105,6 +1157,9 @@ fn create_agy_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
             mounts: vec![],
             memory_dir: None,
             brain_dir: None,
+            skills: vec![],
+            hostexec: vec![],
+            hostexec_deny: vec![],
         },
         ProjectEntry {
             key: "rustagyproj".into(),
@@ -1116,6 +1171,9 @@ fn create_agy_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
             mounts: vec![],
             memory_dir: None,
             brain_dir: None,
+            skills: vec![],
+            hostexec: vec![],
+            hostexec_deny: vec![],
         },
     ]
 }
@@ -1166,6 +1224,9 @@ fn create_project_fixtures(
             mounts: vec![],
             memory_dir: None,
             brain_dir: None,
+            skills: vec![],
+            hostexec: vec![],
+            hostexec_deny: vec![],
         },
         ProjectEntry {
             key: "rustproj".into(),
@@ -1177,6 +1238,9 @@ fn create_project_fixtures(
             mounts: vec![],
             memory_dir: None,
             brain_dir: None,
+            skills: vec![],
+            hostexec: vec![],
+            hostexec_deny: vec![],
         },
         ProjectEntry {
             key: "scriptproj".into(),
@@ -1188,6 +1252,23 @@ fn create_project_fixtures(
             mounts: vec![],
             memory_dir: None,
             brain_dir: None,
+            skills: vec![],
+            hostexec: vec![],
+            hostexec_deny: vec![],
+        },
+        ProjectEntry {
+            key: "giteaproj".into(),
+            repo: bare_repo.to_string_lossy().into_owned(),
+            local: false,
+            image: "ur-worker".into(),
+            agent: "claude",
+            hostexec_scripts: vec![],
+            mounts: vec![],
+            memory_dir: None,
+            brain_dir: None,
+            skills: vec!["gitea".into()],
+            hostexec: vec!["tea".into()],
+            hostexec_deny: vec!["gh".into()],
         },
         // A repo-less local project (`local = true`), declared with the same
         // per-project affordances a pool-backed project gets: image, hostexec
@@ -1202,6 +1283,9 @@ fn create_project_fixtures(
             mounts: vec![],
             memory_dir: None,
             brain_dir: None,
+            skills: vec![],
+            hostexec: vec![],
+            hostexec_deny: vec![],
         },
     ];
     projects.extend(create_codex_project_entries(config_path));
@@ -1357,6 +1441,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_hostexec_script_pool(&env);
         scenario_hostexec_script_workspace(&env, &config_path);
         scenario_global_skill_injection(&env);
+        scenario_project_gitea_tooling(&env);
         scenario_worker_label_pr_status(&env);
         scenario_manual_worker(&env);
         scenario_worker_models_config_override(&env);
@@ -4011,6 +4096,145 @@ fn scenario_global_skill_injection(env: &TestEnv) {
 
     if let Err(e) = result {
         force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Verify per-project Gitea tooling:
+/// - Configured worker has the installed baked Gitea skill
+/// - Configured worker has a Tea shim
+/// - Configured worker has no gh shim (denied)
+/// - Blocked Tea command is rejected by Lua transform before process execution
+/// - Control project still receives gh by default
+fn scenario_project_gitea_tooling(env: &TestEnv) {
+    let ticket_id = "gitea-tooling-test";
+    let container_name = env.container_name(ticket_id);
+    let control_ticket_id = "control-gh-test";
+    let control_container = env.container_name(control_ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch a worker for the Gitea project ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", "giteaproj", ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p giteaproj failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- 1. Verify installed Gitea skill ----
+        let gitea_skill = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["ls", "/home/worker/.claude/skills/gitea/SKILL.md"],
+        );
+        assert_exec_success(
+            &gitea_skill,
+            "gitea skill should be copied to ~/.claude/skills/gitea/SKILL.md",
+        );
+
+        // ---- 2. Verify Tea hostexec shim exists ----
+        let tea_shim = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["ls", "/home/worker/.local/bin/tea"],
+        );
+        assert_exec_success(
+            &tea_shim,
+            "tea shim should exist at /home/worker/.local/bin/tea",
+        );
+
+        // ---- 3. Verify gh hostexec shim was denied and does NOT exist ----
+        let gh_shim = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["ls", "/home/worker/.local/bin/gh"],
+        );
+        assert!(
+            !gh_shim.status.success(),
+            "gh shim should NOT exist in giteaproj container because gh was denied"
+        );
+
+        // ---- 4. Verify blocked Tea command is rejected by Lua transform ----
+        let blocked_tea = exec_in_container(&env.runtime, &container_name, &["tea", "login"]);
+        assert!(
+            !blocked_tea.status.success(),
+            "tea login should be rejected by Lua transform"
+        );
+        let stderr = String::from_utf8_lossy(&blocked_tea.stderr);
+        assert!(
+            stderr.contains("blocked"),
+            "tea login rejection should mention blocked, got: {stderr}"
+        );
+
+        let blocked_clone =
+            exec_in_container(&env.runtime, &container_name, &["tea", "clone", "repo"]);
+        assert!(
+            !blocked_clone.status.success(),
+            "tea clone should be rejected by Lua transform"
+        );
+        let clone_stderr = String::from_utf8_lossy(&blocked_clone.stderr);
+        assert!(
+            clone_stderr.contains("blocked"),
+            "tea clone rejection should mention blocked, got: {clone_stderr}"
+        );
+
+        // ---- Stop giteaproj worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+
+        // ---- 5. Verify control project receives gh by default and tea is absent ----
+        let control_launch = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", env.project_key, control_ticket_id],
+            &env_slice,
+        );
+        assert!(
+            control_launch.status.success(),
+            "ur worker launch -p {} failed.\nstdout: {}\nstderr: {}",
+            env.project_key,
+            String::from_utf8_lossy(&control_launch.stdout),
+            String::from_utf8_lossy(&control_launch.stderr),
+        );
+        wait_for_healthy(&env.runtime, &control_container);
+
+        let control_gh = exec_in_container(
+            &env.runtime,
+            &control_container,
+            &["ls", "/home/worker/.local/bin/gh"],
+        );
+        assert_exec_success(&control_gh, "control project should receive gh by default");
+
+        let control_tea = exec_in_container(
+            &env.runtime,
+            &control_container,
+            &["ls", "/home/worker/.local/bin/tea"],
+        );
+        assert!(
+            !control_tea.status.success(),
+            "control project should NOT receive tea by default"
+        );
+
+        let control_stop = run_cmd(&env.ur, &["worker", "stop", control_ticket_id], &env_slice);
+        assert!(control_stop.status.success());
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        force_remove_container(&env.runtime, &control_container);
         std::panic::resume_unwind(e);
     }
 }
