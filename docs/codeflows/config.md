@@ -92,9 +92,28 @@ Each project is a TOML table keyed by a short identifier (e.g., `[projects.ur]`)
 | `local` | bool | `false` | no | Repo-less local project: no remote, no pool, no dispatch. Mutually exclusive with `repo`. See [Local Projects](#local-projects) |
 | `name` | string | `<key>` | no | Display-friendly label |
 | `pool_limit` | u32 | 10 | no | Max cached repo clones. Rejected when `local = true` |
-| `hostexec` | string[] | `[]` | no | Additional passthrough commands for hostexec |
+| `skills` | string[] | `[]` | no | Project-required skills merged into every worker launch for this project |
+| `hostexec` | string[] | `[]` | no | Additional passthrough commands for hostexec (e.g. `["tea"]`) |
+| `hostexec_deny` | string[] | `[]` | no | Commands denied to this project (e.g. `["gh"]`). Must not overlap with `hostexec` |
 | `mounts` | string[] | `[]` | no | Volume mounts in `"source:destination"` format |
 | `brain_dir` | template path | — | no | Per-project brain directory, mounted read-write at `/brain`. `%URCONFIG%/...` or absolute path; `%PROJECT%` rejected (brain must be project-stable). Convention fallback: `<config_dir>/projects/<key>/brain/` when unset. See [project-file-mounting.md](project-file-mounting.md) |
+
+### Per-Project Tooling & Gitea Setup
+
+Projects can configure custom worker capabilities, such as Gitea forge collaboration:
+
+```toml
+[projects.my-gitea]
+repo = "https://gitea.example.com/org/repo.git"
+skills = ["gitea"]
+hostexec = ["tea"]
+hostexec_deny = ["gh"]
+```
+
+- **Skills Merge**: `skills = ["gitea"]` ensures every worker launched for this project receives the `gitea` skill alongside mode and global skills.
+- **Hostexec Grants & Denials**: `hostexec = ["tea"]` grants the optional built-in `tea` command, which executes on the host with host-managed credentials. `hostexec_deny = ["gh"]` removes the built-in default `gh` command so workers cannot invoke GitHub CLI against a Gitea repository. Overlap between `hostexec` and `hostexec_deny` is rejected during config validation.
+- **Reload Behavior**: On config reload (`Config::reload`), the in-memory project registry updates immediately. Subsequent hostexec requests reflect updated grants and denials. Skills changes take effect when new workers are launched.
+- **Automated Workflow Scope**: Automated lifecycle coordination and PR scanning remain GitHub-only; Gitea tooling enables worker-driven interactive collaboration.
 
 ### Local Projects
 

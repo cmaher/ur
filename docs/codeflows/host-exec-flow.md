@@ -133,26 +133,40 @@ as PATH commands.
 
 ## Configuration (command flow)
 
-`HostExecConfigManager` starts with the 11 baked-in commands (`git`, `gh`,
-`cargo`, `docker`, `ur`, `make`, `go`, `bazel`, `npm`, `pnpm`, and `tsc`). It
-then scans `$UR_CONFIG/hostexec/*.lua`; each filename stem is the command name,
-so `daemon.lua` registers `daemon`. A discovered file with a built-in name, such
-as `git.lua`, shadows that built-in entirely. Non-Lua files and subdirectories
-are ignored.
+`HostExecConfigManager` registers built-in commands: 11 default commands (`git`, `gh`,
+`cargo`, `docker`, `ur`, `make`, `go`, `bazel`, `npm`, `pnpm`, and `tsc`) plus the
+optional built-in `tea` command. It then scans `$UR_CONFIG/hostexec/*.lua`; each
+filename stem is the command name, so `daemon.lua` registers `daemon`. A discovered
+file with a built-in name, such as `git.lua`, shadows that built-in entirely.
+Non-Lua files and subdirectories are ignored.
 
-Discovery populates the registry but does not grant access. Every project gets
-the built-ins automatically. A project grants an additional discovered command
-with its existing array:
+Discovery and catalog registration populate the command registry but do not grant access
+to non-defaults. Every project gets the 11 default commands automatically. Optional built-ins
+like `tea` and discovered commands require an explicit project grant:
 
 ```toml
 [projects.myproject]
-hostexec = ["daemon", "jq"]
+hostexec = ["tea", "daemon"]
+hostexec_deny = ["gh"]
 ```
 
-A granted name with no discovered Lua file remains a plain passthrough command.
-A discovered name absent from the project's grant array is unreachable by that
-project. The effective merge order is therefore baked-in defaults → discovered
-Lua overlay → per-project grant filter.
+- **Grants (`hostexec`)**: A granted name in the catalog (such as built-in `tea` or a discovered Lua command) runs with its configured Lua transform and settings. Granted names not in the catalog run as plain passthrough commands.
+- **Denials (`hostexec_deny`)**: Projects can deny any command—including built-in defaults like `gh`. This is essential for Gitea projects to prevent agents from falling back to GitHub CLI. `hostexec` and `hostexec_deny` must not overlap.
+- **Effective merge order**: `(built-in defaults + discovered Lua overlay + project grants) - project denials`.
+
+### Tea Host Execution & Safety Policy
+
+`tea` is an optional built-in command designed for Gitea forge collaboration:
+- **Host-managed credentials**: `tea` executes on the host through builderd and discovers repository context from the mapped working directory (`-C`). Authentication is configured on the host (e.g. `tea login`).
+- **Restrictive Lua transform**: `crates/server/src/hostexec/default_scripts/tea.lua` strictly enforces safety invariants:
+  - Blocks authentication changes (`tea login`, `tea logout`, `tea auth`).
+  - Blocks administrative, user, or destructive repo operations (`tea admin`, `tea repo`, `tea org`, `tea migrate`).
+  - Blocks git-checkout mutations (`tea pr checkout`, `tea pr clean`, `tea clone`); repository operations must use `git`.
+  - Rejects secrets in command arguments (`--token`, `--password`, `--secret`, `--key`).
+  - Rejects insecure TLS (`--insecure`, `-k`).
+  - Enforces or injects `--output json` on read operations (`tea pr ls`, `tea pr view`, `tea pr checks`, `tea pr comments`, `tea runs ls`, etc.).
+  - Requires explicit supported style on merge (`tea pr merge <index> --style <merge|rebase|squash|rebase-merge>`).
+- **Config reload**: Changes to `hostexec` and `hostexec_deny` take effect immediately on `ur.toml` reload because each worker host-exec request consults the live project registry dynamically.
 
 Lua scripts declare process metadata as independent top-level globals. Both
 default to `false`; short-lived commands may enable `bidi` when they need stdin.

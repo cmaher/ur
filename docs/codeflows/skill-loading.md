@@ -35,22 +35,43 @@ All skills land in `~/.agent-shared/potential-skills/`. The agent's own skill di
 When a process launches, the server resolves which skills, model, and agent to use.
 
 ```
-WorkerLaunchRequest { mode, skills, agent_type }
+WorkerLaunchRequest { mode, skills, agent_type } + ProjectConfig { skills }
     │
     ▼
 WorkerManager::resolve_mode(mode, requested_agent)     [crates/server/src/worker.rs]
     │   Returns ResolvedMode { strategy, skills, model, agent }:
     │     1. Mode name → WorkerModesConfig lookup (default: "code")
     │     2. Strategy from built-in or custom mode's `base` field
-    │     3. Skills: explicit `skills` param > mode's skill list > code defaults
+    │     3. Mode Skills: explicit `skills` param > mode's skill list > code defaults
     │     4. Model: mode's `model` field, else the three-level chain below
     │     5. Agent: explicit `requested_agent` param > mode's `agent` field > top-level agent > claude
+    │
+    ▼
+WorkerManager::merge_skills(strategy, mode_skills, project_skills) [crates/server/src/worker.rs]
+    │   Merges three skill sources with earliest-source deduplication:
+    │     1. Mode skills (explicit request or mode config)
+    │     2. Project skills (`[projects.<key>].skills`)
+    │     3. Global host skills (`[skills.<strategy>]` then `[skills.common]`)
     │
     ▼
 UR_WORKER_SKILLS env var set on container       (comma-separated skill names)
 UR_WORKER_MODEL env var set on container        (model name, e.g. "sonnet", "opus")
 UR_AGENT_TYPE env var set on container          ("claude", "codex", or "agy")
 ```
+
+### Per-Project Skills (`[projects.<key>].skills`)
+
+Projects can require skills for all workers launched in that project via `skills = [...]` in `[projects.<key>]`:
+
+```toml
+[projects.my-repo]
+repo = "https://gitea.example.com/org/repo.git"
+skills = ["gitea"]
+```
+
+- **Precedence & Merge Order**: Mode/explicit skills take highest priority, followed by project-required skills, followed by global host skills. Duplicate skill names across layers are deduplicated preserving the earliest source's position.
+- **Reload Behavior**: Skills are passed as the `UR_WORKER_SKILLS` environment variable when a worker container is launched, and copied into the agent's customization directory during container initialization by `workerd init`. Updating `skills` in `ur.toml` applies to all newly launched workers.
+- **Baked Gitea Skill**: `gitea` is baked into the base container image under `.agent-shared/potential-skills/gitea/`. Setting `skills = ["gitea"]` activates it for the project's workers, providing guidance on using `git` for local operations and `tea` for PRs, review comments, CI checks, and merging.
 
 ### Default Modes (hardcoded, overridable via ur.toml)
 

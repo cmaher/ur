@@ -276,11 +276,36 @@ ignored_workflow_checks = []
 | `repo` | string | — | yes | Git remote URL |
 | `name` | string | `<key>` | no | Display-friendly label |
 | `pool_limit` | u32 | `10` | no | Max cached repo clones in pool |
-| `hostexec` | string[] | `[]` | no | Additional passthrough commands granted to this project |
+| `skills` | string[] | `[]` | no | Project-required skills merged into every worker launch for this project |
+| `hostexec` | string[] | `[]` | no | Additional commands granted to this project (e.g. `["tea"]` or custom commands) |
+| `hostexec_deny` | string[] | `[]` | no | Commands denied to this project, removing built-in defaults (e.g. `["gh"]`). Cannot overlap with `hostexec` |
 | `instruction_md` | string | — | no | Template path to project-level instruction file (e.g. CLAUDE.md). The old key `claude_md` is still accepted (deprecation warning). |
 | `max_fix_attempts` | u32 | `10` | no | Max fix loop iterations before stalling agent |
 | `protected_branches` | string[] | `["main", "master"]` | no | Branches that cannot be force-pushed (glob patterns supported) |
 | `ignored_workflow_checks` | string[] | `[]` | no | CI check names to ignore when evaluating workflow status |
+
+### Gitea Project Configuration
+
+To configure a project using Gitea for code hosting and PR collaboration:
+
+```toml
+[projects.my-gitea-repo]
+repo = "https://gitea.example.com/org/my-repo.git"
+name = "My Gitea Repo"
+skills = ["gitea"]
+hostexec = ["tea"]
+hostexec_deny = ["gh"]
+```
+
+- **`skills = ["gitea"]`**: Activates the baked-in `gitea` skill for all workers launched in this project, teaching agents to use `git` for repository operations and `tea` for PRs, reviews, and comments.
+- **`hostexec = ["tea"]`**: Grants workers access to the optional built-in `tea` host command. `tea` is registered in the command catalog with a restrictive Lua safety transform, but is **not** part of the default command set. It runs on the host via builderd using host-managed authentication (`tea login` performed on the host).
+- **`hostexec_deny = ["gh"]`**: Denies the built-in default `gh` (GitHub CLI) for workers in this project, ensuring agents do not accidentally invoke GitHub tooling against a Gitea repository. `hostexec` and `hostexec_deny` must be mutually disjoint.
+
+> [!NOTE]
+> **Workflow Backend**: Automated server workflow orchestration (such as lifecycle state machines and ticket/PR poller tasks) currently remains GitHub-only pending separate provider backend work. The Gitea tooling provides worker-facing interactive collaboration via `tea` and the `gitea` skill.
+
+> [!NOTE]
+> **Config Reload Behavior**: Changes to `hostexec` and `hostexec_deny` take effect immediately upon `ur.toml` reload for subsequent host-exec invocations by running workers and new workers alike. Changes to project `skills` take effect on newly launched worker containers when `workerd init` populates the active skill directory.
 
 ### `[projects.<key>.container]`
 
