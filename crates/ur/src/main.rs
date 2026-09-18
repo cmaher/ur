@@ -1723,7 +1723,9 @@ mod tests {
             repo: repo.map(str::to_owned),
             name: key.to_owned(),
             pool_limit: 10,
+            skills: vec![],
             hostexec: vec![],
+            hostexec_deny: vec![],
             instruction_md: None,
             container: ur_config::ContainerConfig {
                 image: "ur-worker".to_owned(),

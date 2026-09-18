@@ -366,7 +366,9 @@ mod tests {
                 repo: None,
                 name: key.to_string(),
                 pool_limit: 10,
+                skills: vec![],
                 hostexec: vec![],
+                hostexec_deny: vec![],
                 instruction_md: None,
                 container: ur_config::ContainerConfig {
                     image: "ur-worker".to_string(),

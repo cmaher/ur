@@ -828,7 +828,9 @@ fn project_cycle_limit_map(
             repo: Some(String::new()),
             name: project_key.to_string(),
             pool_limit: 1,
+            skills: vec![],
             hostexec: vec![],
+            hostexec_deny: vec![],
             instruction_md: None,
             container: ur_config::ContainerConfig {
                 image: String::new(),

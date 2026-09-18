@@ -453,6 +453,10 @@ struct RawProjectConfig {
     pool_limit: Option<u32>,
     #[serde(default)]
     hostexec: Vec<String>,
+    #[serde(default)]
+    hostexec_deny: Vec<String>,
+    #[serde(default)]
+    skills: Vec<String>,
     /// Removed field — emits a hard error if present.
     git_hooks_dir: Option<serde::de::IgnoredAny>,
     /// Removed field — emits a hard error if present.
@@ -1125,9 +1129,14 @@ pub struct ProjectConfig {
     /// Maximum number of cached repo clones in the pool (default: 10).
     /// Meaningless for local projects, which have no pool.
     pub pool_limit: u32,
+    /// Skills required for workers running against this project.
+    pub skills: Vec<String>,
     /// Additional passthrough hostexec commands for this project.
     /// These are added to the global allowlist when agents run against this project.
     pub hostexec: Vec<String>,
+    /// Hostexec commands explicitly denied for this project.
+    /// Can remove built-in defaults such as `gh`.
+    pub hostexec_deny: Vec<String>,
     /// Optional template path to a project-level instruction file (e.g. CLAUDE.md).
     /// Supports `%PROJECT%/...`, `%URCONFIG%/...` template variables, or absolute paths.
     /// Resolve with [`resolve_template_path`] at use time.
@@ -1631,12 +1640,22 @@ fn resolve_project_config(
 
     let hostexec_scripts = normalize_hostexec_scripts(&key, raw_proj.hostexec_scripts)?;
 
+    for cmd in &raw_proj.hostexec {
+        if raw_proj.hostexec_deny.contains(cmd) {
+            anyhow::bail!(
+                "project '{key}': command '{cmd}' cannot be listed in both `hostexec` and `hostexec_deny`"
+            );
+        }
+    }
+
     let resolved = ProjectConfig {
         name: raw_proj.name.unwrap_or_else(|| key.clone()),
         repo,
         pool_limit: raw_proj.pool_limit.unwrap_or(DEFAULT_POOL_LIMIT),
         key: key.clone(),
+        skills: raw_proj.skills,
         hostexec: raw_proj.hostexec,
+        hostexec_deny: raw_proj.hostexec_deny,
         instruction_md,
         container,
         max_fix_attempts: raw_proj
@@ -2491,6 +2510,103 @@ image = "ur-worker"
         let cfg = Config::load_from(tmp.path()).unwrap();
         let proj = &cfg.projects["ur"];
         assert!(proj.hostexec.is_empty());
+    }
+
+    #[test]
+    fn skills_and_hostexec_deny_parsed_from_project() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+skills = ["gitea", "custom-skill"]
+hostexec = ["tea"]
+hostexec_deny = ["gh"]
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let proj = &cfg.projects["ur"];
+        assert_eq!(proj.skills, vec!["gitea", "custom-skill"]);
+        assert_eq!(proj.hostexec, vec!["tea"]);
+        assert_eq!(proj.hostexec_deny, vec!["gh"]);
+    }
+
+    #[test]
+    fn skills_and_hostexec_deny_default_to_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let proj = &cfg.projects["ur"];
+        assert!(proj.skills.is_empty());
+        assert!(proj.hostexec_deny.is_empty());
+    }
+
+    #[test]
+    fn hostexec_and_hostexec_deny_conflict_produces_clear_error() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.myproj]
+repo = "git@github.com:cmaher/ur.git"
+hostexec = ["tea", "gh"]
+hostexec_deny = ["gh"]
+[projects.myproj.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("project 'myproj'"),
+            "Error message should name the project: {msg}"
+        );
+        assert!(
+            msg.contains("gh"),
+            "Error message should name the conflicting command: {msg}"
+        );
+        assert!(
+            msg.contains("cannot be listed in both `hostexec` and `hostexec_deny`"),
+            "Error message should explain the conflict: {msg}"
+        );
+    }
+
+    #[test]
+    fn hostexec_deny_without_hostexec_grant_is_valid() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+hostexec_deny = ["gh"]
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let proj = &cfg.projects["ur"];
+        assert!(proj.hostexec.is_empty());
+        assert_eq!(proj.hostexec_deny, vec!["gh"]);
     }
 
     #[test]
@@ -4533,7 +4649,9 @@ quit = ["q"]
                     repo: None,
                     name: "ur".to_owned(),
                     pool_limit: 10,
+                    skills: vec![],
                     hostexec: vec![],
+                    hostexec_deny: vec![],
                     instruction_md: None,
                     container: ContainerConfig {
                         image: String::new(),
@@ -4558,7 +4676,9 @@ quit = ["q"]
                     repo: None,
                     name: "sample".to_owned(),
                     pool_limit: 10,
+                    skills: vec![],
                     hostexec: vec![],
+                    hostexec_deny: vec![],
                     instruction_md: None,
                     container: ContainerConfig {
                         image: String::new(),
@@ -4677,7 +4797,9 @@ quit = ["q"]
                     repo: None,
                     name: "ur".to_owned(), // name matches the "ur" key
                     pool_limit: 10,
+                    skills: vec![],
                     hostexec: vec![],
+                    hostexec_deny: vec![],
                     instruction_md: None,
                     container: ContainerConfig {
                         image: String::new(),

@@ -456,7 +456,9 @@ mod tests {
                 repo: repo.map(str::to_owned),
                 name: "Test Project".into(),
                 pool_limit,
+                skills: Vec::new(),
                 hostexec: Vec::new(),
+                hostexec_deny: Vec::new(),
                 instruction_md: None,
                 container: ur_config::ContainerConfig {
                     image: "ur-worker:latest".into(),

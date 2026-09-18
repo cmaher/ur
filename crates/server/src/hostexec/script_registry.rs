@@ -58,7 +58,9 @@ mod tests {
             repo: Some(format!("git@github.com:test/{key}.git")),
             name: key.to_string(),
             pool_limit: 10,
+            skills: vec![],
             hostexec: vec![],
+            hostexec_deny: vec![],
             instruction_md: None,
             container: ContainerConfig {
                 image: "ur-worker".to_string(),
