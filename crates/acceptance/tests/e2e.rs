@@ -1178,42 +1178,31 @@ fn create_agy_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
     ]
 }
 
-fn create_project_fixtures(
-    config_path: &Path,
+fn create_gitea_project_entry(bare_repo: &Path) -> ProjectEntry {
+    ProjectEntry {
+        key: "giteaproj".into(),
+        repo: bare_repo.to_string_lossy().into_owned(),
+        local: false,
+        image: "ur-worker".into(),
+        agent: "claude",
+        hostexec_scripts: vec![],
+        mounts: vec![],
+        memory_dir: None,
+        brain_dir: None,
+        skills: vec!["gitea".into()],
+        hostexec: vec!["tea".into()],
+        hostexec_deny: vec!["gh".into()],
+    }
+}
+
+fn create_primary_project_entries(
     project_key: &str,
     primary_agent: &'static str,
-) -> ProjectFixtures {
-    let bare_repo = create_bare_repo(config_path);
-
-    let rust_repos_dir = config_path.join("rust-repos");
-    std::fs::create_dir_all(&rust_repos_dir).expect("failed to create rust-repos dir");
-    let bare_repo_rust = create_bare_repo(&rust_repos_dir);
-    add_startup_hook_to_repo(&rust_repos_dir);
-
-    let script_repos_dir = config_path.join("script-repos");
-    std::fs::create_dir_all(&script_repos_dir).expect("failed to create script-repos dir");
-    let bare_repo_script = create_bare_repo_with_script(&script_repos_dir);
-
-    // Absolute path so server (host-path resolution) and Docker both see the real path
-    // without any %URCONFIG% → /config remapping.
-    let skill_dir = config_path.join("skills").join("test-skill");
-    std::fs::create_dir_all(&skill_dir).expect("failed to create test-skill dir");
-    std::fs::write(
-        skill_dir.join("SKILL.md"),
-        "# Test Skill\nA skill for acceptance testing.\n",
-    )
-    .expect("failed to write SKILL.md");
-    let skills_extra_toml = format!(
-        "[skills.code]\ntest-skill = \"{skill_path}\"\n",
-        skill_path = skill_dir.display(),
-    );
-
-    let (host_mount_dir, mount_projects) = setup_mount_projects(config_path);
-    let (memory_dir, memory_projects) = setup_memory_projects(config_path);
-    let (brain_dir, brain_projects) = setup_brain_projects(config_path);
-    let hook_projects = setup_hook_overlay_projects(config_path);
-
-    let mut projects = vec![
+    bare_repo: &Path,
+    bare_repo_rust: &Path,
+    bare_repo_script: &Path,
+) -> Vec<ProjectEntry> {
+    vec![
         ProjectEntry {
             key: project_key.into(),
             repo: bare_repo.to_string_lossy().into_owned(),
@@ -1256,20 +1245,6 @@ fn create_project_fixtures(
             hostexec: vec![],
             hostexec_deny: vec![],
         },
-        ProjectEntry {
-            key: "giteaproj".into(),
-            repo: bare_repo.to_string_lossy().into_owned(),
-            local: false,
-            image: "ur-worker".into(),
-            agent: "claude",
-            hostexec_scripts: vec![],
-            mounts: vec![],
-            memory_dir: None,
-            brain_dir: None,
-            skills: vec!["gitea".into()],
-            hostexec: vec!["tea".into()],
-            hostexec_deny: vec!["gh".into()],
-        },
         // A repo-less local project (`local = true`), declared with the same
         // per-project affordances a pool-backed project gets: image, hostexec
         // scripts, mounts. Used by `scenario_local_project`.
@@ -1287,7 +1262,52 @@ fn create_project_fixtures(
             hostexec: vec![],
             hostexec_deny: vec![],
         },
-    ];
+    ]
+}
+
+fn create_project_fixtures(
+    config_path: &Path,
+    project_key: &str,
+    primary_agent: &'static str,
+) -> ProjectFixtures {
+    let bare_repo = create_bare_repo(config_path);
+
+    let rust_repos_dir = config_path.join("rust-repos");
+    std::fs::create_dir_all(&rust_repos_dir).expect("failed to create rust-repos dir");
+    let bare_repo_rust = create_bare_repo(&rust_repos_dir);
+    add_startup_hook_to_repo(&rust_repos_dir);
+
+    let script_repos_dir = config_path.join("script-repos");
+    std::fs::create_dir_all(&script_repos_dir).expect("failed to create script-repos dir");
+    let bare_repo_script = create_bare_repo_with_script(&script_repos_dir);
+
+    // Absolute path so server (host-path resolution) and Docker both see the real path
+    // without any %URCONFIG% → /config remapping.
+    let skill_dir = config_path.join("skills").join("test-skill");
+    std::fs::create_dir_all(&skill_dir).expect("failed to create test-skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "# Test Skill\nA skill for acceptance testing.\n",
+    )
+    .expect("failed to write SKILL.md");
+    let skills_extra_toml = format!(
+        "[skills.code]\ntest-skill = \"{skill_path}\"\n",
+        skill_path = skill_dir.display(),
+    );
+
+    let (host_mount_dir, mount_projects) = setup_mount_projects(config_path);
+    let (memory_dir, memory_projects) = setup_memory_projects(config_path);
+    let (brain_dir, brain_projects) = setup_brain_projects(config_path);
+    let hook_projects = setup_hook_overlay_projects(config_path);
+
+    let mut projects = create_primary_project_entries(
+        project_key,
+        primary_agent,
+        &bare_repo,
+        &bare_repo_rust,
+        &bare_repo_script,
+    );
+    projects.push(create_gitea_project_entry(&bare_repo));
     projects.extend(create_codex_project_entries(config_path));
     projects.extend(create_agy_project_entries(config_path));
     projects.extend(mount_projects);
@@ -4100,6 +4120,83 @@ fn scenario_global_skill_injection(env: &TestEnv) {
     }
 }
 
+fn assert_gitea_worker_state(runtime: &str, container_name: &str) {
+    // ---- 1. Verify installed Gitea skill ----
+    let gitea_skill = exec_in_container(
+        runtime,
+        container_name,
+        &["ls", "/home/worker/.claude/skills/gitea/SKILL.md"],
+    );
+    assert_exec_success(
+        &gitea_skill,
+        "gitea skill should be copied to ~/.claude/skills/gitea/SKILL.md",
+    );
+
+    // ---- 2. Verify Tea hostexec shim exists ----
+    let tea_shim = exec_in_container(
+        runtime,
+        container_name,
+        &["ls", "/home/worker/.local/bin/tea"],
+    );
+    assert_exec_success(
+        &tea_shim,
+        "tea shim should exist at /home/worker/.local/bin/tea",
+    );
+
+    // ---- 3. Verify gh hostexec shim was denied and does NOT exist ----
+    let gh_shim = exec_in_container(
+        runtime,
+        container_name,
+        &["ls", "/home/worker/.local/bin/gh"],
+    );
+    assert!(
+        !gh_shim.status.success(),
+        "gh shim should NOT exist in giteaproj container because gh was denied"
+    );
+
+    // ---- 4. Verify blocked Tea command is rejected by Lua transform ----
+    let blocked_tea = exec_in_container(runtime, container_name, &["tea", "login"]);
+    assert!(
+        !blocked_tea.status.success(),
+        "tea login should be rejected by Lua transform"
+    );
+    let stderr = String::from_utf8_lossy(&blocked_tea.stderr);
+    assert!(
+        stderr.contains("blocked"),
+        "tea login rejection should mention blocked, got: {stderr}"
+    );
+
+    let blocked_clone = exec_in_container(runtime, container_name, &["tea", "clone", "repo"]);
+    assert!(
+        !blocked_clone.status.success(),
+        "tea clone should be rejected by Lua transform"
+    );
+    let clone_stderr = String::from_utf8_lossy(&blocked_clone.stderr);
+    assert!(
+        clone_stderr.contains("blocked"),
+        "tea clone rejection should mention blocked, got: {clone_stderr}"
+    );
+}
+
+fn assert_control_worker_defaults(runtime: &str, control_container: &str) {
+    let control_gh = exec_in_container(
+        runtime,
+        control_container,
+        &["ls", "/home/worker/.local/bin/gh"],
+    );
+    assert_exec_success(&control_gh, "control project should receive gh by default");
+
+    let control_tea = exec_in_container(
+        runtime,
+        control_container,
+        &["ls", "/home/worker/.local/bin/tea"],
+    );
+    assert!(
+        !control_tea.status.success(),
+        "control project should NOT receive tea by default"
+    );
+}
+
 /// Verify per-project Gitea tooling:
 /// - Configured worker has the installed baked Gitea skill
 /// - Configured worker has a Tea shim
@@ -4129,63 +4226,7 @@ fn scenario_project_gitea_tooling(env: &TestEnv) {
         );
 
         wait_for_healthy(&env.runtime, &container_name);
-
-        // ---- 1. Verify installed Gitea skill ----
-        let gitea_skill = exec_in_container(
-            &env.runtime,
-            &container_name,
-            &["ls", "/home/worker/.claude/skills/gitea/SKILL.md"],
-        );
-        assert_exec_success(
-            &gitea_skill,
-            "gitea skill should be copied to ~/.claude/skills/gitea/SKILL.md",
-        );
-
-        // ---- 2. Verify Tea hostexec shim exists ----
-        let tea_shim = exec_in_container(
-            &env.runtime,
-            &container_name,
-            &["ls", "/home/worker/.local/bin/tea"],
-        );
-        assert_exec_success(
-            &tea_shim,
-            "tea shim should exist at /home/worker/.local/bin/tea",
-        );
-
-        // ---- 3. Verify gh hostexec shim was denied and does NOT exist ----
-        let gh_shim = exec_in_container(
-            &env.runtime,
-            &container_name,
-            &["ls", "/home/worker/.local/bin/gh"],
-        );
-        assert!(
-            !gh_shim.status.success(),
-            "gh shim should NOT exist in giteaproj container because gh was denied"
-        );
-
-        // ---- 4. Verify blocked Tea command is rejected by Lua transform ----
-        let blocked_tea = exec_in_container(&env.runtime, &container_name, &["tea", "login"]);
-        assert!(
-            !blocked_tea.status.success(),
-            "tea login should be rejected by Lua transform"
-        );
-        let stderr = String::from_utf8_lossy(&blocked_tea.stderr);
-        assert!(
-            stderr.contains("blocked"),
-            "tea login rejection should mention blocked, got: {stderr}"
-        );
-
-        let blocked_clone =
-            exec_in_container(&env.runtime, &container_name, &["tea", "clone", "repo"]);
-        assert!(
-            !blocked_clone.status.success(),
-            "tea clone should be rejected by Lua transform"
-        );
-        let clone_stderr = String::from_utf8_lossy(&blocked_clone.stderr);
-        assert!(
-            clone_stderr.contains("blocked"),
-            "tea clone rejection should mention blocked, got: {clone_stderr}"
-        );
+        assert_gitea_worker_state(&env.runtime, &container_name);
 
         // ---- Stop giteaproj worker ----
         let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
@@ -4210,23 +4251,7 @@ fn scenario_project_gitea_tooling(env: &TestEnv) {
             String::from_utf8_lossy(&control_launch.stderr),
         );
         wait_for_healthy(&env.runtime, &control_container);
-
-        let control_gh = exec_in_container(
-            &env.runtime,
-            &control_container,
-            &["ls", "/home/worker/.local/bin/gh"],
-        );
-        assert_exec_success(&control_gh, "control project should receive gh by default");
-
-        let control_tea = exec_in_container(
-            &env.runtime,
-            &control_container,
-            &["ls", "/home/worker/.local/bin/tea"],
-        );
-        assert!(
-            !control_tea.status.success(),
-            "control project should NOT receive tea by default"
-        );
+        assert_control_worker_defaults(&env.runtime, &control_container);
 
         let control_stop = run_cmd(&env.ur, &["worker", "stop", control_ticket_id], &env_slice);
         assert!(control_stop.status.success());
