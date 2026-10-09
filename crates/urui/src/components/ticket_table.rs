@@ -379,6 +379,7 @@ mod tests {
                 max_implement_cycles: None,
                 protected_branches: vec![],
                 tui: None,
+                git: Default::default(),
                 ignored_workflow_checks: vec![],
                 hostexec_scripts: vec![],
                 push_again_exit_code: ur_config::DEFAULT_PUSH_AGAIN_EXIT_CODE,

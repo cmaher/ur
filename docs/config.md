@@ -344,6 +344,19 @@ mounts = [
 
 Format: `"host_port:container_port"` — both must be valid u16 values (0–65535).
 
+### `[projects.<key>.git]`
+
+Per-project git policy for the worker `git` host-exec transform.
+
+```toml
+[projects.ur.git]
+allow_no_verify = true
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `allow_no_verify` | bool | `false` | Allow workers to run `git push --no-verify` (skips the pre-push hook). `--no-verify` on other subcommands (e.g. `commit`) stays blocked. |
+
 ### `[projects.<key>.tui]`
 
 Per-project TUI settings.

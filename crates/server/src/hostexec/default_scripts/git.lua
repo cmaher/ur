@@ -9,6 +9,8 @@ local HELP = [[
 --- git via ur host-exec ---
 git runs on the HOST against your worker's slot, so a few things are locked:
   * Blocked flags: --git-dir, --work-tree, --no-verify (and -c core.worktree=...)
+    (`git push --no-verify` is allowed only when the project sets
+    [projects.<key>.git] allow_no_verify = true)
   * Blocked subcommands: worktree (always); checkout / switch (branch switching
     is locked — use `git restore <file>` or `git checkout -- <file>` for files)
   * git push may only target your own worker branch
@@ -26,8 +28,10 @@ function transform(command, args, working_dir, worker_context)
     local blocked_exact = {
         ["--git-dir"] = true,
         ["--work-tree"] = true,
-        ["--no-verify"] = true,
     }
+    -- --no-verify is checked after the subcommand is known: only `push` may
+    -- use it, and only when the project grants allow_no_verify.
+    local saw_no_verify = false
     local blocked_prefix = {
         "--git-dir=",
         "--work-tree=",
@@ -60,6 +64,9 @@ function transform(command, args, working_dir, worker_context)
             end
         elseif blocked_exact[arg] then
             fail("blocked flag: " .. arg)
+        elseif arg == "--no-verify" then
+            saw_no_verify = true
+            i = i + 1
         else
             for _, prefix in ipairs(blocked_prefix) do
                 if arg:sub(1, #prefix) == prefix then
@@ -122,6 +129,16 @@ function transform(command, args, working_dir, worker_context)
                 end
             end
             break
+        end
+    end
+
+    if saw_no_verify then
+        local subcommand = args[sub_i]
+        local allowed = subcommand == "push"
+            and worker_context ~= nil
+            and worker_context.allow_no_verify == true
+        if not allowed then
+            fail("blocked flag: --no-verify")
         end
     end
 

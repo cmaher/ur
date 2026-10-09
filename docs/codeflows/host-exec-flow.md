@@ -154,6 +154,26 @@ hostexec_deny = ["gh"]
 - **Denials (`hostexec_deny`)**: Projects can deny any command—including built-in defaults like `gh`. This is essential for Gitea projects to prevent agents from falling back to GitHub CLI. `hostexec` and `hostexec_deny` must not overlap.
 - **Effective merge order**: `(built-in defaults + discovered Lua overlay + project grants) - project denials`.
 
+### Git `--no-verify` Policy
+
+The default `git.lua` transform blocks `--no-verify` everywhere. A project can
+permit it for `git push` only:
+
+```toml
+[projects.myproject.git]
+allow_no_verify = true   # default: false
+```
+
+Flow: `ProjectConfig.git.allow_no_verify` → `resolve_request_context_from_metadata`
+(`crates/server/src/grpc_hostexec.rs`) copies it into the Lua-facing
+`WorkerContext.allow_no_verify` → exposed to transforms as
+`worker_context.allow_no_verify`. `git.lua` defers the `--no-verify` check until
+the subcommand is known and allows it only when the subcommand is `push` and the
+flag is `true`. `git commit --no-verify` stays blocked, push-branch restrictions
+still apply, and workers with no project (raw `-w` mounts) always get `false`.
+Like other project settings, the change applies on the next host-exec request
+after `ur.toml` reload.
+
 ### Tea Host Execution & Safety Policy
 
 `tea` is an optional built-in command designed for Gitea forge collaboration:

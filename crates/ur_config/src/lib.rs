@@ -434,6 +434,15 @@ struct RawContainerConfig {
     ports: Vec<String>,
 }
 
+/// Raw TOML representation for a `[projects.<key>.git]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawProjectGitConfig {
+    /// Allow workers to run `git push --no-verify` via host-exec.
+    #[serde(default)]
+    allow_no_verify: bool,
+}
+
 /// Raw TOML representation for a `[projects.<key>.tui]` section.
 #[derive(Debug, Deserialize)]
 struct RawProjectTuiConfig {
@@ -479,6 +488,8 @@ struct RawProjectConfig {
     protected_branches: Option<Vec<String>>,
     /// Per-project TUI settings.
     tui: Option<RawProjectTuiConfig>,
+    /// Per-project git policy settings.
+    git: Option<RawProjectGitConfig>,
     /// CI check names to ignore when evaluating workflow status.
     #[serde(default)]
     ignored_workflow_checks: Vec<String>,
@@ -1116,6 +1127,14 @@ pub struct ProjectTuiConfig {
     pub theme_name: Option<String>,
 }
 
+/// Resolved per-project git policy from `[projects.<key>.git]`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectGitConfig {
+    /// Whether workers may run `git push --no-verify` through host-exec,
+    /// skipping the pre-push hook. Default: `false`.
+    pub allow_no_verify: bool,
+}
+
 /// Resolved project configuration for a single project.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectConfig {
@@ -1155,6 +1174,8 @@ pub struct ProjectConfig {
     pub protected_branches: Vec<String>,
     /// Per-project TUI settings (theme override, etc.).
     pub tui: Option<ProjectTuiConfig>,
+    /// Per-project git policy (e.g. whether `git push --no-verify` is permitted).
+    pub git: ProjectGitConfig,
     /// CI check names to ignore when evaluating workflow status.
     pub ignored_workflow_checks: Vec<String>,
     /// Relative paths to host-exec scripts that agents running against this
@@ -1669,6 +1690,7 @@ fn resolve_project_config(
             .protected_branches
             .unwrap_or_else(default_protected_branches),
         tui,
+        git: resolve_project_git(raw_proj.git),
         ignored_workflow_checks: raw_proj.ignored_workflow_checks,
         hostexec_scripts,
         push_again_exit_code: raw_proj
@@ -1678,6 +1700,13 @@ fn resolve_project_config(
         brain_dir: raw_proj.brain_dir,
     };
     Ok((key, resolved))
+}
+
+fn resolve_project_git(raw: Option<RawProjectGitConfig>) -> ProjectGitConfig {
+    raw.map(|g| ProjectGitConfig {
+        allow_no_verify: g.allow_no_verify,
+    })
+    .unwrap_or_default()
 }
 
 fn resolve_proxy(raw: Option<RawProxyConfig>) -> ProxyConfig {
@@ -4662,6 +4691,7 @@ quit = ["q"]
                     max_implement_cycles: Some(DEFAULT_MAX_IMPLEMENT_CYCLES),
                     protected_branches: vec![],
                     tui: None,
+                    git: Default::default(),
                     ignored_workflow_checks: vec![],
                     hostexec_scripts: vec![],
                     push_again_exit_code: DEFAULT_PUSH_AGAIN_EXIT_CODE,
@@ -4689,6 +4719,7 @@ quit = ["q"]
                     max_implement_cycles: Some(DEFAULT_MAX_IMPLEMENT_CYCLES),
                     protected_branches: vec![],
                     tui: None,
+                    git: Default::default(),
                     ignored_workflow_checks: vec![],
                     hostexec_scripts: vec![],
                     push_again_exit_code: DEFAULT_PUSH_AGAIN_EXIT_CODE,
@@ -4810,6 +4841,7 @@ quit = ["q"]
                     max_implement_cycles: Some(DEFAULT_MAX_IMPLEMENT_CYCLES),
                     protected_branches: vec![],
                     tui: None,
+                    git: Default::default(),
                     ignored_workflow_checks: vec![],
                     hostexec_scripts: vec![],
                     push_again_exit_code: DEFAULT_PUSH_AGAIN_EXIT_CODE,
@@ -4861,6 +4893,70 @@ theme = "dracula"
         let cfg = Config::load_from(tmp.path()).unwrap();
         let tui = cfg.projects["ur"].tui.as_ref().expect("tui should be Some");
         assert_eq!(tui.theme_name.as_deref(), Some("dracula"));
+    }
+
+    #[test]
+    fn project_git_allow_no_verify_defaults_to_false() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+[projects.other]
+repo = "git@github.com:cmaher/other.git"
+[projects.other.container]
+image = "ur-worker"
+[projects.other.git]
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(!cfg.projects["ur"].git.allow_no_verify);
+        assert!(!cfg.projects["other"].git.allow_no_verify);
+    }
+
+    #[test]
+    fn project_git_parses_allow_no_verify() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+[projects.ur.git]
+allow_no_verify = true
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.projects["ur"].git.allow_no_verify);
+    }
+
+    #[test]
+    fn project_git_rejects_unknown_keys() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+[projects.ur.git]
+no_verify = true
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("no_verify"), "{err:#}");
     }
 
     #[test]
