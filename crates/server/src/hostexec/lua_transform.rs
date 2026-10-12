@@ -16,6 +16,9 @@ pub struct WorkerContext {
     pub project_key: String,
     pub slot_path: PathBuf,
     pub branch: String,
+    /// Project-granted permission to run `git push --no-verify`
+    /// (`[projects.<key>.git] allow_no_verify`).
+    pub allow_no_verify: bool,
 }
 
 /// Structured result from a Lua transform function.
@@ -92,6 +95,8 @@ impl LuaTransformManager {
                 .map_err(|e| anyhow::anyhow!("setting slot_path: {e}"))?;
             tbl.set("branch", ctx.branch.as_str())
                 .map_err(|e| anyhow::anyhow!("setting branch: {e}"))?;
+            tbl.set("allow_no_verify", ctx.allow_no_verify)
+                .map_err(|e| anyhow::anyhow!("setting allow_no_verify: {e}"))?;
             Value::Table(tbl)
         } else {
             Value::Nil
@@ -377,6 +382,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["commit".into(), "-m".into(), "fix the bug".into()];
         let result = mgr
@@ -395,6 +401,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec![
             "commit".into(),
@@ -428,6 +435,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["commit".into(), "-m".into(), "hello".into()];
         let result = mgr
@@ -446,6 +454,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["status".into()];
         let result = mgr
@@ -502,6 +511,83 @@ mod tests {
                 .to_string()
                 .contains("blocked flag: --no-verify")
         );
+    }
+
+    fn no_verify_ctx(allow_no_verify: bool) -> WorkerContext {
+        WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+            allow_no_verify,
+        }
+    }
+
+    #[test]
+    fn test_git_allows_no_verify_push_when_project_allows() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = no_verify_ctx(true);
+        let args: Vec<String> = vec![
+            "push".into(),
+            "--no-verify".into(),
+            "origin".into(),
+            "deploy-x7q2".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_git_blocks_no_verify_push_when_project_disallows() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = no_verify_ctx(false);
+        let args: Vec<String> = vec!["push".into(), "--no-verify".into()];
+        let err = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("blocked flag: --no-verify"), "{err}");
+    }
+
+    #[test]
+    fn test_git_allow_no_verify_does_not_extend_to_commit() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = no_verify_ctx(true);
+        let args: Vec<String> = vec![
+            "commit".into(),
+            "--no-verify".into(),
+            "-m".into(),
+            "msg".into(),
+        ];
+        let err = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("blocked flag: --no-verify"), "{err}");
+    }
+
+    #[test]
+    fn test_git_allow_no_verify_still_enforces_push_branch() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = no_verify_ctx(true);
+        let args: Vec<String> = vec![
+            "push".into(),
+            "--no-verify".into(),
+            "origin".into(),
+            "master".into(),
+        ];
+        let err = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("blocked push"), "{err}");
     }
 
     #[test]
@@ -631,6 +717,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec![
             "-C".into(),
@@ -699,6 +786,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let result = mgr
             .run_transform(script, "git", &[], "/workspace", Some(&ctx))
@@ -727,6 +815,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "ur-deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let result = mgr
             .run_transform(script, "git", &[], "/workspace", Some(&ctx))
@@ -761,6 +850,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["-C".into(), "/some/path/ur".into(), "status".into()];
         let result = mgr
@@ -782,6 +872,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["-C".into(), "/workspace".into(), "status".into()];
         let result = mgr
@@ -803,6 +894,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["-C".into(), "ur".into(), "log".into()];
         let result = mgr
@@ -821,6 +913,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["-C".into(), "/workspace/".into(), "status".into()];
         let result = mgr
@@ -839,6 +932,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "status".into()];
         let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
@@ -874,6 +968,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "test-ab12".into(),
+            allow_no_verify: false,
         };
 
         // git.lua with worker context
@@ -913,6 +1008,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec![
             "-C".into(),
@@ -939,6 +1035,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["-C".into(), "/workspace".into(), "pr".into(), "list".into()];
         let result = mgr
@@ -960,6 +1057,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "pr".into(), "list".into()];
         let result = mgr.run_transform(script, "gh", &args, "/workspace", Some(&ctx));
@@ -1859,6 +1957,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["-C".into(), "/some/path/ur".into(), "build".into()];
         let result = mgr
@@ -1880,6 +1979,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "build".into()];
         let result = mgr.run_transform(script, "cargo", &args, "/workspace", Some(&ctx));
@@ -2512,6 +2612,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["push".into()];
         let result = mgr
@@ -2530,6 +2631,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["push".into(), "origin".into()];
         let result = mgr
@@ -2548,6 +2650,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["push".into(), "origin".into(), "HEAD".into()];
         let result = mgr
@@ -2566,6 +2669,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["push".into(), "origin".into(), "deploy-x7q2".into()];
         let result = mgr
@@ -2584,6 +2688,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["push".into(), "origin".into(), "main".into()];
         let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
@@ -2606,6 +2711,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["push".into(), "origin".into(), "HEAD:main".into()];
         let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
@@ -2628,6 +2734,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["push".into(), "origin".into(), "deploy-x7q2:main".into()];
         let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
@@ -2650,6 +2757,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["push".into(), "origin".into(), "HEAD:deploy-x7q2".into()];
         let result = mgr
@@ -2679,6 +2787,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: String::new(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["push".into(), "origin".into(), "main".into()];
         let result = mgr
@@ -2829,6 +2938,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: "/pool/ur/0".into(),
             branch: "w-1".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["ticket".into(), "list".into()];
         let result = mgr
@@ -2933,6 +3043,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["-C".into(), "ur".into(), "build".into()];
         let result = mgr
@@ -2954,6 +3065,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "build".into()];
         let result = mgr.run_transform(script, "make", &args, "/workspace", Some(&ctx));
@@ -3102,6 +3214,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["-C".into(), "/some/path/ur".into(), "build".into()];
         let result = mgr
@@ -3123,6 +3236,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "build".into()];
         let result = mgr.run_transform(script, "go", &args, "/workspace", Some(&ctx));
@@ -3311,6 +3425,7 @@ mod tests {
             project_key: "myproject".into(),
             slot_path: PathBuf::from("/workspace"),
             branch: "".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["checkout".into(), "main".into()];
         let result = mgr
@@ -3330,6 +3445,7 @@ mod tests {
             project_key: "myproject".into(),
             slot_path: PathBuf::from("/workspace"),
             branch: "".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["switch".into(), "main".into()];
         let result = mgr
@@ -3351,6 +3467,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec!["checkout".into(), "main".into()];
         let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
@@ -3376,6 +3493,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: "deploy-x7q2".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec![
             "worktree".into(),
@@ -3404,6 +3522,7 @@ mod tests {
             project_key: "myproject".into(),
             slot_path: PathBuf::from("/workspace"),
             branch: "".into(),
+            allow_no_verify: false,
         };
         let args: Vec<String> = vec![
             "worktree".into(),
@@ -3451,6 +3570,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
             branch: String::new(),
+            allow_no_verify: false,
         }
     }
 
@@ -3982,6 +4102,7 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
             branch: "test-w1".into(),
+            allow_no_verify: false,
         };
 
         // -C with matching workspace rewrites

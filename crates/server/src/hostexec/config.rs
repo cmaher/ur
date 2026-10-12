@@ -435,6 +435,7 @@ mod tests {
             project_key: "myproject".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/myproject/0"),
             branch: "feature-branch".into(),
+            allow_no_verify: false,
         }
     }
 
@@ -906,6 +907,7 @@ mod tests {
             project_key: "myproject".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/myproject/0"),
             branch: "feature-branch".into(),
+            allow_no_verify: false,
         }
     }
 
@@ -1279,6 +1281,7 @@ mod tests {
             project_key: "myproject".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/myproject/0"),
             branch: "feature-branch".into(),
+            allow_no_verify: false,
         }
     }
 

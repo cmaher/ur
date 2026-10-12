@@ -233,6 +233,8 @@ struct ProjectEntry {
     hostexec: Vec<String>,
     /// Optional `hostexec_deny` commands to deny to this project.
     hostexec_deny: Vec<String>,
+    /// Emit `[projects.<key>.git] allow_no_verify = true` when set.
+    allow_no_verify: bool,
 }
 
 /// Configuration names for a test stack, preventing container/network collisions
@@ -350,8 +352,13 @@ fn render_projects_toml(projects: &[ProjectEntry]) -> String {
         } else {
             format!("repo = \"{}\"\n", proj.repo)
         };
+        let git_section = if proj.allow_no_verify {
+            format!("\n[projects.{}.git]\nallow_no_verify = true\n", proj.key)
+        } else {
+            String::new()
+        };
         projects_toml.push_str(&format!(
-            "\n[projects.{key}]\n{identity}{skills}{hostexec}{hostexec_deny}{scripts}{memory_dir}{brain_dir}\n[projects.{key}.container]\nimage = \"{image}\"\n{mounts}",
+            "\n[projects.{key}]\n{identity}{skills}{hostexec}{hostexec_deny}{scripts}{memory_dir}{brain_dir}\n[projects.{key}.container]\nimage = \"{image}\"\n{mounts}{git_section}",
             key = proj.key,
             identity = identity_line,
             skills = skills_line,
@@ -362,6 +369,7 @@ fn render_projects_toml(projects: &[ProjectEntry]) -> String {
             brain_dir = brain_dir_line,
             image = image_ref,
             mounts = mounts_line,
+            git_section = git_section,
         ));
     }
     projects_toml
@@ -735,6 +743,7 @@ fn setup_mount_projects(config_path: &Path) -> (tempfile::TempDir, Vec<ProjectEn
             skills: vec![],
             hostexec: vec![],
             hostexec_deny: vec![],
+            allow_no_verify: false,
         },
         ProjectEntry {
             key: "badmountproj".into(),
@@ -749,6 +758,7 @@ fn setup_mount_projects(config_path: &Path) -> (tempfile::TempDir, Vec<ProjectEn
             skills: vec![],
             hostexec: vec![],
             hostexec_deny: vec![],
+            allow_no_verify: false,
         },
     ];
     (host_mount_dir, projects)
@@ -803,6 +813,7 @@ fn setup_memory_projects(config_path: &Path) -> (MemoryDirInfo, Vec<ProjectEntry
         skills: vec![],
         hostexec: vec![],
         hostexec_deny: vec![],
+        allow_no_verify: false,
     }];
 
     (
@@ -863,6 +874,7 @@ fn setup_brain_projects(config_path: &Path) -> (BrainDirInfo, Vec<ProjectEntry>)
         skills: vec![],
         hostexec: vec![],
         hostexec_deny: vec![],
+        allow_no_verify: false,
     }];
 
     (
@@ -1061,6 +1073,7 @@ fn setup_hook_overlay_projects(config_path: &Path) -> Vec<ProjectEntry> {
         skills: vec![],
         hostexec: vec![],
         hostexec_deny: vec![],
+        allow_no_verify: false,
     }]
 }
 
@@ -1112,6 +1125,7 @@ fn create_codex_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
             skills: vec![],
             hostexec: vec![],
             hostexec_deny: vec![],
+            allow_no_verify: false,
         },
         ProjectEntry {
             key: "rustcodexproj".into(),
@@ -1126,6 +1140,7 @@ fn create_codex_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
             skills: vec![],
             hostexec: vec![],
             hostexec_deny: vec![],
+            allow_no_verify: false,
         },
     ]
 }
@@ -1160,6 +1175,7 @@ fn create_agy_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
             skills: vec![],
             hostexec: vec![],
             hostexec_deny: vec![],
+            allow_no_verify: false,
         },
         ProjectEntry {
             key: "rustagyproj".into(),
@@ -1174,6 +1190,7 @@ fn create_agy_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
             skills: vec![],
             hostexec: vec![],
             hostexec_deny: vec![],
+            allow_no_verify: false,
         },
     ]
 }
@@ -1192,6 +1209,27 @@ fn create_gitea_project_entry(bare_repo: &Path) -> ProjectEntry {
         skills: vec!["gitea".into()],
         hostexec: vec!["tea".into()],
         hostexec_deny: vec!["gh".into()],
+        allow_no_verify: false,
+    }
+}
+
+/// Pool project that grants `git push --no-verify` via `[projects.<key>.git]`.
+/// Used by `scenario_project_git_allow_no_verify`.
+fn create_no_verify_project_entry(bare_repo: &Path) -> ProjectEntry {
+    ProjectEntry {
+        key: "noverifyproj".into(),
+        repo: bare_repo.to_string_lossy().into_owned(),
+        local: false,
+        image: "ur-worker".into(),
+        agent: "claude",
+        hostexec_scripts: vec![],
+        mounts: vec![],
+        memory_dir: None,
+        brain_dir: None,
+        skills: vec![],
+        hostexec: vec![],
+        hostexec_deny: vec![],
+        allow_no_verify: true,
     }
 }
 
@@ -1216,6 +1254,7 @@ fn create_primary_project_entries(
             skills: vec![],
             hostexec: vec![],
             hostexec_deny: vec![],
+            allow_no_verify: false,
         },
         ProjectEntry {
             key: "rustproj".into(),
@@ -1230,6 +1269,7 @@ fn create_primary_project_entries(
             skills: vec![],
             hostexec: vec![],
             hostexec_deny: vec![],
+            allow_no_verify: false,
         },
         ProjectEntry {
             key: "scriptproj".into(),
@@ -1244,6 +1284,7 @@ fn create_primary_project_entries(
             skills: vec![],
             hostexec: vec![],
             hostexec_deny: vec![],
+            allow_no_verify: false,
         },
         // A repo-less local project (`local = true`), declared with the same
         // per-project affordances a pool-backed project gets: image, hostexec
@@ -1261,6 +1302,7 @@ fn create_primary_project_entries(
             skills: vec![],
             hostexec: vec![],
             hostexec_deny: vec![],
+            allow_no_verify: false,
         },
     ]
 }
@@ -1308,6 +1350,7 @@ fn create_project_fixtures(
         &bare_repo_script,
     );
     projects.push(create_gitea_project_entry(&bare_repo));
+    projects.push(create_no_verify_project_entry(&bare_repo));
     projects.extend(create_codex_project_entries(config_path));
     projects.extend(create_agy_project_entries(config_path));
     projects.extend(mount_projects);
@@ -1419,6 +1462,88 @@ fn e2e_all() {
 }
 
 /// Run all scenarios with a 10-minute timeout, cleaning up on completion or failure.
+/// Run `git push --no-verify origin HEAD` through the git hostexec shim.
+fn git_push_no_verify(runtime: &str, container: &str) -> std::process::Output {
+    exec_in_container(
+        runtime,
+        container,
+        &["git", "push", "--no-verify", "origin", "HEAD"],
+    )
+}
+
+/// Verify `[projects.<key>.git] allow_no_verify` threads through to the git
+/// hostexec transform:
+/// - A worker on a project with `allow_no_verify = true` can `git push --no-verify`
+/// - A worker on a default project is rejected with `blocked flag: --no-verify`
+fn scenario_project_git_allow_no_verify(env: &TestEnv) {
+    let ticket_id = "no-verify-allowed-test";
+    let container_name = env.container_name(ticket_id);
+    let control_ticket_id = "no-verify-default-test";
+    let control_container = env.container_name(control_ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", "noverifyproj", ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p noverifyproj failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+        wait_for_healthy(&env.runtime, &container_name);
+
+        let allowed = git_push_no_verify(&env.runtime, &container_name);
+        assert_exec_success(
+            &allowed,
+            "git push --no-verify should succeed when allow_no_verify = true",
+        );
+
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+
+        let control_launch = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", env.project_key, control_ticket_id],
+            &env_slice,
+        );
+        assert!(
+            control_launch.status.success(),
+            "ur worker launch -p {} failed.\nstdout: {}\nstderr: {}",
+            env.project_key,
+            String::from_utf8_lossy(&control_launch.stdout),
+            String::from_utf8_lossy(&control_launch.stderr),
+        );
+        wait_for_healthy(&env.runtime, &control_container);
+
+        let blocked = git_push_no_verify(&env.runtime, &control_container);
+        let blocked_stderr = String::from_utf8_lossy(&blocked.stderr);
+        assert!(
+            !blocked.status.success() && blocked_stderr.contains("blocked flag: --no-verify"),
+            "git push --no-verify should be blocked by default.\nstdout: {}\nstderr: {blocked_stderr}",
+            String::from_utf8_lossy(&blocked.stdout),
+        );
+
+        let control_stop = run_cmd(&env.ur, &["worker", "stop", control_ticket_id], &env_slice);
+        assert!(control_stop.status.success());
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        force_remove_container(&env.runtime, &control_container);
+        std::panic::resume_unwind(e);
+    }
+}
+
 fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
     // Everything from `ur start` onward is wrapped in catch_unwind so that
     // teardown runs even if `ur start` itself fails (e.g., port conflict).
@@ -1462,6 +1587,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_hostexec_script_workspace(&env, &config_path);
         scenario_global_skill_injection(&env);
         scenario_project_gitea_tooling(&env);
+        scenario_project_git_allow_no_verify(&env);
         scenario_worker_label_pr_status(&env);
         scenario_manual_worker(&env);
         scenario_worker_models_config_override(&env);

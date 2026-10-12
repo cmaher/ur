@@ -517,22 +517,29 @@ impl HostExecServiceHandler {
                 } else {
                     format!("{}{}", self.git_branch_prefix, worker_id_str)
                 };
+                // Grant only defaults + project-granted commands minus project-denied commands
+                let config = self.project_registry.hostexec_config();
+                let (extra, denied, allow_no_verify) = self
+                    .project_registry
+                    .get(project_key)
+                    .map(|p| {
+                        (
+                            p.hostexec.clone(),
+                            p.hostexec_deny.clone(),
+                            p.git.allow_no_verify,
+                        )
+                    })
+                    .unwrap_or_default();
+                let merged_config = config.with_project_commands(&extra, &denied);
+
                 let lua_ctx = crate::hostexec::WorkerContext {
                     worker_id: worker_id_str.to_owned(),
                     process_id: process_id.clone(),
                     project_key: project_key.clone(),
                     slot_path: ctx.slot_path.clone(),
                     branch,
+                    allow_no_verify,
                 };
-
-                // Grant only defaults + project-granted commands minus project-denied commands
-                let config = self.project_registry.hostexec_config();
-                let (extra, denied) = self
-                    .project_registry
-                    .get(project_key)
-                    .map(|p| (p.hostexec.clone(), p.hostexec_deny.clone()))
-                    .unwrap_or_default();
-                let merged_config = config.with_project_commands(&extra, &denied);
 
                 (Some(lua_ctx), merged_config)
             }
@@ -544,6 +551,7 @@ impl HostExecServiceHandler {
                     project_key: String::new(),
                     slot_path: ctx.slot_path.clone(),
                     branch: String::new(),
+                    allow_no_verify: false,
                 };
                 (
                     Some(lua_ctx),

@@ -71,6 +71,7 @@ mod tests {
             max_implement_cycles: Some(ur_config::DEFAULT_MAX_IMPLEMENT_CYCLES),
             protected_branches: vec!["main".to_string(), "master".to_string()],
             tui: None,
+            git: Default::default(),
             ignored_workflow_checks: vec![],
             hostexec_scripts: scripts.into_iter().map(|s| s.to_string()).collect(),
             push_again_exit_code: ur_config::DEFAULT_PUSH_AGAIN_EXIT_CODE,
