@@ -1,9 +1,12 @@
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Bookworm's tmux 3.3a strips OSC 8 hyperlinks. Use backports so long
+# authentication links retain their complete target across display rows.
+RUN printf 'deb http://deb.debian.org/debian bookworm-backports main\n' \
+        > /etc/apt/sources.list.d/bookworm-backports.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
     bash \
     bash-completion \
-    tmux \
     curl \
     ca-certificates \
     coreutils \
@@ -15,6 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     perl \
     python3 \
     ripgrep \
+    && apt-get install -y --no-install-recommends -t bookworm-backports tmux \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' tmux)" ge 3.4 \
     && sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen \
     && locale-gen \
     && rm -rf /var/lib/apt/lists/*

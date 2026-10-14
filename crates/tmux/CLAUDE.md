@@ -8,6 +8,7 @@ the host CLI (attach command generation).
 - `send_keys_no_enter()` types text without submitting; `send_enter()` presses Enter on its own
 - `send_keys_raw()` bypasses `-l` for control sequences like `Enter`, `C-c`
 - `attach_command()` returns command parts for use with container runtime `exec_interactive`
+- Lifecycle checks target the original pane (`<session>:0.0`), independent of added or selected helper panes such as AGY's sign-in link pane.
 - All async operations use `tokio::process::Command` under the hood
 
 ## Submitting to Claude Code (`send_keys`)

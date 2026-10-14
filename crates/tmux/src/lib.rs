@@ -271,14 +271,15 @@ impl Session {
 
     /// Return the name of the foreground process running in the pane.
     ///
-    /// Uses `tmux display-message -p -t {name} '#{pane_current_command}'`.
+    /// Targets the original agent pane, even when a helper pane is selected.
     /// Returns the process name (e.g., `"claude"`, `"bash"`).
     pub async fn pane_current_command(&self) -> Result<String> {
+        let target = format!("{}:0.0", self.name);
         let output = run_tmux_stdout(&[
             "display-message",
             "-p",
             "-t",
-            &self.name,
+            &target,
             "#{pane_current_command}",
         ])
         .await
@@ -294,10 +295,12 @@ impl Session {
 
     /// Check whether the pane's shell process is still alive.
     ///
-    /// Uses the tmux `pane_dead` format variable: `0` means the process is
+    /// Queries only the original agent pane, so helper panes do not affect
+    /// lifecycle detection. The tmux `pane_dead` variable: `0` means the process is
     /// still running (alive), `1` means it has exited (dead).
     pub async fn is_pane_alive(&self) -> Result<bool> {
-        let output = run_tmux_stdout(&["list-panes", "-t", &self.name, "-F", "#{pane_dead}"])
+        let target = format!("{}:0.0", self.name);
+        let output = run_tmux_stdout(&["display-message", "-p", "-t", &target, "#{pane_dead}"])
             .await
             .with_context(|| {
                 format!(

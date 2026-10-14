@@ -21,6 +21,9 @@ RUN rm /tmp/install-agy.sh
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+COPY open-auth-link.sh /usr/local/bin/xdg-open
+RUN chmod +x /usr/local/bin/xdg-open
+
 COPY bin/ur-ping /usr/local/bin/ur-ping
 COPY bin/workertools /usr/local/bin/workertools
 COPY bin/workerd /usr/local/bin/workerd
@@ -33,6 +36,7 @@ RUN chown -R worker:worker /home/worker/.gemini
 
 ENV PATH="/usr/local/bin:/home/worker/.local/bin:${PATH}"
 ENV AGY_CLI_DISABLE_AUTO_UPDATE=1
+ENV BROWSER=/usr/local/bin/xdg-open
 
 USER worker
 WORKDIR /workspace

@@ -9,6 +9,7 @@ AGY-specific layer on `ur-worker-base:latest`, tagged `ur-worker-agy:latest`.
 - `CACHEBUST` refreshes AGY by rerunning the installer, never by calling `agy update`; use
   `cargo make install-update-agy` to force that layer without rebuilding the base image.
 - `AGY_CLI_DISABLE_AUTO_UPDATE=1` prevents runtime update traffic.
+- `BROWSER` points to the `xdg-open` shim (`open-auth-link.sh`). AGY's login screen hard-wraps plain URL text, so the shim opens a small tmux pane with a short OSC 8 sign-in link whose target is the complete URL. Close that pane after signing in.
 - The image bakes `cache/onboarding.json` and runtime `settings.json` to suppress onboarding
   and trust prompts. Do not bake `jetski_state.pbtxt`; it contains per-installation state.
 - `/home/worker/.gemini`, `.gemini/antigravity-cli/cache`, and `.gemini/config` are created
