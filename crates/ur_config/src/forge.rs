@@ -157,11 +157,16 @@ mod tests {
         let gitea: ForgeType = serde_json::from_str("\"gitea\"").unwrap();
         assert_eq!(gitea, ForgeType::Gitea);
 
-        let toml_gh: ForgeType = toml::from_str("\"github\"").unwrap();
-        assert_eq!(toml_gh, ForgeType::GitHub);
+        #[derive(Deserialize, Serialize, PartialEq, Debug)]
+        struct ForgeWrapper {
+            forge: ForgeType,
+        }
 
-        let toml_gitea: ForgeType = toml::from_str("\"gitea\"").unwrap();
-        assert_eq!(toml_gitea, ForgeType::Gitea);
+        let toml_gh: ForgeWrapper = toml::from_str("forge = \"github\"").unwrap();
+        assert_eq!(toml_gh.forge, ForgeType::GitHub);
+
+        let toml_gitea: ForgeWrapper = toml::from_str("forge = \"gitea\"").unwrap();
+        assert_eq!(toml_gitea.forge, ForgeType::Gitea);
     }
 
     #[test]
