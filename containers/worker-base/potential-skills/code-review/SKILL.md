@@ -5,6 +5,10 @@ description: Review a proposed code change — bug hunt plus design review — a
 
 # Review guidelines:
 
+## Optional Hook Files
+
+The `@/home/worker/.claude/skill-hooks/...` references in this skill are optional project hooks. Read and follow each hook if its file exists. If a hook file is absent, skip it and continue the review using this skill's guidelines; its absence is not a blocker and does not require clarification. Do not create missing hooks or invent replacement requirements.
+
 ## Invocation
 
 Parse `$ARGUMENTS` for an optional parallel-review count `N` (a positive integer; default `1`).

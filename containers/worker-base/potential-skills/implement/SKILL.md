@@ -7,6 +7,12 @@ description: Use when implementing a ticket — implements a single ticket, or a
 
 Implement one or more tickets. An **epic** is any ticket with open descendants — detected at runtime, not by ticket type.
 
+Design is already complete. Implement the ticket's existing design and acceptance criteria; do not start another design phase or request design approval. Resolve routine implementation details within that design as you work.
+
+## Optional Hook Files
+
+The `@/home/worker/.claude/skill-hooks/...` references below are optional project hooks. Read and follow each hook if its file exists. If a hook file is absent, skip it and continue the workflow; its absence is not a blocker and does not require clarification or `request-human`. Do not create missing hooks or invent replacement requirements. If verification hooks are absent, continue without hook-specified verification commands.
+
 ## NEVER Pause — There Are Exactly Two Ways To Stop
 
 You are running unattended. Nobody is watching your terminal. **Ending your turn without one of the two signals below silently stalls the workflow: the ticket sits untouched, no human is notified, and the stall is only discovered by accident.**
