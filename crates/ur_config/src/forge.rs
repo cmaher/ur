@@ -29,14 +29,42 @@ impl std::fmt::Display for ForgeType {
 
 /// Detect the forge type from a repository URL.
 ///
-/// Returns [`ForgeType::GitHub`] if the URL contains `"github.com"` (case-insensitive),
-/// otherwise defaults to [`ForgeType::Gitea`].
+/// Returns [`ForgeType::GitHub`] if the URL points to a GitHub repository
+/// (e.g. host is `"github.com"`), otherwise defaults to [`ForgeType::Gitea`].
 pub fn parse_forge_from_url(url: &str) -> ForgeType {
-    if url.to_lowercase().contains("github.com") {
+    let lower = url.trim().to_lowercase();
+    if is_github_url(&lower) {
         ForgeType::GitHub
     } else {
         ForgeType::Gitea
     }
+}
+
+fn is_github_url(lower: &str) -> bool {
+    // Handle scheme-based URLs (https://github.com/..., ssh://git@github.com/...)
+    if let Some((_, rest)) = lower.split_once("://") {
+        let host_part = rest.split(['/', ':', '?']).next().unwrap_or("");
+        let host = if let Some((_, h)) = host_part.split_once('@') {
+            h
+        } else {
+            host_part
+        };
+        return host == "github.com" || host.ends_with(".github.com");
+    }
+    // Handle SCP-style URLs (git@github.com:org/repo.git)
+    if let Some((user_host, _)) = lower.split_once(':') {
+        let host = if let Some((_, h)) = user_host.split_once('@') {
+            h
+        } else {
+            user_host
+        };
+        if host == "github.com" || host.ends_with(".github.com") {
+            return true;
+        }
+    }
+    // Handle bare path/domain format (github.com/org/repo)
+    let host = lower.split(['/', ':']).next().unwrap_or("");
+    host == "github.com" || host.ends_with(".github.com")
 }
 
 #[cfg(test)]
@@ -65,6 +93,14 @@ mod tests {
             parse_forge_from_url("http://github.com/org/repo"),
             ForgeType::GitHub
         );
+        assert_eq!(
+            parse_forge_from_url("ssh://git@github.com:2222/org/repo.git"),
+            ForgeType::GitHub
+        );
+        assert_eq!(
+            parse_forge_from_url("github.com/org/repo"),
+            ForgeType::GitHub
+        );
     }
 
     #[test]
@@ -87,6 +123,18 @@ mod tests {
         );
         assert_eq!(
             parse_forge_from_url("git@example.com:user/project.git"),
+            ForgeType::Gitea
+        );
+        assert_eq!(
+            parse_forge_from_url("https://gitea.example.com/mirrors/github.com/repo.git"),
+            ForgeType::Gitea
+        );
+        assert_eq!(
+            parse_forge_from_url("git@gitea.example.com:mirrors/github.com/repo.git"),
+            ForgeType::Gitea
+        );
+        assert_eq!(
+            parse_forge_from_url("https://notgithub.com/org/repo.git"),
             ForgeType::Gitea
         );
         assert_eq!(parse_forge_from_url(""), ForgeType::Gitea);

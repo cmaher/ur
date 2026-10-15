@@ -1007,7 +1007,6 @@ impl WorkerManager {
             None,
         )?
         .add_ports(&config.ports)
-        .add_forge(config.forge)
         .add_env_vars(env_vars)
         .build())
     }

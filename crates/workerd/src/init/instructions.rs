@@ -135,12 +135,12 @@ fn forge_instructions(forge: &str) -> Option<&'static str> {
         "gitea" => Some(
             "# Forge Collaboration\n\n\
              This repository is hosted on Gitea. \
-             Use `tea` for pull requests, reviews, comments, and CI status checks (do not use `gh`).",
+             Use `tea` for pull requests, reviews, comments, and CI status checks (do not use `gh`).\n",
         ),
         "github" => Some(
             "# Forge Collaboration\n\n\
              This repository is hosted on GitHub. \
-             Use `gh` for pull requests, reviews, comments, and CI status checks (do not use `tea`).",
+             Use `gh` for pull requests, reviews, comments, and CI status checks (do not use `tea`).\n",
         ),
         _ => None,
     }

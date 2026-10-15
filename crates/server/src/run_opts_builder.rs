@@ -513,9 +513,15 @@ impl RunOptsBuilder {
         self
     }
 
-    /// Add environment variables to the container.
+    /// Add environment variables to the container, updating existing keys if present.
     pub fn add_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
-        self.env_vars.extend(env_vars);
+        for (k, v) in env_vars {
+            if let Some(existing) = self.env_vars.iter_mut().find(|(key, _)| key == &k) {
+                existing.1 = v;
+            } else {
+                self.env_vars.push((k, v));
+            }
+        }
         self
     }
 
@@ -741,6 +747,18 @@ mod tests {
         assert_eq!(req.env_vars[0].value, "1");
         assert_eq!(req.env_vars[1].key, "B");
         assert_eq!(req.env_vars[1].value, "2");
+    }
+
+    #[test]
+    fn add_env_vars_deduplicates_by_key() {
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_env_vars(vec![("A".into(), "1".into())])
+            .add_env_vars(vec![("A".into(), "2".into())])
+            .build();
+
+        assert_eq!(req.env_vars.len(), 1);
+        assert_eq!(req.env_vars[0].key, "A");
+        assert_eq!(req.env_vars[0].value, "2");
     }
 
     #[test]
