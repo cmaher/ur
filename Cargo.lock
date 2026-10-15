@@ -3304,6 +3304,7 @@ dependencies = [
  "dirs",
  "indexmap",
  "serde",
+ "serde_json",
  "tempfile",
  "toml",
  "tracing",

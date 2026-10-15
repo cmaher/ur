@@ -498,17 +498,16 @@ impl RunOptsBuilder {
     /// If `forge` is `Some(forge)`, adds `UR_WORKER_FORGE` with its string value ("github" or "gitea").
     /// If `forge` is `None` (e.g. local project), no env var is added.
     pub fn add_forge(mut self, forge: Option<ForgeType>) -> Self {
-        if let Some(f) = forge {
-            if !self
+        if let Some(f) = forge
+            && !self
                 .env_vars
                 .iter()
                 .any(|(k, _)| k == ur_config::UR_WORKER_FORGE_ENV)
-            {
-                self.env_vars.push((
-                    ur_config::UR_WORKER_FORGE_ENV.into(),
-                    f.as_str().to_string(),
-                ));
-            }
+        {
+            self.env_vars.push((
+                ur_config::UR_WORKER_FORGE_ENV.into(),
+                f.as_str().to_string(),
+            ));
         }
         self
     }
