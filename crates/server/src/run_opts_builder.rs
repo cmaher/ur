@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use ur_config::{AgentType, MountConfig, PortMapping, ResolvedTemplatePath, resolve_template_path};
+use ur_config::{
+    AgentType, ForgeType, MountConfig, PortMapping, ResolvedTemplatePath, resolve_template_path,
+};
 use ur_rpc::proto::builder_container::{
     EnvVar as ProtoEnvVar, LaunchWorkerRequest, PortMap as ProtoPortMap, Volume as ProtoVolume,
 };
@@ -489,6 +491,26 @@ impl RunOptsBuilder {
                 .push((shim_host_path.to_path_buf(), container_path));
         }
         Ok(self)
+    }
+
+    /// Add the forge environment variable (`UR_WORKER_FORGE`) based on the resolved forge type.
+    ///
+    /// If `forge` is `Some(forge)`, adds `UR_WORKER_FORGE` with its string value ("github" or "gitea").
+    /// If `forge` is `None` (e.g. local project), no env var is added.
+    pub fn add_forge(mut self, forge: Option<ForgeType>) -> Self {
+        if let Some(f) = forge {
+            if !self
+                .env_vars
+                .iter()
+                .any(|(k, _)| k == ur_config::UR_WORKER_FORGE_ENV)
+            {
+                self.env_vars.push((
+                    ur_config::UR_WORKER_FORGE_ENV.into(),
+                    f.as_str().to_string(),
+                ));
+            }
+        }
+        self
     }
 
     /// Add environment variables to the container.
@@ -1504,5 +1526,36 @@ mod tests {
             err.contains("project-relative"),
             "error should mention project-relative: {err}"
         );
+    }
+
+    #[test]
+    fn add_forge_github_sets_env_var() {
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_forge(Some(ForgeType::GitHub))
+            .build();
+
+        assert_eq!(req.env_vars.len(), 1);
+        assert_eq!(req.env_vars[0].key, ur_config::UR_WORKER_FORGE_ENV);
+        assert_eq!(req.env_vars[0].value, "github");
+    }
+
+    #[test]
+    fn add_forge_gitea_sets_env_var() {
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_forge(Some(ForgeType::Gitea))
+            .build();
+
+        assert_eq!(req.env_vars.len(), 1);
+        assert_eq!(req.env_vars[0].key, ur_config::UR_WORKER_FORGE_ENV);
+        assert_eq!(req.env_vars[0].value, "gitea");
+    }
+
+    #[test]
+    fn add_forge_none_is_noop() {
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_forge(None)
+            .build();
+
+        assert!(req.env_vars.is_empty());
     }
 }

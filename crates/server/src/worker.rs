@@ -582,6 +582,8 @@ pub struct WorkerConfig {
     /// config key. Only consulted when the worker has no project (`-w` workspace mode);
     /// see [`resolve_brain_dir`].
     pub workspace_brain_dir: Option<String>,
+    /// Optional resolved forge platform for this worker's project.
+    pub forge: Option<ur_config::ForgeType>,
 }
 
 /// Orchestrates the full lifecycle of worker processes:
@@ -1005,6 +1007,7 @@ impl WorkerManager {
             None,
         )?
         .add_ports(&config.ports)
+        .add_forge(config.forge)
         .add_env_vars(env_vars)
         .build())
     }
@@ -1319,8 +1322,12 @@ fn build_worker_env_vars(
     env_vars.extend(proxy_env_vars(&config.proxy_hostname));
 
     // Inject resolved skills as comma-separated list
-    if !config.skills.is_empty() {
-        env_vars.push(("UR_WORKER_SKILLS".into(), config.skills.join(",")));
+    let mut skills = config.skills.clone();
+    if config.forge == Some(ur_config::ForgeType::Gitea) && !skills.iter().any(|s| s == "gitea") {
+        skills.push("gitea".to_string());
+    }
+    if !skills.is_empty() {
+        env_vars.push(("UR_WORKER_SKILLS".into(), skills.join(",")));
     }
 
     // Inject which agent this worker runs, so workerd can resolve
@@ -1346,6 +1353,14 @@ fn build_worker_env_vars(
         ur_config::UR_WORKER_EFFORT_ENV.into(),
         config.effort.clone(),
     ));
+
+    // Inject resolved forge platform (if any)
+    if let Some(forge) = config.forge {
+        env_vars.push((
+            ur_config::UR_WORKER_FORGE_ENV.into(),
+            forge.as_str().to_string(),
+        ));
+    }
 
     // Inject project key so workers can resolve project context via env
     if !config.project_key.is_empty() {
@@ -1884,6 +1899,7 @@ mod tests {
             memory_dir: None,
             brain_dir: None,
             workspace_brain_dir: None,
+            forge: None,
         }
     }
 
@@ -1935,6 +1951,75 @@ mod tests {
         assert!(
             !vars.iter().any(|(k, _)| k == "UR_WORKER_MODEL"),
             "empty model should NOT inject UR_WORKER_MODEL; got {vars:?}"
+        );
+    }
+
+    #[test]
+    fn build_worker_env_vars_gitea_forge_sets_env_and_appends_skill() {
+        let mut config = test_worker_config(WorkerStrategy::Code, "sonnet");
+        config.skills = vec!["green".into()];
+        config.forge = Some(ur_config::ForgeType::Gitea);
+        let vars = build_worker_env_vars(&config, "secret", &test_network_config(), 12322);
+        assert!(
+            vars.contains(&(ur_config::UR_WORKER_FORGE_ENV.into(), "gitea".into())),
+            "Gitea forge should inject UR_WORKER_FORGE=gitea; got {vars:?}"
+        );
+        assert!(
+            vars.contains(&("UR_WORKER_SKILLS".into(), "green,gitea".into())),
+            "Gitea forge should append gitea to skills; got {vars:?}"
+        );
+    }
+
+    #[test]
+    fn build_worker_env_vars_gitea_forge_does_not_duplicate_skill() {
+        let mut config = test_worker_config(WorkerStrategy::Code, "sonnet");
+        config.skills = vec!["green".into(), "gitea".into()];
+        config.forge = Some(ur_config::ForgeType::Gitea);
+        let vars = build_worker_env_vars(&config, "secret", &test_network_config(), 12322);
+        assert!(
+            vars.contains(&("UR_WORKER_SKILLS".into(), "green,gitea".into())),
+            "Gitea forge should not duplicate gitea in skills; got {vars:?}"
+        );
+    }
+
+    #[test]
+    fn build_worker_env_vars_gitea_forge_with_empty_skills_adds_gitea() {
+        let mut config = test_worker_config(WorkerStrategy::Code, "sonnet");
+        config.skills = vec![];
+        config.forge = Some(ur_config::ForgeType::Gitea);
+        let vars = build_worker_env_vars(&config, "secret", &test_network_config(), 12322);
+        assert!(
+            vars.contains(&("UR_WORKER_SKILLS".into(), "gitea".into())),
+            "Gitea forge with empty skills should set UR_WORKER_SKILLS=gitea; got {vars:?}"
+        );
+    }
+
+    #[test]
+    fn build_worker_env_vars_github_forge_sets_env_without_gitea_skill() {
+        let mut config = test_worker_config(WorkerStrategy::Code, "sonnet");
+        config.skills = vec!["green".into()];
+        config.forge = Some(ur_config::ForgeType::GitHub);
+        let vars = build_worker_env_vars(&config, "secret", &test_network_config(), 12322);
+        assert!(
+            vars.contains(&(ur_config::UR_WORKER_FORGE_ENV.into(), "github".into())),
+            "GitHub forge should inject UR_WORKER_FORGE=github; got {vars:?}"
+        );
+        assert!(
+            vars.contains(&("UR_WORKER_SKILLS".into(), "green".into())),
+            "GitHub forge should NOT append gitea to skills; got {vars:?}"
+        );
+    }
+
+    #[test]
+    fn build_worker_env_vars_none_forge_omits_forge_env() {
+        let mut config = test_worker_config(WorkerStrategy::Code, "sonnet");
+        config.forge = None;
+        let vars = build_worker_env_vars(&config, "secret", &test_network_config(), 12322);
+        assert!(
+            !vars
+                .iter()
+                .any(|(k, _)| k == ur_config::UR_WORKER_FORGE_ENV),
+            "None forge should NOT inject UR_WORKER_FORGE; got {vars:?}"
         );
     }
 

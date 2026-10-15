@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
+use ur_config::ForgeType;
 
 use super::LuaDiscoveryManager;
 
@@ -68,12 +69,33 @@ impl HostExecConfigManager {
     ///
     /// Per-project `hostexec` arrays in `ur.toml` grant workers access to commands.
     /// Per-project `hostexec_deny` arrays in `ur.toml` deny commands (e.g. built-in defaults like `gh`).
+    /// When `forge` is `Some(ForgeType::Gitea)`, default commands include `tea` and exclude `gh`.
     /// Granted commands that exist in the discovered registry use
     /// their configured settings (lua, long_lived, bidi). Granted commands not in the
     /// registry are added as passthrough (no Lua, not long_lived, not bidi).
     /// Denied commands are removed even if they are defaults.
-    pub fn with_project_commands(&self, granted: &[String], denied: &[String]) -> Self {
+    pub fn with_project_commands(
+        &self,
+        granted: &[String],
+        denied: &[String],
+        forge: Option<ForgeType>,
+    ) -> Self {
         let mut commands = self.effective_defaults();
+        if forge == Some(ForgeType::Gitea) {
+            if let Some(cfg) = self.commands.get("tea") {
+                commands.insert("tea".to_string(), cfg.clone());
+            } else {
+                commands.insert(
+                    "tea".to_string(),
+                    CommandConfig {
+                        lua_source: None,
+                        long_lived: false,
+                        bidi: false,
+                    },
+                );
+            }
+            commands.remove("gh");
+        }
         for name in granted {
             if let Some(cfg) = self.commands.get(name) {
                 commands.insert(name.clone(), cfg.clone());
@@ -287,13 +309,13 @@ mod tests {
         );
         // Empty project grant does not include tea
         assert_eq!(
-            mgr.with_project_commands(&[], &[]).command_names(),
+            mgr.with_project_commands(&[], &[], None).command_names(),
             vec![
                 "bazel", "cargo", "docker", "gh", "git", "go", "make", "npm", "pnpm", "tsc", "ur"
             ]
         );
         // Project explicitly granting tea receives tea with its built-in script
-        let project = mgr.with_project_commands(&["tea".into()], &[]);
+        let project = mgr.with_project_commands(&["tea".into()], &[], None);
         assert!(project.is_allowed("tea"));
         let tea_cfg = project.get("tea").unwrap();
         assert!(tea_cfg.lua_source.is_some());
@@ -322,7 +344,7 @@ mod tests {
         write_lua(&tmp, "git", &script);
 
         let mgr = load(&tmp);
-        let project = mgr.with_project_commands(&[], &[]);
+        let project = mgr.with_project_commands(&[], &[], None);
 
         assert_eq!(
             project.get("git").unwrap().lua_source.as_deref(),
@@ -337,7 +359,7 @@ mod tests {
         write_lua(&tmp, "daemon", &script);
 
         let mgr = load(&tmp);
-        let project = mgr.with_project_commands(&["daemon".into()], &[]);
+        let project = mgr.with_project_commands(&["daemon".into()], &[], None);
         let daemon = project.get("daemon").unwrap();
 
         assert_eq!(daemon.lua_source.as_deref(), Some(script.as_str()));
@@ -349,7 +371,7 @@ mod tests {
     fn granted_unknown_command_remains_passthrough() {
         let tmp = TempDir::new().unwrap();
         let mgr = load(&tmp);
-        let project = mgr.with_project_commands(&["rg".into()], &[]);
+        let project = mgr.with_project_commands(&["rg".into()], &[], None);
         let rg = project.get("rg").unwrap();
 
         assert!(rg.lua_source.is_none());
@@ -364,7 +386,10 @@ mod tests {
         let mgr = load(&tmp);
 
         assert!(mgr.is_allowed("private"));
-        assert!(!mgr.with_project_commands(&[], &[]).is_allowed("private"));
+        assert!(
+            !mgr.with_project_commands(&[], &[], None)
+                .is_allowed("private")
+        );
     }
 
     #[test]
@@ -372,7 +397,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mgr = load(&tmp);
 
-        let project = mgr.with_project_commands(&[], &["gh".into()]);
+        let project = mgr.with_project_commands(&[], &["gh".into()], None);
         assert!(!project.is_allowed("gh"));
         assert!(project.is_allowed("git"));
         assert!(!project.command_names().contains(&"gh".to_string()));
@@ -384,7 +409,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mgr = load(&tmp);
 
-        let project = mgr.with_project_commands(&["rg".into()], &["rg".into()]);
+        let project = mgr.with_project_commands(&["rg".into()], &["rg".into()], None);
         assert!(!project.is_allowed("rg"));
         assert!(!project.command_names().contains(&"rg".to_string()));
     }
@@ -394,11 +419,67 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mgr = load(&tmp);
 
-        let proj_a = mgr.with_project_commands(&[], &["gh".into()]);
-        let proj_b = mgr.with_project_commands(&[], &[]);
+        let proj_a = mgr.with_project_commands(&[], &["gh".into()], None);
+        let proj_b = mgr.with_project_commands(&[], &[], None);
 
         assert!(!proj_a.is_allowed("gh"));
         assert!(proj_b.is_allowed("gh"));
+    }
+
+    #[test]
+    fn forge_gitea_defaults_grant_tea_and_deny_gh() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = load(&tmp);
+
+        let project = mgr.with_project_commands(&[], &[], Some(ForgeType::Gitea));
+        assert!(project.is_allowed("tea"));
+        assert!(!project.is_allowed("gh"));
+        assert!(project.command_names().contains(&"tea".to_string()));
+        assert!(!project.command_names().contains(&"gh".to_string()));
+        let tea_cfg = project.get("tea").unwrap();
+        assert!(tea_cfg.lua_source.is_some());
+    }
+
+    #[test]
+    fn forge_gitea_explicit_grant_gh() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = load(&tmp);
+
+        let project = mgr.with_project_commands(&["gh".into()], &[], Some(ForgeType::Gitea));
+        assert!(project.is_allowed("tea"));
+        assert!(project.is_allowed("gh"));
+        assert!(project.command_names().contains(&"tea".to_string()));
+        assert!(project.command_names().contains(&"gh".to_string()));
+    }
+
+    #[test]
+    fn forge_gitea_explicit_deny_tea() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = load(&tmp);
+
+        let project = mgr.with_project_commands(&[], &["tea".into()], Some(ForgeType::Gitea));
+        assert!(!project.is_allowed("tea"));
+        assert!(!project.is_allowed("gh"));
+    }
+
+    #[test]
+    fn forge_github_defaults_keep_gh_and_omit_tea() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = load(&tmp);
+
+        let project = mgr.with_project_commands(&[], &[], Some(ForgeType::GitHub));
+        assert!(project.is_allowed("gh"));
+        assert!(!project.is_allowed("tea"));
+    }
+
+    #[test]
+    fn forge_none_defaults_keep_gh_and_omit_tea() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = load(&tmp);
+
+        let project = mgr.with_project_commands(&[], &[], None);
+        assert!(project.is_allowed("gh"));
+        assert!(!project.is_allowed("tea"));
     }
 
     #[test]

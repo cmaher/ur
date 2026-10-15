@@ -311,6 +311,7 @@ struct ProjectLaunchFields {
     memory_dir: Option<String>,
     brain_dir: Option<String>,
     project_skills: Vec<String>,
+    forge: Option<ur_config::ForgeType>,
 }
 
 impl LaunchManager {
@@ -622,6 +623,7 @@ impl LaunchManager {
                 memory_dir: proj.memory_dir.clone(),
                 brain_dir: proj.brain_dir.clone(),
                 project_skills: proj.skills.clone(),
+                forge: proj.resolve_forge(),
             },
             _ => ProjectLaunchFields::default(),
         }
@@ -695,6 +697,7 @@ impl LaunchManager {
             memory_dir: fields.memory_dir,
             brain_dir: fields.brain_dir,
             workspace_brain_dir: self.workspace_brain_dir.clone(),
+            forge: fields.forge,
         })
     }
 

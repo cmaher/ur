@@ -519,7 +519,7 @@ impl HostExecServiceHandler {
                 };
                 // Grant only defaults + project-granted commands minus project-denied commands
                 let config = self.project_registry.hostexec_config();
-                let (extra, denied, allow_no_verify) = self
+                let (extra, denied, allow_no_verify, forge) = self
                     .project_registry
                     .get(project_key)
                     .map(|p| {
@@ -527,10 +527,11 @@ impl HostExecServiceHandler {
                             p.hostexec.clone(),
                             p.hostexec_deny.clone(),
                             p.git.allow_no_verify,
+                            p.resolve_forge(),
                         )
                     })
                     .unwrap_or_default();
-                let merged_config = config.with_project_commands(&extra, &denied);
+                let merged_config = config.with_project_commands(&extra, &denied, forge);
 
                 let lua_ctx = crate::hostexec::WorkerContext {
                     worker_id: worker_id_str.to_owned(),
