@@ -1,10 +1,12 @@
 mod agent;
+pub mod forge;
 mod template_path;
 
 pub use agent::{
     AgentAuth, AgentType, AuthSource, MIN_SEEDED_CREDENTIALS_BYTES, ParseAgentError,
     UnknownAliasError, credentials_file_is_seeded,
 };
+pub use forge::{ForgeType, UR_WORKER_FORGE_ENV, parse_forge_from_url};
 pub use template_path::{
     ResolvedTemplatePath, WORKSPACE_TEMPLATE, resolve_template_path, resolve_workspace_content,
 };
@@ -507,6 +509,8 @@ struct RawProjectConfig {
     /// Supports `%URCONFIG%/...` template variables or absolute paths.
     /// `%PROJECT%/...` is rejected — the brain must be project-stable, not workspace-relative.
     brain_dir: Option<String>,
+    /// Optional forge platform override ("github" or "gitea").
+    forge: Option<ForgeType>,
 }
 
 /// Raw TOML representation for the `[proxy]` section.
@@ -1194,6 +1198,8 @@ pub struct ProjectConfig {
     /// `%PROJECT%/...` is rejected — the brain must be project-stable, not workspace-relative.
     /// When `None`, the server-side convention fallback applies (separate ticket).
     pub brain_dir: Option<String>,
+    /// Optional explicit forge platform override ("github" or "gitea").
+    pub forge: Option<ForgeType>,
 }
 
 impl ProjectConfig {
@@ -1217,6 +1223,21 @@ impl ProjectConfig {
                 self.key
             )
         })
+    }
+
+    /// Resolves the forge platform for this project.
+    ///
+    /// Returns the explicit `forge` override if configured.
+    /// Otherwise, if `repo` is present, auto-detects from the URL.
+    /// Returns `None` for local projects (`repo.is_none()`).
+    pub fn resolve_forge(&self) -> Option<ForgeType> {
+        if let Some(forge) = self.forge {
+            Some(forge)
+        } else if let Some(ref repo) = self.repo {
+            Some(parse_forge_from_url(repo))
+        } else {
+            None
+        }
     }
 }
 
@@ -1698,6 +1719,7 @@ fn resolve_project_config(
             .unwrap_or(DEFAULT_PUSH_AGAIN_EXIT_CODE),
         memory_dir: raw_proj.memory_dir,
         brain_dir: raw_proj.brain_dir,
+        forge: raw_proj.forge,
     };
     Ok((key, resolved))
 }
@@ -4697,6 +4719,7 @@ quit = ["q"]
                     push_again_exit_code: DEFAULT_PUSH_AGAIN_EXIT_CODE,
                     memory_dir: None,
                     brain_dir: None,
+                    forge: None,
                 },
             );
             m.insert(
@@ -4725,6 +4748,7 @@ quit = ["q"]
                     push_again_exit_code: DEFAULT_PUSH_AGAIN_EXIT_CODE,
                     memory_dir: None,
                     brain_dir: None,
+                    forge: None,
                 },
             );
             m
@@ -4847,6 +4871,7 @@ quit = ["q"]
                     push_again_exit_code: DEFAULT_PUSH_AGAIN_EXIT_CODE,
                     memory_dir: None,
                     brain_dir: None,
+                    forge: None,
                 },
             );
             // If cwd dirname were "ur", it should match the "ur" key, not
@@ -5729,5 +5754,82 @@ image = "ur-worker"
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.projects["x"].push_again_exit_code, 42);
+    }
+
+    #[test]
+    fn project_resolve_forge_auto_github() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.x]
+repo = "git@github.com:example/x.git"
+[projects.x.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["x"].forge, None);
+        assert_eq!(cfg.projects["x"].resolve_forge(), Some(ForgeType::GitHub));
+    }
+
+    #[test]
+    fn project_resolve_forge_auto_gitea() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.x]
+repo = "git@gitea.example.com:example/x.git"
+[projects.x.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["x"].forge, None);
+        assert_eq!(cfg.projects["x"].resolve_forge(), Some(ForgeType::Gitea));
+    }
+
+    #[test]
+    fn project_resolve_forge_explicit_override() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.x]
+repo = "git@github.com:example/x.git"
+forge = "gitea"
+[projects.x.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["x"].forge, Some(ForgeType::Gitea));
+        assert_eq!(cfg.projects["x"].resolve_forge(), Some(ForgeType::Gitea));
+    }
+
+    #[test]
+    fn project_resolve_forge_local_project_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.x]
+local = true
+[projects.x.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["x"].forge, None);
+        assert_eq!(cfg.projects["x"].resolve_forge(), None);
     }
 }

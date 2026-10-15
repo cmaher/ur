@@ -847,6 +847,7 @@ fn project_cycle_limit_map(
             push_again_exit_code: ur_config::DEFAULT_PUSH_AGAIN_EXIT_CODE,
             memory_dir: None,
             brain_dir: None,
+            forge: None,
         },
     );
     projects
