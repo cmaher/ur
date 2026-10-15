@@ -77,6 +77,15 @@ impl InitInstructionsManager {
             info!(path = %path.display(), "appended shared instruction fragment");
         }
 
+        // Append forge instructions if UR_WORKER_FORGE is set
+        if let Ok(forge) = std::env::var(ur_config::UR_WORKER_FORGE_ENV) {
+            if let Some(instructions) = forge_instructions(&forge) {
+                content.push_str("\n\n");
+                content.push_str(instructions);
+                info!(forge = %forge, "appended forge collaboration instructions");
+            }
+        }
+
         // AGY does not read workspace CLAUDE.md and has no fallback-filename
         // setting, so fold project instructions into its global AGENTS.md.
         if let Some(project_content) = self.resolve_project_instruction().await? {
@@ -118,6 +127,22 @@ impl InitInstructionsManager {
         };
 
         Ok(Some(resolved))
+    }
+}
+
+fn forge_instructions(forge: &str) -> Option<&'static str> {
+    match forge.trim().to_lowercase().as_str() {
+        "gitea" => Some(
+            "# Forge Collaboration\n\n\
+             This repository is hosted on Gitea. \
+             Use `tea` for pull requests, reviews, comments, and CI status checks (do not use `gh`).",
+        ),
+        "github" => Some(
+            "# Forge Collaboration\n\n\
+             This repository is hosted on GitHub. \
+             Use `gh` for pull requests, reviews, comments, and CI status checks (do not use `tea`).",
+        ),
+        _ => None,
     }
 }
 
@@ -356,5 +381,120 @@ mod tests {
             "# Code Worker\n\n# Project rules"
         );
         assert!(!tmp.path().join(".gemini/config/PROJECT_AGENTS.md").exists());
+    }
+
+    #[tokio::test]
+    async fn run_with_gitea_forge_appends_section() {
+        let _lock = ENV_LOCK.lock().await;
+        let tmp = TempDir::new().unwrap();
+        setup_strategy_file(&tmp, "code", "# Code Worker");
+
+        unsafe {
+            std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
+            std::env::set_var(ur_config::UR_WORKER_FORGE_ENV, "gitea");
+        }
+        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        mgr.run().await.unwrap();
+        unsafe {
+            std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
+            std::env::remove_var(ur_config::UR_WORKER_FORGE_ENV);
+        }
+
+        let content = std::fs::read_to_string(tmp.path().join(".claude/CLAUDE.md")).unwrap();
+        assert!(content.contains("# Forge Collaboration"));
+        assert!(content.contains("Gitea"));
+        assert!(content.contains("`tea`"));
+        assert!(content.contains("do not use `gh`"));
+    }
+
+    #[tokio::test]
+    async fn run_with_github_forge_appends_section() {
+        let _lock = ENV_LOCK.lock().await;
+        let tmp = TempDir::new().unwrap();
+        setup_strategy_file(&tmp, "code", "# Code Worker");
+
+        unsafe {
+            std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
+            std::env::set_var(ur_config::UR_WORKER_FORGE_ENV, "github");
+        }
+        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        mgr.run().await.unwrap();
+        unsafe {
+            std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
+            std::env::remove_var(ur_config::UR_WORKER_FORGE_ENV);
+        }
+
+        let content = std::fs::read_to_string(tmp.path().join(".claude/CLAUDE.md")).unwrap();
+        assert!(content.contains("# Forge Collaboration"));
+        assert!(content.contains("GitHub"));
+        assert!(content.contains("`gh`"));
+        assert!(content.contains("do not use `tea`"));
+    }
+
+    #[tokio::test]
+    async fn run_with_unset_forge_skips_section() {
+        let _lock = ENV_LOCK.lock().await;
+        let tmp = TempDir::new().unwrap();
+        setup_strategy_file(&tmp, "code", "# Code Worker");
+
+        unsafe {
+            std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
+            std::env::remove_var(ur_config::UR_WORKER_FORGE_ENV);
+        }
+        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        mgr.run().await.unwrap();
+        unsafe {
+            std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
+        }
+
+        let content = std::fs::read_to_string(tmp.path().join(".claude/CLAUDE.md")).unwrap();
+        assert!(!content.contains("# Forge Collaboration"));
+    }
+
+    #[tokio::test]
+    async fn run_with_empty_forge_skips_section() {
+        let _lock = ENV_LOCK.lock().await;
+        let tmp = TempDir::new().unwrap();
+        setup_strategy_file(&tmp, "code", "# Code Worker");
+
+        unsafe {
+            std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
+            std::env::set_var(ur_config::UR_WORKER_FORGE_ENV, "   ");
+        }
+        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        mgr.run().await.unwrap();
+        unsafe {
+            std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
+            std::env::remove_var(ur_config::UR_WORKER_FORGE_ENV);
+        }
+
+        let content = std::fs::read_to_string(tmp.path().join(".claude/CLAUDE.md")).unwrap();
+        assert!(!content.contains("# Forge Collaboration"));
+    }
+
+    #[tokio::test]
+    async fn run_with_gitea_forge_works_for_agy() {
+        let _lock = ENV_LOCK.lock().await;
+        let tmp = TempDir::new().unwrap();
+        setup_strategy_file(&tmp, "code", "# Code Worker");
+        std::fs::create_dir_all(tmp.path().join(".gemini/config")).unwrap();
+
+        unsafe {
+            std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
+            std::env::set_var(ur_config::UR_WORKER_FORGE_ENV, "gitea");
+        }
+        InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Agy)
+            .run()
+            .await
+            .unwrap();
+        unsafe {
+            std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
+            std::env::remove_var(ur_config::UR_WORKER_FORGE_ENV);
+        }
+
+        let content = std::fs::read_to_string(tmp.path().join(".gemini/config/AGENTS.md")).unwrap();
+        assert!(content.contains("# Forge Collaboration"));
+        assert!(content.contains("Gitea"));
+        assert!(content.contains("`tea`"));
     }
 }
