@@ -78,12 +78,12 @@ impl InitInstructionsManager {
         }
 
         // Append forge instructions if UR_WORKER_FORGE is set
-        if let Ok(forge) = std::env::var(ur_config::UR_WORKER_FORGE_ENV) {
-            if let Some(instructions) = forge_instructions(&forge) {
-                content.push_str("\n\n");
-                content.push_str(instructions);
-                info!(forge = %forge, "appended forge collaboration instructions");
-            }
+        if let Ok(forge) = std::env::var(ur_config::UR_WORKER_FORGE_ENV)
+            && let Some(instructions) = forge_instructions(&forge)
+        {
+            content.push_str("\n\n");
+            content.push_str(instructions);
+            info!(forge = %forge, "appended forge collaboration instructions");
         }
 
         // AGY does not read workspace CLAUDE.md and has no fallback-filename
