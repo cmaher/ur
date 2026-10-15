@@ -235,6 +235,8 @@ struct ProjectEntry {
     hostexec_deny: Vec<String>,
     /// Emit `[projects.<key>.git] allow_no_verify = true` when set.
     allow_no_verify: bool,
+    /// Optional explicit forge platform override ("github" or "gitea").
+    forge: Option<String>,
 }
 
 /// Configuration names for a test stack, preventing container/network collisions
@@ -346,6 +348,11 @@ fn render_projects_toml(projects: &[ProjectEntry]) -> String {
         } else {
             String::new()
         };
+        let forge_line = if let Some(ref f) = proj.forge {
+            format!("forge = \"{f}\"\n")
+        } else {
+            String::new()
+        };
         // A local project declares `local = true` in place of `repo`.
         let identity_line = if proj.local {
             "local = true\n".to_owned()
@@ -358,9 +365,10 @@ fn render_projects_toml(projects: &[ProjectEntry]) -> String {
             String::new()
         };
         projects_toml.push_str(&format!(
-            "\n[projects.{key}]\n{identity}{skills}{hostexec}{hostexec_deny}{scripts}{memory_dir}{brain_dir}\n[projects.{key}.container]\nimage = \"{image}\"\n{mounts}{git_section}",
+            "\n[projects.{key}]\n{identity}{forge}{skills}{hostexec}{hostexec_deny}{scripts}{memory_dir}{brain_dir}\n[projects.{key}.container]\nimage = \"{image}\"\n{mounts}{git_section}",
             key = proj.key,
             identity = identity_line,
+            forge = forge_line,
             skills = skills_line,
             hostexec = hostexec_line,
             hostexec_deny = hostexec_deny_line,
@@ -744,6 +752,7 @@ fn setup_mount_projects(config_path: &Path) -> (tempfile::TempDir, Vec<ProjectEn
             hostexec: vec![],
             hostexec_deny: vec![],
             allow_no_verify: false,
+            forge: Some("github".into()),
         },
         ProjectEntry {
             key: "badmountproj".into(),
@@ -759,6 +768,7 @@ fn setup_mount_projects(config_path: &Path) -> (tempfile::TempDir, Vec<ProjectEn
             hostexec: vec![],
             hostexec_deny: vec![],
             allow_no_verify: false,
+            forge: Some("github".into()),
         },
     ];
     (host_mount_dir, projects)
@@ -814,6 +824,7 @@ fn setup_memory_projects(config_path: &Path) -> (MemoryDirInfo, Vec<ProjectEntry
         hostexec: vec![],
         hostexec_deny: vec![],
         allow_no_verify: false,
+        forge: Some("github".into()),
     }];
 
     (
@@ -875,6 +886,7 @@ fn setup_brain_projects(config_path: &Path) -> (BrainDirInfo, Vec<ProjectEntry>)
         hostexec: vec![],
         hostexec_deny: vec![],
         allow_no_verify: false,
+        forge: Some("github".into()),
     }];
 
     (
@@ -1074,6 +1086,7 @@ fn setup_hook_overlay_projects(config_path: &Path) -> Vec<ProjectEntry> {
         hostexec: vec![],
         hostexec_deny: vec![],
         allow_no_verify: false,
+        forge: Some("github".into()),
     }]
 }
 
@@ -1126,6 +1139,7 @@ fn create_codex_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
             hostexec: vec![],
             hostexec_deny: vec![],
             allow_no_verify: false,
+            forge: Some("github".into()),
         },
         ProjectEntry {
             key: "rustcodexproj".into(),
@@ -1141,6 +1155,7 @@ fn create_codex_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
             hostexec: vec![],
             hostexec_deny: vec![],
             allow_no_verify: false,
+            forge: Some("github".into()),
         },
     ]
 }
@@ -1176,6 +1191,7 @@ fn create_agy_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
             hostexec: vec![],
             hostexec_deny: vec![],
             allow_no_verify: false,
+            forge: Some("github".into()),
         },
         ProjectEntry {
             key: "rustagyproj".into(),
@@ -1191,6 +1207,7 @@ fn create_agy_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
             hostexec: vec![],
             hostexec_deny: vec![],
             allow_no_verify: false,
+            forge: Some("github".into()),
         },
     ]
 }
@@ -1210,6 +1227,28 @@ fn create_gitea_project_entry(bare_repo: &Path) -> ProjectEntry {
         hostexec: vec!["tea".into()],
         hostexec_deny: vec!["gh".into()],
         allow_no_verify: false,
+        forge: Some("gitea".into()),
+    }
+}
+
+/// Gitea project relying purely on auto-detection from its repository URL
+/// (no explicit `forge`, `skills`, `hostexec`, or `hostexec_deny`).
+fn create_gitea_auto_project_entry(bare_repo: &Path) -> ProjectEntry {
+    ProjectEntry {
+        key: "giteaautoproj".into(),
+        repo: bare_repo.to_string_lossy().into_owned(),
+        local: false,
+        image: "ur-worker".into(),
+        agent: "claude",
+        hostexec_scripts: vec![],
+        mounts: vec![],
+        memory_dir: None,
+        brain_dir: None,
+        skills: vec![],
+        hostexec: vec![],
+        hostexec_deny: vec![],
+        allow_no_verify: false,
+        forge: None,
     }
 }
 
@@ -1230,6 +1269,7 @@ fn create_no_verify_project_entry(bare_repo: &Path) -> ProjectEntry {
         hostexec: vec![],
         hostexec_deny: vec![],
         allow_no_verify: true,
+        forge: Some("github".into()),
     }
 }
 
@@ -1255,6 +1295,7 @@ fn create_primary_project_entries(
             hostexec: vec![],
             hostexec_deny: vec![],
             allow_no_verify: false,
+            forge: Some("github".into()),
         },
         ProjectEntry {
             key: "rustproj".into(),
@@ -1270,6 +1311,7 @@ fn create_primary_project_entries(
             hostexec: vec![],
             hostexec_deny: vec![],
             allow_no_verify: false,
+            forge: Some("github".into()),
         },
         ProjectEntry {
             key: "scriptproj".into(),
@@ -1285,6 +1327,7 @@ fn create_primary_project_entries(
             hostexec: vec![],
             hostexec_deny: vec![],
             allow_no_verify: false,
+            forge: Some("github".into()),
         },
         // A repo-less local project (`local = true`), declared with the same
         // per-project affordances a pool-backed project gets: image, hostexec
@@ -1303,6 +1346,7 @@ fn create_primary_project_entries(
             hostexec: vec![],
             hostexec_deny: vec![],
             allow_no_verify: false,
+            forge: None,
         },
     ]
 }
@@ -1350,6 +1394,7 @@ fn create_project_fixtures(
         &bare_repo_script,
     );
     projects.push(create_gitea_project_entry(&bare_repo));
+    projects.push(create_gitea_auto_project_entry(&bare_repo));
     projects.push(create_no_verify_project_entry(&bare_repo));
     projects.extend(create_codex_project_entries(config_path));
     projects.extend(create_agy_project_entries(config_path));
@@ -1587,6 +1632,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_hostexec_script_workspace(&env, &config_path);
         scenario_global_skill_injection(&env);
         scenario_project_gitea_tooling(&env);
+        scenario_project_gitea_auto_detection(&env);
         scenario_project_git_allow_no_verify(&env);
         scenario_worker_label_pr_status(&env);
         scenario_manual_worker(&env);
@@ -4386,6 +4432,100 @@ fn scenario_project_gitea_tooling(env: &TestEnv) {
     if let Err(e) = result {
         force_remove_container(&env.runtime, &container_name);
         force_remove_container(&env.runtime, &control_container);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Verify automatic Gitea forge detection:
+/// - Project has no explicit `forge`, `skills`, `hostexec`, or `hostexec_deny` settings.
+/// - Repository URL does not contain "github.com" (defaults to Gitea).
+/// - Worker container launches and reaches healthy state.
+/// - Container has tea shim and does not have gh shim.
+/// - Container has gitea skill installed.
+/// - Container's CLAUDE.md contains `# Forge Collaboration` section referencing Gitea and tea.
+fn scenario_project_gitea_auto_detection(env: &TestEnv) {
+    let ticket_id = "gitea-auto-detect-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch a worker for the auto-detected Gitea project ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", "giteaautoproj", ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p giteaautoproj failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- 1. Verify tea shim exists and gh shim does NOT exist ----
+        let tea_shim = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["ls", "/home/worker/.local/bin/tea"],
+        );
+        assert_exec_success(
+            &tea_shim,
+            "tea shim should exist at /home/worker/.local/bin/tea in auto-detected Gitea project",
+        );
+
+        let gh_shim = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["ls", "/home/worker/.local/bin/gh"],
+        );
+        assert!(
+            !gh_shim.status.success(),
+            "gh shim should NOT exist in auto-detected Gitea project"
+        );
+
+        // ---- 2. Verify gitea skill is installed ----
+        let gitea_skill = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["ls", "/home/worker/.claude/skills/gitea/SKILL.md"],
+        );
+        assert_exec_success(
+            &gitea_skill,
+            "gitea skill should be copied to ~/.claude/skills/gitea/SKILL.md in auto-detected Gitea project",
+        );
+
+        // ---- 3. Verify CLAUDE.md contains Forge Collaboration section referencing Gitea and tea ----
+        let claude_md = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["cat", "/home/worker/.claude/CLAUDE.md"],
+        );
+        assert_exec_success(&claude_md, "reading CLAUDE.md should succeed");
+        let content = String::from_utf8_lossy(&claude_md.stdout);
+        assert!(
+            content.contains("# Forge Collaboration"),
+            "CLAUDE.md should contain '# Forge Collaboration', got:\n{content}"
+        );
+        assert!(
+            content.contains("Gitea") && content.contains("tea"),
+            "CLAUDE.md should reference Gitea and tea, got:\n{content}"
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
         std::panic::resume_unwind(e);
     }
 }
