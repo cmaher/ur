@@ -1231,13 +1231,8 @@ impl ProjectConfig {
     /// Otherwise, if `repo` is present, auto-detects from the URL.
     /// Returns `None` for local projects (`repo.is_none()`).
     pub fn resolve_forge(&self) -> Option<ForgeType> {
-        if let Some(forge) = self.forge {
-            Some(forge)
-        } else if let Some(ref repo) = self.repo {
-            Some(parse_forge_from_url(repo))
-        } else {
-            None
-        }
+        self.forge
+            .or_else(|| self.repo.as_ref().map(|repo| parse_forge_from_url(repo)))
     }
 }
 
@@ -1602,20 +1597,7 @@ fn resolve_project_repo(key: &str, raw_proj: &RawProjectConfig) -> anyhow::Resul
     }
 }
 
-fn resolve_project_config(
-    key: String,
-    raw_proj: RawProjectConfig,
-    server_max_implement_cycles: Option<u32>,
-) -> anyhow::Result<(String, ProjectConfig)> {
-    // Reject mounts at project root level
-    if raw_proj.mounts.is_some() {
-        anyhow::bail!(
-            "project '{key}': 'mounts' must be inside [projects.{key}.container], \
-             not at the project root level"
-        );
-    }
-
-    // Hard errors for removed config fields.
+fn validate_removed_config_fields(key: &str, raw_proj: &RawProjectConfig) -> anyhow::Result<()> {
     if raw_proj.git_hooks_dir.is_some() {
         anyhow::bail!(
             "project '{key}': `git_hooks_dir` is no longer configurable — place files in \
@@ -1637,6 +1619,23 @@ fn resolve_project_config(
              See docs/codeflows/project-file-mounting.md."
         );
     }
+    Ok(())
+}
+
+fn resolve_project_config(
+    key: String,
+    raw_proj: RawProjectConfig,
+    server_max_implement_cycles: Option<u32>,
+) -> anyhow::Result<(String, ProjectConfig)> {
+    // Reject mounts at project root level
+    if raw_proj.mounts.is_some() {
+        anyhow::bail!(
+            "project '{key}': 'mounts' must be inside [projects.{key}.container], \
+             not at the project root level"
+        );
+    }
+
+    validate_removed_config_fields(&key, &raw_proj)?;
 
     let repo = resolve_project_repo(&key, &raw_proj)?;
 
