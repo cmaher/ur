@@ -3245,6 +3245,7 @@ dependencies = [
  "tracing-subscriber",
  "ur_config",
  "ur_rpc",
+ "ur_utils",
 ]
 
 [[package]]
@@ -3349,6 +3350,7 @@ dependencies = [
 name = "ur_utils"
 version = "0.1.0"
 dependencies = [
+ "tempfile",
  "tokio",
  "tracing",
 ]
@@ -3930,6 +3932,7 @@ dependencies = [
  "tracing-subscriber",
  "ur_config",
  "ur_rpc",
+ "ur_utils",
 ]
 
 [[package]]

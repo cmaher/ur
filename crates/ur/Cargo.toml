@@ -4,6 +4,7 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
+ur_utils = { path = "../ur_utils" }
 anyhow = "1"
 chrono = "0.4"
 serde = { workspace = true }

@@ -8,6 +8,7 @@ name = "workerd"
 path = "src/main.rs"
 
 [dependencies]
+ur_utils = { path = "../ur_utils" }
 anyhow = "1"
 clap = { workspace = true }
 serde_json = { workspace = true }

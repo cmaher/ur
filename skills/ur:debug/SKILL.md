@@ -15,13 +15,14 @@ All logs are structured JSON (one object per line). Default location: `~/.ur/log
 
 | File | Process | Notes |
 |------|---------|-------|
-| `~/.ur/logs/server.log.YYYY-MM-DD` | ur-server | Main server: gRPC handlers, worker lifecycle, workflow engine |
-| `~/.ur/logs/builderd.log.YYYY-MM-DD` | builderd | Git operations (clone, fetch, reset) run on the host |
+| `~/.ur/logs/server.log` | ur-server | Main server: gRPC handlers, worker lifecycle, workflow engine |
+| `~/.ur/logs/builderd.log` | builderd | Git operations (clone, fetch, reset) run on the host |
 | `~/.ur/logs/builderd.err` | builderd | Stderr from builderd — check this first for startup failures |
-| `~/.ur/logs/ur.log.YYYY-MM-DD` | ur CLI | Host-side CLI traces |
-| `~/.ur/logs/workers/<worker_id>/workerd.log.YYYY-MM-DD` | workerd | Per-worker: init, skills, git hooks, Claude Code session |
+| `~/.ur/logs/ur.log` | ur CLI | Host-side CLI traces |
+| `~/.ur/logs/workers/<worker_id>/workerd.log` | workerd | Per-worker: init, skills, git hooks, Claude Code session |
 
-Logs rotate daily, keeping 7 files per process.
+Logs rotate at 20 MiB, keeping the active `.log` file and up to six archives (`.log.1` through `.log.6`, newest first). Legacy dated files share this retention budget and are pruned on startup. Use `tail -F` to follow across rotation.
+
 
 ### JSON Log Fields
 
@@ -43,23 +44,23 @@ Key fields: `level` (`TRACE`/`DEBUG`/`INFO`/`WARN`/`ERROR`), `fields.message`, `
 
 ### Reading Logs
 
-Always start with today's file and grep for `ERROR` or `WARN`:
+Always start with the current file and grep for `ERROR` or `WARN`:
 
 ```bash
-# All errors in today's server log
-grep '"ERROR"' ~/.ur/logs/server.log.$(date +%Y-%m-%d) | jq '.fields'
+# All errors in the current server log
+grep '"ERROR"' ~/.ur/logs/server.log | jq '.fields'
 
 # All warnings and errors
-grep -E '"ERROR"|"WARN"' ~/.ur/logs/server.log.$(date +%Y-%m-%d) | jq '{level: .level, msg: .fields.message, err: .fields.error}'
+grep -E '"ERROR"|"WARN"' ~/.ur/logs/server.log | jq '{level: .level, msg: .fields.message, err: .fields.error}'
 
 # Specific worker's workerd log
-grep '"ERROR"' ~/.ur/logs/workers/<worker_id>/workerd.log.$(date +%Y-%m-%d) | jq '.fields'
+grep '"ERROR"' ~/.ur/logs/workers/<worker_id>/workerd.log | jq '.fields'
 
 # Find a specific message across all logs
 grep -r "pool acquire" ~/.ur/logs/ | grep '"ERROR"' | jq '.fields'
 
 # Tail live (server restarts write new entries continuously)
-tail -f ~/.ur/logs/server.log.$(date +%Y-%m-%d) | jq '{level: .level, msg: .fields.message, target: .target}'
+tail -F ~/.ur/logs/server.log | jq '{level: .level, msg: .fields.message, target: .target}'
 ```
 
 ### Finding a Worker's Logs
@@ -139,13 +140,13 @@ ur worker describe <worker_id>   # detailed info for one worker
 
 ```bash
 # Check for workflow stall messages
-grep "stalled" ~/.ur/logs/server.log.$(date +%Y-%m-%d) | jq '{msg: .fields.message, reason: .fields.stall_reason, ticket: .fields.ticket_id}'
+grep "stalled" ~/.ur/logs/server.log | jq '{msg: .fields.message, reason: .fields.stall_reason, ticket: .fields.ticket_id}'
 
 # Check for pool errors
-grep "pool" ~/.ur/logs/server.log.$(date +%Y-%m-%d) | grep '"ERROR"' | jq '.fields'
+grep "pool" ~/.ur/logs/server.log | grep '"ERROR"' | jq '.fields'
 
 # Check builderd connectivity
-grep "builderd" ~/.ur/logs/server.log.$(date +%Y-%m-%d) | grep -E '"ERROR"|"WARN"' | jq '.fields'
+grep "builderd" ~/.ur/logs/server.log | grep -E '"ERROR"|"WARN"' | jq '.fields'
 ```
 
 ### Workerd Log — Common Error Patterns
@@ -159,17 +160,17 @@ grep "builderd" ~/.ur/logs/server.log.$(date +%Y-%m-%d) | grep -E '"ERROR"|"WARN
 
 ```bash
 # Worker failed during init — check earliest lines
-head -50 ~/.ur/logs/workers/<id>/workerd.log.$(date +%Y-%m-%d) | jq '{level: .level, msg: .fields.message}'
+head -50 ~/.ur/logs/workers/<id>/workerd.log | jq '{level: .level, msg: .fields.message}'
 
 # Find skill loading issues
-grep "skill" ~/.ur/logs/workers/<id>/workerd.log.$(date +%Y-%m-%d) | jq '.fields'
+grep "skill" ~/.ur/logs/workers/<id>/workerd.log | jq '.fields'
 ```
 
 ### Builderd Log
 
 ```bash
 # Builderd startup and git op errors
-grep -E '"ERROR"|"WARN"' ~/.ur/logs/builderd.log.$(date +%Y-%m-%d) | jq '.fields'
+grep -E '"ERROR"|"WARN"' ~/.ur/logs/builderd.log | jq '.fields'
 
 # Check builderd.err for startup crashes
 cat ~/.ur/logs/builderd.err
@@ -259,7 +260,7 @@ docker inspect ur-worker-<process_id> | jq '.[0].NetworkSettings.Networks | keys
 ### Agent appears to have stopped / no activity
 
 1. `ur flow show <ticket_id>` — check if stalled and read `stall_reason`
-2. Check workerd log: `tail -f ~/.ur/logs/workers/<id>/workerd.log.$(date +%Y-%m-%d) | jq '.fields.message'`
+2. Check workerd log: `tail -F ~/.ur/logs/workers/<id>/workerd.log | jq '.fields.message'`
 3. `ur worker attach <worker_id>` to see the live tmux session
 4. If stalled: `ur flow redrive <ticket_id> --continue`
 
@@ -286,7 +287,7 @@ docker inspect ur-worker-<process_id> | jq '.[0].NetworkSettings.Networks | keys
 
 ### Skill not available in worker
 
-1. Check workerd log for skill loading warnings: `grep "skill" ~/.ur/logs/workers/<id>/workerd.log.$(date +%Y-%m-%d) | jq '.fields'`
+1. Check workerd log for skill loading warnings: `grep "skill" ~/.ur/logs/workers/<id>/workerd.log | jq '.fields'`
 2. `docker exec ur-worker-<process_id> ls /home/worker/.claude/potential-skills/` — is the skill present?
 3. Verify `[skills]` section in `ur.toml` — path must be visible to the **server process**, use `%URCONFIG%/...`
 4. `docker exec ur-worker-<process_id> env | grep UR_WORKER_SKILLS` — confirm the skill was included in the launch
@@ -297,7 +298,7 @@ docker inspect ur-worker-<process_id> | jq '.[0].NetworkSettings.Networks | keys
 2. `docker logs ur-postgres --tail 30` — database not ready?
 3. `docker ps` — are infrastructure containers running?
 4. `ur server restart` — attempt a clean restart
-5. Check server log from the start of today's file: `head -50 ~/.ur/logs/server.log.$(date +%Y-%m-%d) | jq '{level: .level, msg: .fields.message}'`
+5. Check server log from the start of the current file: `head -50 ~/.ur/logs/server.log | jq '{level: .level, msg: .fields.message}'`
 
 ### Push failing / pre-push hook errors
 
