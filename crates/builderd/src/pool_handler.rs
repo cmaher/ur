@@ -236,7 +236,10 @@ impl BuilderPoolHandler {
             .await
             .map_err(|e| format!("git fetch failed in {}: {e}", slot.display()))?;
 
-        self.git(&["checkout", "master"], &slot)
+        // `-f` discards local modifications and overwrites untracked files in the way.
+        // Without it, a slot left dirty on a feature branch fails checkout and falls
+        // back to a full re-clone.
+        self.git(&["checkout", "-f", "master"], &slot)
             .await
             .map_err(|e| format!("git checkout master failed in {}: {e}", slot.display()))?;
 
@@ -256,6 +259,42 @@ impl BuilderPoolHandler {
         self.init_submodules(&slot).await?;
 
         Ok(())
+    }
+
+    /// Bring a slot to a clean, overlaid state under its slot lock: reset it (or re-clone
+    /// if the directory is missing or the reset fails), then apply local overlay files.
+    /// Returns the slot's host path.
+    async fn recycle(&self, req: &RecycleSlotRequest) -> Result<String, String> {
+        let slot_mutex = self.slot_lock(&req.project_key, &req.slot_name);
+        let _slot_guard = slot_mutex.lock().await;
+
+        // A slot row can outlive its directory (manual deletion, interrupted cleanup).
+        // Skip the pointless reset in that case and clone straight into place.
+        let slot = self.slot_path(&req.project_key, &req.slot_name);
+        if !tokio::fs::try_exists(&slot).await.unwrap_or(false) {
+            warn!(
+                project_key = %req.project_key,
+                slot_name = %req.slot_name,
+                path = %slot.display(),
+                "slot directory missing on disk, re-cloning"
+            );
+            self.reclone_slot(&req.project_key, &req.slot_name, &req.repo_url)
+                .await?;
+        } else if let Err(reset_err) = self.reset_slot(&req.project_key, &req.slot_name).await {
+            // Attempt reset; on failure reclone from scratch.
+            warn!(
+                project_key = %req.project_key,
+                slot_name = %req.slot_name,
+                error = %reset_err,
+                "reset failed, re-cloning slot"
+            );
+            self.reclone_slot(&req.project_key, &req.slot_name, &req.repo_url)
+                .await?;
+        }
+
+        self.apply_local_files(&req.project_key, &slot).await?;
+
+        Ok(slot.display().to_string())
     }
 
     /// Refresh a shared slot: fetch + reset --hard origin/HEAD + submodule update.
@@ -537,46 +576,14 @@ impl BuilderPoolService for BuilderPoolHandler {
             "RecycleSlot request received"
         );
 
-        let slot_mutex = self.slot_lock(&req.project_key, &req.slot_name);
-        let _slot_guard = slot_mutex.lock().await;
-
-        // A slot row can outlive its directory (manual deletion, interrupted cleanup).
-        // Skip the pointless reset in that case and clone straight into place.
-        let slot = self.slot_path(&req.project_key, &req.slot_name);
-        if !tokio::fs::try_exists(&slot).await.unwrap_or(false) {
-            warn!(
-                project_key = %req.project_key,
-                slot_name = %req.slot_name,
-                path = %slot.display(),
-                "slot directory missing on disk, re-cloning"
-            );
-            self.reclone_slot(&req.project_key, &req.slot_name, &req.repo_url)
-                .await
-                .map_err(internal)?;
-        } else if let Err(reset_err) = self.reset_slot(&req.project_key, &req.slot_name).await {
-            // Attempt reset; on failure reclone from scratch.
-            warn!(
-                project_key = %req.project_key,
-                slot_name = %req.slot_name,
-                error = %reset_err,
-                "reset failed, re-cloning slot"
-            );
-            self.reclone_slot(&req.project_key, &req.slot_name, &req.repo_url)
-                .await
-                .map_err(internal)?;
-        }
-
-        self.apply_local_files(
-            &req.project_key,
-            &self.slot_path(&req.project_key, &req.slot_name),
-        )
-        .await
-        .map_err(internal)?;
-
-        let host_path = self
-            .slot_path(&req.project_key, &req.slot_name)
-            .display()
-            .to_string();
+        // Run detached so a cancelled request (client Ctrl-C, dropped connection) cannot
+        // abandon a half-finished reset/clone after releasing the slot lock — the orphaned
+        // git child would keep writing into the slot while the next recycle rm -rf's it.
+        let handler = self.clone();
+        let host_path = tokio::spawn(async move { handler.recycle(&req).await })
+            .await
+            .map_err(|e| internal(format!("recycle task failed: {e}")))?
+            .map_err(internal)?;
         Ok(Response::new(RecycleSlotResponse { host_path }))
     }
 
@@ -864,6 +871,42 @@ mod tests {
         );
         let readme = std::fs::read_to_string(slot.join("README.md")).unwrap();
         assert_eq!(readme, "hello", "tracked file should be restored");
+    }
+
+    #[tokio::test]
+    async fn reset_slot_switches_from_dirty_feature_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("bare.git");
+        init_bare_repo(&bare);
+
+        let h = make_handler(tmp.path());
+        let repo_url = bare.display().to_string();
+
+        h.clone_slot("proj", "0", &repo_url).await.unwrap();
+
+        // Leave the slot on a feature branch whose README differs from master, with an
+        // uncommitted edit on top — plain `git checkout master` refuses this.
+        let slot = h.slot_path("proj", "0");
+        git_sync(&["checkout", "-b", "feature"], &slot);
+        std::fs::write(slot.join("README.md"), "feature").unwrap();
+        git_sync(
+            &[
+                "-c",
+                "user.email=test@test",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-am",
+                "feature",
+            ],
+            &slot,
+        );
+        std::fs::write(slot.join("README.md"), "uncommitted").unwrap();
+
+        h.reset_slot("proj", "0").await.unwrap();
+
+        let readme = std::fs::read_to_string(slot.join("README.md")).unwrap();
+        assert_eq!(readme, "hello", "slot should be back on master content");
     }
 
     #[tokio::test]
