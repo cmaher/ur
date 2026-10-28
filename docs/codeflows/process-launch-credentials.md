@@ -159,7 +159,7 @@ containers/worker-claude/Dockerfile (ur-worker-claude:latest)
 ├── COPY entrypoint.sh, worker binaries (ur-ping, git, gh, tk)
 ├── COPY claude.json → /home/worker/.claude.json (skip onboarding/login prompts)
 ├── COPY claude-settings.json → /home/worker/.claude/potential-settings.json
-│   └── permissions.defaultMode: "bypassPermissions" (skip permissions for non-interactive use)
+│   └── permissions.defaultMode: "auto"
 ├── USER worker
 └── ENTRYPOINT ["/entrypoint.sh"]
 
@@ -174,7 +174,7 @@ containers/worker-agy/Dockerfile (ur-worker-agy:latest)
 
 The Claude CLI install moved from the base image into the `worker-claude` layer (inverting the pre-split caching story — see `docs/codeflows/skill-loading.md` and `scripts/build/image.sh` for the `UR_FORCE_REBUILD_BASE`/`UR_UPDATE_AGENT` cache-busting behavior this implies). Image tags include `ur-worker-base:latest` and `ur-worker-claude:latest`; each directory name matches its tag.
 
-`potential-settings.json` is baked here (agent-specific config, not shared content) and copied verbatim to `~/.claude/settings.json` by `InitSettingsManager` at container startup — permissions are bypassed via `settings.json` (`permissions.defaultMode: "bypassPermissions"`) rather than a CLI flag, so no wrapper script is needed.
+`potential-settings.json` is baked here (agent-specific config, not shared content) and copied verbatim to `~/.claude/settings.json` by `InitSettingsManager` at container startup — permissions default to auto mode via `settings.json` (`permissions.defaultMode: "auto"`) rather than a CLI flag, so no wrapper script is needed.
 
 ## Environment Variables
 
@@ -200,7 +200,7 @@ The Claude CLI install moved from the base image into the `worker-claude` layer 
 | `crates/server/src/grpc.rs` | Server RPC handler, resolves `agent_type` from the request (empty → mode's agent, then the top-level default), maps to `WorkerConfig` |
 | `containers/worker-claude/claude.json` | Baked-in `.claude.json` (onboarding + project trust) |
 | `containers/worker-claude/entrypoint.sh` | Starts tmux, keeps container alive |
-| `containers/worker-claude/claude-settings.json` | Baked-in settings (bypassPermissions mode), copied to `potential-settings.json` in the image |
+| `containers/worker-claude/claude-settings.json` | Baked-in settings (auto permission mode), copied to `potential-settings.json` in the image |
 | `containers/worker-base/Dockerfile` | Agent-agnostic base image (no Claude CLI) |
 | `containers/worker-claude/Dockerfile` | Claude-specific layer: CLI install, worker binaries, config |
 

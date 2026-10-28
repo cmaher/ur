@@ -1,8 +1,9 @@
 {
   "outputStyle": "Concise",
   "permissions": {
-    "defaultMode": "bypassPermissions"
+    "defaultMode": "auto"
   },
+  "skipAutoPermissionPrompt": true,
   "sandbox": {
     "enabled": false
   },
