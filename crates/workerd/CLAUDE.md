@@ -11,10 +11,10 @@ Three modes:
 Startup sequence (daemon mode):
 1. Runs initialization, including hostexec shim creation.
 2. Runs executable startup hooks through `StartupHooksManager`: synchronous hooks first, then detached background hooks. In-repo hooks live under `/workspace/ur-hooks/{startup,startup-bg}/`; host overlays under `/var/ur/host-hooks/{startup,startup-bg}/` win on filename conflicts.
-3. Resolves `let agent = AgentType::from_env()` (reads `UR_AGENT_TYPE`, defaults to claude). Creates tmux session `agent` (220x55), sets status line with worker ID.
+3. Resolves `let agent = AgentType::from_env()` (reads `UR_AGENT_TYPE`, defaults to claude) and **binds the gRPC listener on 9120 before launching the agent** — the agent's `SessionStart` hook calls `NotifyIdle` immediately, and a refused connection drops the idle signal that triggers dispatch. Creates tmux session `agent` (220x55), sets status line with worker ID.
 4. Launches the agent via `tmux send-keys(agent.spawn_command(model))`. For Claude, when `UR_WORKER_MODEL` is set, this produces `claude --model <name>` — the model is passed via CLI flag (NOT settings.json), because Claude Code rewrites `~/.claude/settings.json` on startup and silently drops the `model` key.
 5. Spawns healthz HTTP server on port 9119 (Docker HEALTHCHECK).
-6. Starts gRPC server on port 9120 (long-lived, keeps the process alive).
+6. Serves gRPC on the already-bound 9120 listener (long-lived, keeps the process alive).
 
 The worker health check becomes healthy only after startup hooks complete. Builderd waits for
 that transition during `LaunchWorker`; if a synchronous hook fails, it returns the container

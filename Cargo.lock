@@ -3925,6 +3925,7 @@ dependencies = [
  "tempfile",
  "tmux",
  "tokio",
+ "tokio-stream",
  "toml",
  "tonic",
  "tracing",

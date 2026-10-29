@@ -354,7 +354,32 @@ impl LaunchManager {
         try_join_all(futures).await
     }
 
-    /// Post-launch setup: bind workflow, persist branch, dispatch design command.
+    /// Bind the ticket's workflow to its worker before the container starts.
+    ///
+    /// The agent reports idle as soon as it boots — often while builderd's
+    /// `LaunchWorker` is still waiting on readiness — and the AwaitingDispatch
+    /// readiness trigger resolves the ticket through this binding. Binding after
+    /// launch would make that first idle signal a silent no-op, leaving the
+    /// ticket stuck in `awaiting_dispatch`. Manual workers have no ticket.
+    async fn bind_workflow_worker(
+        &self,
+        process_id: &str,
+        worker_id_str: &str,
+        strategy: crate::WorkerStrategy,
+    ) -> Result<(), Status> {
+        if strategy == crate::WorkerStrategy::Manual {
+            return Ok(());
+        }
+        self.workflow_repo
+            .set_workflow_worker_id(process_id, worker_id_str)
+            .await
+            .map_err(|e| CoreError::RunFailed {
+                reason: format!("failed to set workflow worker_id: {e}"),
+            })?;
+        Ok(())
+    }
+
+    /// Post-launch setup: persist branch, dispatch design command, push label.
     ///
     /// Extracted from `launch` to keep method body within the line limit.
     async fn post_launch_setup(
@@ -365,17 +390,9 @@ impl LaunchManager {
         strategy: crate::WorkerStrategy,
         dispatch: bool,
     ) -> Result<(), Status> {
-        // Manual workers have no ticket to bind, no branch to persist, and no
+        // Manual workers have no branch to persist and no
         // command to dispatch — skip all workflow-related setup steps.
         if strategy != crate::WorkerStrategy::Manual {
-            // Bind the ticket to its worker on the workflow table (if a workflow exists).
-            self.workflow_repo
-                .set_workflow_worker_id(process_id, worker_id_str)
-                .await
-                .map_err(|e| CoreError::RunFailed {
-                    reason: format!("failed to set workflow worker_id: {e}"),
-                })?;
-
             // Pool slots check out a branch named after the worker ID; persist
             // that on the ticket so the push handler knows which branch to push.
             if has_pool_slot {
@@ -760,6 +777,8 @@ impl LaunchManager {
             workspace_dir,
             context_mounts,
         )?;
+        self.bind_workflow_worker(&process_id, &worker_id_str, strategy)
+            .await?;
         let (container_id, _worker_secret) = self
             .worker_manager
             .run_and_record(config)

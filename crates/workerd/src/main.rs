@@ -144,6 +144,15 @@ async fn run_daemon() -> Result<()> {
 async fn run_daemon_only() -> Result<()> {
     let agent = ur_config::AgentType::from_env();
 
+    // 0. Bind the gRPC listener before launching the agent. The agent's
+    // SessionStart hook calls NotifyIdle on this port as soon as it boots;
+    // binding first lets that connection queue in the backlog instead of
+    // being refused, which would drop the idle signal that triggers dispatch.
+    let addr: SocketAddr = ([0, 0, 0, 0], WORKERD_GRPC_PORT).into();
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("binding gRPC listener on {addr}"))?;
+
     // 1. Create tmux session `agent` (220x55)
     let session = tmux::Session::create(tmux::CreateOptions {
         name: "agent".into(),
@@ -185,8 +194,7 @@ async fn run_daemon_only() -> Result<()> {
     // 4. Spawn healthz HTTP server (port 9119) in background
     tokio::spawn(serve_healthz());
 
-    // 5. Start gRPC server on port 9120 (this is the long-lived process)
-    let addr: SocketAddr = ([0, 0, 0, 0], WORKERD_GRPC_PORT).into();
+    // 5. Serve gRPC on the listener bound in step 0 (this is the long-lived process)
     let server_addr =
         std::env::var(ur_config::UR_SERVER_ADDR_ENV).unwrap_or_else(|_| "localhost:50051".into());
     let worker_id = std::env::var(ur_config::UR_WORKER_ID_ENV).unwrap_or_else(|_| "unknown".into());
@@ -211,7 +219,7 @@ async fn run_daemon_only() -> Result<()> {
 
     tonic::transport::Server::builder()
         .add_service(WorkerDaemonServiceServer::new(service))
-        .serve(addr)
+        .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
         .await
         .context("gRPC server exited")?;
 
