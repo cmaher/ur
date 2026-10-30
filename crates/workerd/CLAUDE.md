@@ -50,10 +50,10 @@ Three modes:
 - `workerd init` — synchronous initialization only (skills, git hooks, hostexec shims).
 - `workerd daemon` — daemon without init or startup hooks (expects initialization to have been handled by the caller).
 
-Startup sequence (daemon mode):
+Startup sequence (daemon mode). Before any step, `main` resolves the agent (`AgentType::from_env()`, reads `UR_AGENT_TYPE`, defaults to claude), `WorkerPaths::container(agent)` and `WorkerInitInputs::from_env(agent)` once:
 1. Runs initialization, including hostexec shim creation.
-2. Runs executable startup hooks through `StartupHooksManager`: synchronous hooks first, then detached background hooks. In-repo hooks live under `/workspace/ur-hooks/{startup,startup-bg}/`; host overlays under `/var/ur/host-hooks/{startup,startup-bg}/` win on filename conflicts.
-3. Resolves `let agent = AgentType::from_env()` (reads `UR_AGENT_TYPE`, defaults to claude) and **binds the gRPC listener on 9120 before launching the agent** — the agent's `SessionStart` hook calls `NotifyIdle` immediately, and a refused connection drops the idle signal that triggers dispatch. Creates tmux session `agent` (220x55), sets status line with worker ID.
+2. Runs executable startup hooks through `StartupHooksManager`: synchronous hooks first, then detached background hooks. In-repo hooks live under `<workspace>/ur-hooks/{startup,startup-bg}/`; host overlays under `<host_hooks>/{startup,startup-bg}/` win on filename conflicts.
+3. **Binds the gRPC listener on 9120 before launching the agent** — the agent's `SessionStart` hook calls `NotifyIdle` immediately, and a refused connection drops the idle signal that triggers dispatch. Creates tmux session `agent` (220x55), sets status line with worker ID.
 4. Launches the agent via `tmux send-keys(agent.spawn_command(model))`. For Claude, when `UR_WORKER_MODEL` is set, this produces `claude --model <name>` — the model is passed via CLI flag (NOT settings.json), because Claude Code rewrites `~/.claude/settings.json` on startup and silently drops the `model` key.
 5. Spawns healthz HTTP server on port 9119 (Docker HEALTHCHECK).
 6. Serves gRPC on the already-bound 9120 listener (long-lived, keeps the process alive).

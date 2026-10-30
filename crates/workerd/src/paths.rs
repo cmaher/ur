@@ -45,9 +45,10 @@ pub struct WorkerPaths {
 impl WorkerPaths {
     /// The paths used inside an agent container for `agent`.
     ///
-    /// Everything is rooted at `$HOME` (falling back to the container's known
-    /// home) except `skill_hooks`, which is always under the container's known
-    /// home in the agent's customization root. Skill sources reference hooks
+    /// Home-relative paths follow `$HOME` (falling back to the container's
+    /// known home); `workspace` and `host_hooks` are fixed mount points; and
+    /// `skill_hooks` is always under the container's known home in the agent's
+    /// customization root. Skill sources reference hooks
     /// via `%UR_SKILL_HOOKS%`, rendered from `skill_hooks` at install time.
     pub fn container(agent: AgentType) -> Self {
         let home = std::env::var("HOME")

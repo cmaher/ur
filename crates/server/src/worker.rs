@@ -1326,7 +1326,7 @@ fn build_worker_env_vars(
         skills.push("gitea".to_string());
     }
     if !skills.is_empty() {
-        env_vars.push(("UR_WORKER_SKILLS".into(), skills.join(",")));
+        env_vars.push((ur_config::UR_WORKER_SKILLS_ENV.into(), skills.join(",")));
     }
 
     // Inject which agent this worker runs, so workerd can resolve

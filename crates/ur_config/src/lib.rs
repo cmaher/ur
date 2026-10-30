@@ -212,6 +212,10 @@ pub const UR_AGENT_TYPE_ENV: &str = "UR_AGENT_TYPE";
 /// `"design"` as "shut the container down when the agent exits".
 pub const UR_WORKER_INSTRUCTION_STRATEGY_ENV: &str = "UR_WORKER_INSTRUCTION_STRATEGY";
 
+/// Environment variable: comma-separated skill names workerd installs from
+/// `.agent-shared/potential-skills/`. Set by the server at launch.
+pub const UR_WORKER_SKILLS_ENV: &str = "UR_WORKER_SKILLS";
+
 /// Environment variable: host-side config directory path.
 ///
 /// The server container sees its config at `/config` (bind mount), but needs the

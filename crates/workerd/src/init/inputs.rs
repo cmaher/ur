@@ -1,9 +1,6 @@
 use std::path::PathBuf;
 
-use ur_config::AgentType;
-
-/// Env var listing the skills to install (comma-separated).
-pub const UR_WORKER_SKILLS_ENV: &str = "UR_WORKER_SKILLS";
+use ur_config::{AgentType, UR_WORKER_SKILLS_ENV};
 
 /// Per-worker init inputs: what to install for this worker, as opposed to
 /// [`WorkerPaths`](crate::WorkerPaths), which says where.

@@ -52,7 +52,9 @@ fn is_slash_boundary(b: u8) -> bool {
 /// a word boundary, and is not followed by `/`. A name the same file also uses
 /// as a directory (`/name/...`) is treated as a path everywhere in that file
 /// (e.g. the `/brain` mount in the `brain` skill), so it is left alone.
+/// `%UR_SKILL_HOOKS%/<name>/` hook includes do not count as such a use.
 fn rewrite_slash_refs(text: &str, namespace: &str, installed: &HashSet<&str>) -> String {
+    let path_probe = text.replace(&format!("{SKILL_HOOKS_PLACEHOLDER}/"), "");
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut copied = 0;
@@ -71,7 +73,7 @@ fn rewrite_slash_refs(text: &str, namespace: &str, installed: &HashSet<&str>) ->
         let is_ref = !token.is_empty()
             && bytes.get(end) != Some(&b'/')
             && installed.contains(token)
-            && !text.contains(&format!("/{token}/"));
+            && !path_probe.contains(&format!("/{token}/"));
         if is_ref {
             out.push_str(&text[copied..start]);
             out.push_str(namespace);
@@ -189,6 +191,14 @@ mod tests {
         assert_eq!(
             plugin(src),
             "mounted at `/brain`. Read `/brain/CLAUDE.md`. Run `/ur:brain:init`."
+        );
+    }
+
+    #[test]
+    fn plugin_hook_include_does_not_suppress_slash_ref() {
+        assert_eq!(
+            plugin("@%UR_SKILL_HOOKS%/implement/a.md\nThen run /implement ur-y."),
+            "@/home/worker/.claude/skill-hooks/implement/a.md\nThen run /ur:implement ur-y."
         );
     }
 

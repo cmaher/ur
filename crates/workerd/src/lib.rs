@@ -25,8 +25,7 @@ pub use exit_watcher::{AgentExitReason, AgentExitSink, AgentPane, ExitWatcherMan
 pub use grpc_service::{WorkerDaemonServiceImpl, WorkerIdentity};
 pub use init::{
     InitInstructionsManager, InitSettingsManager, InitSkillsManager, InstructionInputs,
-    ProjectInstruction, ProjectInstructionMode, StartupHooksManager, UR_WORKER_SKILLS_ENV,
-    WorkerInitInputs,
+    ProjectInstruction, ProjectInstructionMode, StartupHooksManager, WorkerInitInputs,
 };
 pub use init_git_hooks::InitGitHooksManager;
 pub use init_skill_hooks::InitSkillHooksManager;

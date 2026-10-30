@@ -589,9 +589,13 @@ fn socket_args(socket: Option<&str>) -> Vec<String> {
     }
 }
 
-/// Whether tmux stderr indicates the server is not running.
+/// Whether tmux stderr indicates the server is not running: no socket, or a
+/// stale one. Other connect failures (e.g. permission denied) are real errors.
 fn is_no_server(stderr: &str) -> bool {
-    stderr.contains("no server running") || stderr.contains("error connecting to")
+    stderr.contains("no server running")
+        || (stderr.contains("error connecting to")
+            && (stderr.contains("No such file or directory")
+                || stderr.contains("Connection refused")))
 }
 
 /// Whether tmux stderr indicates the target session does not exist.
@@ -862,6 +866,12 @@ mod tests {
             "error connecting to /tmp/tmux-501/ur (No such file or directory)"
         ));
         assert!(is_no_session("can't find session: ur-w1"));
+        assert!(is_no_server(
+            "error connecting to /tmp/tmux-501/ur (Connection refused)"
+        ));
+        assert!(!is_no_server(
+            "error connecting to /tmp/tmux-501/ur (Permission denied)"
+        ));
         assert!(!is_no_server("unknown command: bogus"));
         assert!(!is_no_session("unknown command: bogus"));
     }
