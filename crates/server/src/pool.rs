@@ -681,6 +681,57 @@ mod tests {
         assert!(err.contains("unknown project"), "unexpected error: {err}");
     }
 
+    /// A project added by a registry hot-reload (`ur project add` → ReloadProjects)
+    /// is immediately acquirable: `acquire_slot` gets past the project lookup and
+    /// reaches builderd instead of failing with "unknown project".
+    #[tokio::test]
+    async fn acquire_slot_sees_project_added_by_reload() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Reload re-reads hostexec config, so the registry needs a real
+        // discovery-backed manager rather than `HostExecConfigManager::empty()`.
+        let discovery =
+            crate::hostexec::LuaDiscoveryManager::new(crate::hostexec::LuaTransformManager::new());
+        let project_registry = ProjectRegistry::new(
+            HashMap::new(),
+            crate::hostexec::HostExecConfigManager::load(tmp.path(), &discovery).unwrap(),
+        );
+        let (worker_repo, _test_db) = test_worker_repo().await;
+        let channel =
+            tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
+        let mgr = RepoPoolManager::new(
+            &minimal_test_config(tmp.path()),
+            worker_repo,
+            project_registry,
+            BuilderPoolClient::new(channel),
+        );
+        let err = mgr.acquire_slot("hotreload").await.unwrap_err();
+        assert!(err.contains("unknown project"), "unexpected error: {err}");
+
+        let report = mgr
+            .project_registry
+            .reload_from_str(
+                r#"
+[projects.hotreload]
+repo = "git@github.com:test/hotreload.git"
+[projects.hotreload.container]
+image = "ur-worker"
+"#,
+                tmp.path(),
+            )
+            .unwrap();
+        assert_eq!(report.added, vec!["hotreload".to_owned()]);
+
+        let err = mgr.acquire_slot("hotreload").await.unwrap_err();
+        assert!(
+            !err.contains("unknown project"),
+            "reloaded project should be known to the pool: {err}"
+        );
+        assert!(
+            err.contains("failed"),
+            "acquire should reach builderd (dead in tests): {err}"
+        );
+    }
+
     #[tokio::test]
     async fn acquire_slot_unknown_project_errors_distinct() {
         let tmp = tempfile::tempdir().unwrap();

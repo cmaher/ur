@@ -196,4 +196,4 @@ concern.
 
 - Proxy constants: `DEFAULT_PROXY_HOSTNAME` ("ur-squid"), `SQUID_PORT` (3128); `hostname` replaces the old `port` field
 - `Config::squid_dir()` returns `$UR_CONFIG/squid/` — where SquidManager writes config files
-- Worker binaries (`workertools`, `workerd`, `ur-ping`) depend on this crate for env var constant names only
+- Worker binaries (`workertools`, `workerd`) depend on this crate for env var constant names only

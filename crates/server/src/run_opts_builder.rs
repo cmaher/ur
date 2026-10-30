@@ -179,7 +179,9 @@ impl RunOptsBuilder {
     /// - Pre-creates the host directory and chowns it to [`ur_config::WORKER_UID`] so the
     ///   non-root worker user can write to it (Docker would otherwise create the dir as root).
     ///   Errors from create/chown propagate as `Err(...)` — a missing or unwritable memory dir
-    ///   would cause the mount to silently fail, so we surface the error early.
+    ///   would cause the mount to silently fail, so we surface the error early. Like
+    ///   [`Self::add_brain_dir`], the create and chown target the *container-visible* path
+    ///   ([`convention_check_path`]), not the raw host path.
     /// - Pushes a single volume mount: host path → `~/{agent.home_subdir()}/{agent.memory_subdir()}`
     ///   (e.g. `/home/worker/.claude/projects/-workspace/memory` for Claude).
     /// - No env var is added; the agent discovers the dir by its own convention.
@@ -208,14 +210,24 @@ impl RunOptsBuilder {
             }
         };
 
-        std::fs::create_dir_all(&host_path)
-            .map_err(|e| format!("failed to create memory_dir '{}': {e}", host_path.display()))?;
+        let create_path = convention_check_path(&host_path, host_config_dir);
+        std::fs::create_dir_all(&create_path).map_err(|e| {
+            format!(
+                "failed to create memory_dir '{}': {e}",
+                create_path.display()
+            )
+        })?;
         std::os::unix::fs::chown(
-            &host_path,
+            &create_path,
             Some(ur_config::WORKER_UID),
             Some(ur_config::WORKER_UID),
         )
-        .map_err(|e| format!("failed to chown memory_dir '{}': {e}", host_path.display()))?;
+        .map_err(|e| {
+            format!(
+                "failed to chown memory_dir '{}': {e}",
+                create_path.display()
+            )
+        })?;
 
         let container_path = PathBuf::from(ur_config::WORKER_HOME)
             .join(agent.home_subdir())

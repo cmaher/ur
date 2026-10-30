@@ -8,7 +8,7 @@ Cargo workspace:
 - `crates/ur/` - Host CLI (TUI, process management, ticket management)
 - `crates/server/` - Server (`ur-server`, orchestration, gRPC server, container management)
 - `crates/ur_rpc/` - Shared RPC contract (protobuf/tonic service definitions)
-- `crates/workercmd/` - Worker binaries for containers (`ur-ping`, `git` proxy)
+- `crates/workercmd/` - Worker binaries for containers (`git` proxy)
 - `crates/ticket_db/` - Postgres ticket database (tickets, edges, activities, metadata; `ur_tickets` DB)
 - `crates/workflow_db/` - Postgres workflow database (workflow state, events, intents, comments, worker/slot lifecycle; `ur_workflow` DB)
 - `crates/db_events/` - Shared LISTEN/NOTIFY infrastructure (`PgEventPoller`, `UI_EVENTS_CHANNEL`, `UI_EVENTS_DDL`)
@@ -48,7 +48,7 @@ Cargo workspace:
 - **CLAUDE.md per crate and container**: Each crate (`crates/*/`) and container definition must have its own `CLAUDE.md` with crate/container-specific guidance.
 - **Tests**: NEVER `#[ignore]` or skip tests to make them pass. NEVER push with `--no-verify` to bypass failing tests. Always fix the underlying issue — including pre-existing failures encountered during a push.
 - **Error propagation**: NEVER allow operations to fail silently. All errors from server-side operations (gRPC handlers, pool management, git operations, container lifecycle) MUST propagate back to the CLI and be displayed to the user. If an async operation can fail, its error must be surfaced — not swallowed, logged-only, or ignored. When adding new server-side functionality, verify the full error path: server error → gRPC Status → CLI display.
-- **Acceptance tests**: When adding a new launch mode, flag, or code path (e.g., `-p` project pool launches vs `-w` workspace mounts), the acceptance test suite MUST cover that path. Do not ship a feature whose primary flow is untested in the e2e acceptance tests.
+- **Acceptance tests**: The e2e acceptance suite keeps exactly one path per launch mode (`-p` pool, `-w` workspace mount, manual, design, dispatch, local project) and per agent image (claude, codex, agy) — only what needs a real worker container, builderd, and the server together. A new launch mode or agent image MUST get its e2e path; a new in-container check MUST be folded into an existing anchor container rather than launching another one. Everything else (CLI validation, RPC/DB behavior, config parsing, authorization, Lua transforms) belongs in unit or server integration tests (`crates/server/tests/`). See `crates/acceptance/CLAUDE.md`.
 - **Cross-compile**: Use `cargo zigbuild` (requires `zig` + `cargo-zigbuild`) targeting `aarch64-unknown-linux-gnu` / `x86_64-unknown-linux-gnu` to match the debian bookworm container. Match the host arch like the container crate does (`std::env::consts::ARCH`).
 - **Container tests**: Docker backend tested locally on macOS and in CI (ubuntu-latest).
 - **String-based enum constants**: When a domain concept is represented as strings in proto/gRPC but has a fixed set of values, use defined constants or Rust enums instead of string literals. For example, use `ur_rpc::lifecycle::*` constants (e.g., `lifecycle::OPEN`, `lifecycle::IMPLEMENTING`) for lifecycle statuses, and `ticket_db::model::LifecycleStatus` or `workflow_db::model::*` for server-side code. Apply this pattern to any new string-based enums.

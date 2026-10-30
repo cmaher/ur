@@ -189,7 +189,8 @@ fn parse_requested_agent(agent_type: &str) -> Result<Option<ur_config::AgentType
 /// Resolve the image to launch for `agent`: `requested_image_id` (from
 /// `ur --image`) wins if set, else `project_image` (the project's configured
 /// `container.image`, alias or full reference, as written), else
-/// `agent.fallback_image()`.
+/// `agent.fallback_image()`. Aliases resolve against `image_tag`
+/// (`$UR_IMAGE_TAG`, see `ur_config::worker_image_tag`).
 ///
 /// This is the single decision point that resolves an image alias against an
 /// agent — both the project-configured image and the CLI override are
@@ -199,6 +200,7 @@ fn resolve_worker_image(
     agent: ur_config::AgentType,
     requested_image_id: &str,
     project_image: &str,
+    image_tag: &str,
 ) -> Result<String, CoreError> {
     let raw = if !requested_image_id.is_empty() {
         Some(requested_image_id)
@@ -209,11 +211,11 @@ fn resolve_worker_image(
     };
     match raw {
         Some(raw) => agent
-            .resolve_image(raw)
+            .resolve_image(raw, image_tag)
             .map_err(|e| CoreError::InvalidImage {
                 reason: e.to_string(),
             }),
-        None => Ok(agent.fallback_image()),
+        None => Ok(agent.fallback_image(image_tag)),
     }
 }
 
@@ -271,6 +273,8 @@ pub struct LaunchManager {
     /// the server container) — used to check whether the resolved agent has
     /// seeded credentials before launching a container for it.
     pub config_dir: PathBuf,
+    /// Tag image aliases resolve against (`ur_config::worker_image_tag`).
+    pub worker_image_tag: String,
 }
 
 /// Why a launch against a local project cannot proceed, or `None` if it can.
@@ -299,6 +303,28 @@ fn local_launch_rejection_reason(
         );
     }
     None
+}
+
+/// Pure core of `LaunchManager::resolve_effective_project_key`: the explicit
+/// `req.project_key`, else the `worker_id` prefix when it names a configured
+/// project, else `""` (no project).
+fn effective_project_key(req: &WorkerLaunchRequest, project_registry: &ProjectRegistry) -> String {
+    if !req.project_key.is_empty() {
+        return req.project_key.clone();
+    }
+    let Some(prefix) = req.worker_id.split('-').next() else {
+        return String::new();
+    };
+    if !prefix.is_empty() && project_registry.get(prefix).is_some() {
+        info!(
+            worker_id = req.worker_id,
+            extracted_project_key = prefix,
+            "extracted project key from worker_id"
+        );
+        prefix.to_string()
+    } else {
+        String::new()
+    }
 }
 
 #[derive(Default)]
@@ -434,22 +460,7 @@ impl LaunchManager {
     /// extract the project prefix from `req.worker_id` (e.g. `"ur"` from
     /// `"ur-abc12"`) and verify it against the registry.
     fn resolve_effective_project_key(&self, req: &WorkerLaunchRequest) -> String {
-        if !req.project_key.is_empty() {
-            return req.project_key.clone();
-        }
-        let Some(prefix) = req.worker_id.split('-').next() else {
-            return String::new();
-        };
-        if !prefix.is_empty() && self.project_registry.get(prefix).is_some() {
-            info!(
-                worker_id = req.worker_id,
-                extracted_project_key = prefix,
-                "extracted project key from worker_id"
-            );
-            prefix.to_string()
-        } else {
-            String::new()
-        }
+        effective_project_key(req, &self.project_registry)
     }
 
     /// Resolve workspace, slot, worker ID, skills, and strategy for a launch request.
@@ -679,7 +690,12 @@ impl LaunchManager {
         let (skills, extra_skill_mounts) =
             self.worker_manager
                 .merge_skills(strategy, mode_skills, &fields.project_skills);
-        let image_id = resolve_worker_image(agent, &req.image_id, &fields.resolved_image)?;
+        let image_id = resolve_worker_image(
+            agent,
+            &req.image_id,
+            &fields.resolved_image,
+            &self.worker_image_tag,
+        )?;
         let cpus = if req.cpus == 0 {
             ur_config::DEFAULT_WORKER_CPUS
         } else {
@@ -1874,15 +1890,15 @@ mod tests {
     #[test]
     fn resolve_worker_image_neither_set_uses_fallback() {
         assert_eq!(
-            resolve_worker_image(ur_config::AgentType::Claude, "", "").unwrap(),
-            ur_config::AgentType::Claude.fallback_image()
+            resolve_worker_image(ur_config::AgentType::Claude, "", "", "latest").unwrap(),
+            ur_config::AgentType::Claude.fallback_image("latest")
         );
         assert_eq!(
-            resolve_worker_image(ur_config::AgentType::Codex, "", "").unwrap(),
+            resolve_worker_image(ur_config::AgentType::Codex, "", "", "latest").unwrap(),
             "ur-worker-codex:latest"
         );
         assert_eq!(
-            resolve_worker_image(ur_config::AgentType::Agy, "", "").unwrap(),
+            resolve_worker_image(ur_config::AgentType::Agy, "", "", "latest").unwrap(),
             "ur-worker-agy:latest"
         );
     }
@@ -1890,16 +1906,30 @@ mod tests {
     #[test]
     fn resolve_worker_image_project_image_resolves_per_agent() {
         assert_eq!(
-            resolve_worker_image(ur_config::AgentType::Claude, "", "ur-worker").unwrap(),
+            resolve_worker_image(ur_config::AgentType::Claude, "", "ur-worker", "latest").unwrap(),
             "ur-worker-claude:latest"
         );
         assert_eq!(
-            resolve_worker_image(ur_config::AgentType::Codex, "", "ur-worker").unwrap(),
+            resolve_worker_image(ur_config::AgentType::Codex, "", "ur-worker", "latest").unwrap(),
             "ur-worker-codex:latest"
         );
         assert_eq!(
-            resolve_worker_image(ur_config::AgentType::Agy, "", "ur-worker").unwrap(),
+            resolve_worker_image(ur_config::AgentType::Agy, "", "ur-worker", "latest").unwrap(),
             "ur-worker-agy:latest"
+        );
+    }
+
+    /// Aliases (project-configured and the fallback) resolve against the
+    /// configured image tag, so a CI-tagged stack launches CI-tagged workers.
+    #[test]
+    fn resolve_worker_image_aliases_use_image_tag() {
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Claude, "", "", "ci-abc12").unwrap(),
+            "ur-worker-claude:ci-abc12"
+        );
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Codex, "", "ur-worker", "ci-abc12").unwrap(),
+            "ur-worker-codex:ci-abc12"
         );
     }
 
@@ -1911,7 +1941,8 @@ mod tests {
             resolve_worker_image(
                 ur_config::AgentType::Codex,
                 "registry.example/custom-codex:v1",
-                "ur-worker"
+                "ur-worker",
+                "latest"
             )
             .unwrap(),
             "registry.example/custom-codex:v1"
@@ -1924,7 +1955,8 @@ mod tests {
             resolve_worker_image(
                 ur_config::AgentType::Codex,
                 "myregistry/custom-image:v1",
-                ""
+                "",
+                "ci-abc12"
             )
             .unwrap(),
             "myregistry/custom-image:v1"
@@ -1933,13 +1965,98 @@ mod tests {
 
     #[test]
     fn resolve_worker_image_unknown_alias_is_invalid_image() {
-        let err = resolve_worker_image(ur_config::AgentType::Codex, "", "bogus")
+        let err = resolve_worker_image(ur_config::AgentType::Codex, "", "bogus", "latest")
             .expect_err("should reject");
         assert!(matches!(err, CoreError::InvalidImage { .. }), "{err:?}");
         let status: Status = err.into();
         assert_eq!(status.code(), Code::InvalidArgument);
         assert!(status.message().contains("bogus"), "{}", status.message());
         assert!(status.message().contains("codex"), "{}", status.message());
+    }
+
+    // ── effective project key ──────────────────────────────────────────
+
+    fn registry_with_project(key: &str) -> ProjectRegistry {
+        let config = ur_config::Config::from_toml_str(
+            &format!(
+                "[projects.{key}]\nrepo = \"git@github.com:test/{key}.git\"\n\
+                 [projects.{key}.container]\nimage = \"ur-worker\"\n"
+            ),
+            std::path::Path::new("/tmp/ur-test-config"),
+        )
+        .unwrap();
+        ProjectRegistry::new(
+            config.projects,
+            crate::hostexec::HostExecConfigManager::empty(),
+        )
+    }
+
+    fn launch_request(worker_id: &str, project_key: &str) -> WorkerLaunchRequest {
+        WorkerLaunchRequest {
+            worker_id: worker_id.into(),
+            project_key: project_key.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn effective_project_key_derives_configured_prefix_from_worker_id() {
+        let registry = registry_with_project("memproj");
+        assert_eq!(
+            effective_project_key(&launch_request("memproj-ws-test", ""), &registry),
+            "memproj"
+        );
+    }
+
+    #[test]
+    fn effective_project_key_unconfigured_prefix_is_no_project() {
+        let registry = registry_with_project("memproj");
+        assert_eq!(
+            effective_project_key(&launch_request("nomem-ws-test", ""), &registry),
+            ""
+        );
+        assert_eq!(
+            effective_project_key(&launch_request("", ""), &registry),
+            ""
+        );
+    }
+
+    #[test]
+    fn effective_project_key_explicit_key_wins_over_prefix() {
+        let registry = registry_with_project("memproj");
+        assert_eq!(
+            effective_project_key(&launch_request("memproj-ws-test", "other"), &registry),
+            "other"
+        );
+    }
+
+    // ── manual process id ───────────────────────────────────────────────
+
+    #[test]
+    fn manual_process_id_without_project_uses_workspace_basename() {
+        let ws = PathBuf::from("/Users/me/myrepo");
+        assert_eq!(
+            LaunchManager::generate_manual_process_id("", Some(&ws)),
+            "myrepo-man-0"
+        );
+    }
+
+    #[test]
+    fn manual_process_id_for_pool_slot_uses_slot_name() {
+        let slot = PathBuf::from("/ws/pool/proj/3");
+        assert_eq!(
+            LaunchManager::generate_manual_process_id("proj", Some(&slot)),
+            "proj-man-3"
+        );
+    }
+
+    #[test]
+    fn manual_process_id_for_project_with_workspace_uses_dir_basename() {
+        let dir = PathBuf::from("/Users/me/key");
+        assert_eq!(
+            LaunchManager::generate_manual_process_id("key", Some(&dir)),
+            "key-man-key"
+        );
     }
 
     // ── credential seeding check before launch ──────────────────────────

@@ -1773,6 +1773,218 @@ mod tests {
         assert!(workflow.is_none());
     }
 
+    /// Create an open ticket of `type_` in project `test`, optionally under `parent_id`.
+    async fn seed_ticket(
+        handler: &TicketServiceHandler,
+        id: &str,
+        type_: &str,
+        parent_id: Option<&str>,
+    ) {
+        handler
+            .ticket_repo
+            .create_ticket(&NewTicket {
+                id: Some(id.into()),
+                type_: type_.into(),
+                priority: 1,
+                parent_id: parent_id.map(str::to_owned),
+                title: format!("Ticket {id}"),
+                project: "test".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+
+    /// Call `create_workflow` for `ticket_id` in the implementing state.
+    async fn create_implementing_workflow(
+        handler: &TicketServiceHandler,
+        ticket_id: &str,
+    ) -> Result<Response<CreateWorkflowResponse>, Status> {
+        TicketService::create_workflow(
+            handler,
+            Request::new(CreateWorkflowRequest {
+                ticket_id: ticket_id.into(),
+                status: LifecycleStatus::Implementing.as_str().into(),
+            }),
+        )
+        .await
+    }
+
+    /// Ticket IDs of the workflows `list_workflows` returns with no filters.
+    async fn listed_workflow_ticket_ids(handler: &TicketServiceHandler) -> Vec<String> {
+        TicketService::list_workflows(handler, Request::new(ListWorkflowsRequest::default()))
+            .await
+            .unwrap()
+            .into_inner()
+            .workflows
+            .into_iter()
+            .map(|wf| wf.ticket_id)
+            .collect()
+    }
+
+    /// A second dispatch of a ticket with an active workflow is refused.
+    #[tokio::test]
+    async fn create_workflow_rejects_active_duplicate() {
+        let (_test_db, mut handler) = setup_handler().await;
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        handler.transition_tx = Some(tx);
+        seed_ticket(&handler, "t-dup", "code", None).await;
+
+        create_implementing_workflow(&handler, "t-dup")
+            .await
+            .expect("first dispatch should create the workflow");
+        let err = create_implementing_workflow(&handler, "t-dup")
+            .await
+            .expect_err("second dispatch of the same ticket must fail");
+        assert!(err.message().contains("t-dup"), "{}", err.message());
+        assert!(
+            err.message().contains("active workflow"),
+            "{}",
+            err.message()
+        );
+    }
+
+    /// Closing a dispatched ticket keeps its workflow (so push/PR can still run),
+    /// and a closed ticket cannot be dispatched again.
+    #[tokio::test]
+    async fn closing_ticket_preserves_workflow_and_blocks_redispatch() {
+        let (_test_db, mut handler) = setup_handler().await;
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        handler.transition_tx = Some(tx);
+        seed_ticket(&handler, "t-close", "code", None).await;
+        create_implementing_workflow(&handler, "t-close")
+            .await
+            .unwrap();
+
+        TicketService::update_ticket(
+            &handler,
+            Request::new(UpdateTicketRequest {
+                id: "t-close".into(),
+                status: Some("closed".into()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        let ticket = handler
+            .ticket_repo
+            .get_ticket("t-close")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ticket.status, "closed");
+
+        let workflow = TicketService::get_workflow(
+            &handler,
+            Request::new(GetWorkflowRequest {
+                ticket_id: "t-close".into(),
+            }),
+        )
+        .await
+        .expect("workflow must survive the ticket closing")
+        .into_inner()
+        .workflow
+        .unwrap();
+        assert_eq!(workflow.ticket_id, "t-close");
+
+        let err = create_implementing_workflow(&handler, "t-close")
+            .await
+            .expect_err("dispatching a closed ticket must fail");
+        assert!(err.message().contains("closed"), "{}", err.message());
+    }
+
+    /// A cancelled workflow drops out of the active list but is still shown,
+    /// with status `cancelled`.
+    #[tokio::test]
+    async fn cancelled_workflow_leaves_list_but_remains_showable() {
+        let (_test_db, mut handler) = setup_handler().await;
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        handler.transition_tx = Some(tx);
+        seed_ticket(&handler, "t-flow", "code", None).await;
+        create_implementing_workflow(&handler, "t-flow")
+            .await
+            .unwrap();
+        assert!(
+            listed_workflow_ticket_ids(&handler)
+                .await
+                .contains(&"t-flow".to_owned())
+        );
+
+        TicketService::cancel_workflow(
+            &handler,
+            Request::new(CancelWorkflowRequest {
+                ticket_id: "t-flow".into(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !listed_workflow_ticket_ids(&handler)
+                .await
+                .contains(&"t-flow".to_owned())
+        );
+        let workflow = TicketService::get_workflow(
+            &handler,
+            Request::new(GetWorkflowRequest {
+                ticket_id: "t-flow".into(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner()
+        .workflow
+        .unwrap();
+        assert_eq!(workflow.status, LifecycleStatus::Cancelled.as_str());
+    }
+
+    /// `list_tickets` with a type filter returns reminders and nothing else.
+    #[tokio::test]
+    async fn list_tickets_filters_by_reminder_type() {
+        let (_test_db, handler) = setup_handler().await;
+        seed_ticket(&handler, "t-remind", "reminder", None).await;
+        seed_ticket(&handler, "t-code", "code", None).await;
+
+        let tickets = TicketService::list_tickets(
+            &handler,
+            Request::new(ListTicketsRequest {
+                ticket_type: Some("reminder".into()),
+                project: Some("test".into()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner()
+        .tickets;
+        let ids: Vec<&str> = tickets.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["t-remind"]);
+    }
+
+    /// A reminder child is never dispatchable; its code sibling is.
+    #[tokio::test]
+    async fn dispatchable_tickets_excludes_reminder_child() {
+        let (_test_db, handler) = setup_handler().await;
+        seed_ticket(&handler, "t-parent", "code", None).await;
+        seed_ticket(&handler, "t-child-code", "code", Some("t-parent")).await;
+        seed_ticket(&handler, "t-child-remind", "reminder", Some("t-parent")).await;
+
+        let tickets = TicketService::dispatchable_tickets(
+            &handler,
+            Request::new(DispatchableTicketsRequest {
+                epic_id: "t-parent".into(),
+                project: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner()
+        .tickets;
+        let ids: Vec<&str> = tickets.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["t-child-code"]);
+    }
+
     /// Create a ticket carrying `ref = ref_value`, for the ref-fallback tests.
     async fn seed_ticket_with_ref(handler: &TicketServiceHandler, id: &str, ref_value: &str) {
         handler

@@ -156,7 +156,7 @@ containers/worker-claude/Dockerfile (ur-worker-claude:latest)
 ├── FROM ur-worker-base:latest
 ├── USER worker → install-claude.sh (binary at /home/worker/.local/bin/claude)
 ├── USER root → cleanup
-├── COPY entrypoint.sh, worker binaries (ur-ping, git, gh, tk)
+├── COPY entrypoint.sh, worker binaries (workertools, workerd)
 ├── COPY claude.json → /home/worker/.claude.json (skip onboarding/login prompts)
 ├── COPY claude-settings.json → /home/worker/.claude/potential-settings.json
 │   └── permissions.defaultMode: "auto"
@@ -180,7 +180,7 @@ The Claude CLI install moved from the base image into the `worker-claude` layer 
 
 | Variable | Set by | Consumed by | Purpose |
 |---|---|---|---|
-| `UR_SERVER_ADDR` | WorkerManager (server) | worker binaries (git, gh, ur-ping) | gRPC endpoint for proxied commands |
+| `UR_SERVER_ADDR` | WorkerManager (server) | worker binaries (git, gh) | gRPC endpoint for proxied commands |
 | `UR_AGENT_TYPE` | WorkerManager (server) | workerd (`AgentType::from_env()`) | Which agent this worker runs — resolves all agent-specific paths and the spawn command |
 | `HTTP_PROXY` / `HTTPS_PROXY` | WorkerManager (server) | Claude Code, curl, etc. | Squid forward proxy |
 | `GH_TOKEN` / `GITHUB_TOKEN` | docker-compose.yml | gh CLI (on server) | GitHub auth for server-side git/gh |

@@ -14,7 +14,7 @@ case "$ARCH" in
 esac
 
 echo "Cross-compiling worker binaries for $TARGET"
-cargo zigbuild --release --target "$TARGET" -p ur-ping -p workertools -p workerd
+cargo zigbuild --release --target "$TARGET" -p workertools -p workerd
 
 # Every agent's base image build context needs its own copy of these
 # binaries (each is an independent Docker build context).
@@ -23,7 +23,6 @@ for entry in "${AGENT_IMAGES[@]}"; do
     [ "$stage_binaries" = "true" ] || continue
     DEST="containers/$dir/bin"
     mkdir -p "$DEST"
-    cp "target/$TARGET/release/ur-ping" "$DEST/ur-ping"
     cp "target/$TARGET/release/workertools" "$DEST/workertools"
     cp "target/$TARGET/release/workerd" "$DEST/workerd"
     echo "Staged worker binaries in $DEST/"

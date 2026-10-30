@@ -12,8 +12,6 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Copy pre-built worker command binaries into the image
-COPY bin/ur-ping /usr/local/bin/ur-ping
-RUN chmod +x /usr/local/bin/ur-ping
 COPY bin/workertools /usr/local/bin/workertools
 RUN chmod +x /usr/local/bin/workertools
 

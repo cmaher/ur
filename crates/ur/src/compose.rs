@@ -498,6 +498,15 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
         "      - UR_HOST_LOGS_DIR=${{UR_LOGS_DIR:-${{HOME}}/.ur/logs}}"
     )
     .unwrap();
+    // Image aliases resolve against this tag inside the server, so a CI-tagged
+    // stack launches CI-tagged workers (`ur_config::worker_image_tag`).
+    writeln!(
+        out,
+        "      - {}=${{UR_IMAGE_TAG:-{}}}",
+        ur_config::UR_IMAGE_TAG_ENV,
+        ur_config::DEFAULT_IMAGE_TAG
+    )
+    .unwrap();
     writeln!(
         out,
         "      - {}={}",
@@ -864,6 +873,9 @@ mod tests {
         // Verify logs volume mount and env var
         assert!(generated.contains("${UR_LOGS_DIR:-~/.ur/logs}:/logs"));
         assert!(generated.contains("UR_HOST_LOGS_DIR="));
+
+        // Image aliases resolve against the forwarded image tag
+        assert!(generated.contains("- UR_IMAGE_TAG=${UR_IMAGE_TAG:-latest}"));
 
         // Verify squid volume and tmpfs (prevents pidfile crash-loop on restart)
         assert!(generated.contains("allowlist.txt:/etc/squid/allowlist.txt:ro"));

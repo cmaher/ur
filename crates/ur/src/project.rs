@@ -85,31 +85,34 @@ pub fn list(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
         })
         .collect();
 
-    output.print_items(&items, |items| {
-        let mut out = String::new();
-        for proj in items {
-            // Local projects have no repo and no pool — print what applies to them
-            // rather than padding the row with empty or zero columns.
-            match (&proj.repo, proj.pool_limit, proj.slots_in_use) {
-                (Some(repo), Some(limit), Some(slots)) => out.push_str(&format!(
-                    "{key}  repo={repo}  name={name}  pool_limit={limit}  slots={slots}\n",
-                    key = proj.key,
-                    name = proj.name,
-                )),
-                _ => out.push_str(&format!(
-                    "{key}  local  name={name}\n",
-                    key = proj.key,
-                    name = proj.name,
-                )),
-            }
-        }
-        if out.ends_with('\n') {
-            out.pop();
-        }
-        out
-    });
+    output.print_items(&items, render_project_rows);
 
     Ok(())
+}
+
+/// Text rows for `ur project list`, one per project.
+fn render_project_rows(items: &[ProjectInfo]) -> String {
+    let mut out = String::new();
+    for proj in items {
+        // Local projects have no repo and no pool — print what applies to them
+        // rather than padding the row with empty or zero columns.
+        match (&proj.repo, proj.pool_limit, proj.slots_in_use) {
+            (Some(repo), Some(limit), Some(slots)) => out.push_str(&format!(
+                "{key}  repo={repo}  name={name}  pool_limit={limit}  slots={slots}\n",
+                key = proj.key,
+                name = proj.name,
+            )),
+            _ => out.push_str(&format!(
+                "{key}  local  name={name}\n",
+                key = proj.key,
+                name = proj.name,
+            )),
+        }
+    }
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    out
 }
 
 /// Count the number of existing pool slot directories for a project.
@@ -828,6 +831,33 @@ image = "ur-worker"
         );
         // Should not error and should not claim a repo or pool.
         list(&config, &text_output()).unwrap();
+    }
+
+    #[test]
+    fn project_rows_mark_local_projects_without_repo_or_pool() {
+        let items = vec![
+            ProjectInfo {
+                key: "localproj".into(),
+                repo: None,
+                name: "Local".into(),
+                pool_limit: None,
+                slots_in_use: None,
+                local: true,
+            },
+            ProjectInfo {
+                key: "poolproj".into(),
+                repo: Some("git@github.com:test/poolproj.git".into()),
+                name: "Pool".into(),
+                pool_limit: Some(10),
+                slots_in_use: Some(2),
+                local: false,
+            },
+        ];
+        assert_eq!(
+            render_project_rows(&items),
+            "localproj  local  name=Local\n\
+             poolproj  repo=git@github.com:test/poolproj.git  name=Pool  pool_limit=10  slots=2"
+        );
     }
 
     #[test]

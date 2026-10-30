@@ -403,6 +403,7 @@ fn dummy_launch_manager(
         network_config: config.network.clone(),
         workspace_brain_dir: None,
         config_dir: config.config_dir.clone(),
+        worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
     }
 }
 

@@ -2749,6 +2749,68 @@ agent = "claude"
         assert_eq!(agent, ur_config::AgentType::Agy);
     }
 
+    /// A complete, realistic `ur.toml` (server/network/db tables, custom modes,
+    /// `[worker_models]`, projects, `[skills]`) with a top-level `agent = "codex"`
+    /// resolves every launch with no `--agent` flag and no mode `agent` field to
+    /// codex — exactly what the server's `load_worker_modes` feeds this parser.
+    #[test]
+    fn top_level_agent_default_in_full_config_resolves_every_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("skills/test-skill")).unwrap();
+        let toml = r#"
+server_port = 19870
+workspace = "/tmp/ur-test/workspace"
+compose_file = "/tmp/ur-test/docker-compose.yml"
+workspace_brain_dir = "/tmp/ur-test/brain"
+agent = "codex"
+
+[proxy]
+hostname = "ur-test-squid"
+
+[network]
+name = "ur-test"
+worker_name = "ur-test-workers"
+server_hostname = "ur-test-server"
+worker_prefix = "ur-test-worker-"
+
+[ticket_db]
+host = "ur-test-postgres"
+
+[workflow_db]
+host = "ur-test-postgres"
+
+[worker_modes.custommodel]
+base = "design"
+skills = ["implement"]
+model = "my-custom-model"
+
+[worker_models.claude]
+manual = { model = "sonnet" }
+
+[projects.agentdefaultproj]
+repo = "git@github.com:test/agentdefaultproj.git"
+[projects.agentdefaultproj.container]
+image = "ur-worker"
+
+[skills.code]
+test-skill = "/tmp/ur-test/skills/test-skill"
+"#
+        .replace("/tmp/ur-test", &tmp.path().display().to_string());
+        ur_config::Config::from_toml_str(&toml, tmp.path())
+            .expect("fixture must be a valid ur.toml");
+        let cfg = WorkerModesConfig::from_toml(&toml).unwrap();
+
+        for mode in ["code", "design", "manual", "custommodel"] {
+            let ResolvedMode { agent, .. } = cfg.resolve_mode(mode, None).unwrap();
+            assert_eq!(agent, ur_config::AgentType::Codex, "mode {mode}");
+        }
+        // `[worker_models.claude]` must not leak into the codex default.
+        let ResolvedMode { model, .. } = cfg.resolve_mode("manual", None).unwrap();
+        assert_ne!(model, "sonnet");
+        let ResolvedMode { model, .. } = cfg.resolve_mode("custommodel", None).unwrap();
+        assert_eq!(model, "my-custom-model");
+    }
+
     /// An omitted top-level `agent` key still defaults every built-in mode to claude.
     #[test]
     fn top_level_agent_default_omitted_is_claude() {

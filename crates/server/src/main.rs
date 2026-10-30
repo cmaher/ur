@@ -300,6 +300,7 @@ async fn init_and_serve(
         network_config: cfg.network.clone(),
         workspace_brain_dir: cfg.workspace_brain_dir.clone(),
         config_dir: cfg.config_dir.clone(),
+        worker_image_tag: ur_config::worker_image_tag(),
     };
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {

@@ -1084,6 +1084,23 @@ pub fn default_image_alias() -> &'static str {
     IMAGE_ALIASES[0]
 }
 
+/// Environment variable: tag of the locally built images (`ur-worker-<agent>`,
+/// `ur-server`, `ur-squid`). Image aliases resolve against it, so a stack started
+/// with `UR_IMAGE_TAG=ci-x` launches `ur-worker-claude:ci-x`, not `:latest`.
+/// `ur start` forwards it into the server container's environment.
+pub const UR_IMAGE_TAG_ENV: &str = "UR_IMAGE_TAG";
+
+/// Image tag used when [`UR_IMAGE_TAG_ENV`] is unset.
+pub const DEFAULT_IMAGE_TAG: &str = "latest";
+
+/// Tag that image aliases resolve against: `$UR_IMAGE_TAG`, else [`DEFAULT_IMAGE_TAG`].
+pub fn worker_image_tag() -> String {
+    std::env::var(UR_IMAGE_TAG_ENV)
+        .ok()
+        .filter(|tag| !tag.is_empty())
+        .unwrap_or_else(|| DEFAULT_IMAGE_TAG.to_owned())
+}
+
 /// Validate that the given string is a known or legacy image alias, or a full image reference.
 /// Returns `Ok(())` if valid, or an error describing the valid aliases.
 ///
@@ -4081,7 +4098,7 @@ image = "ur-worker-rust"
         let config = Config::load_from(tmp.path()).unwrap();
         assert_eq!(
             AgentType::Claude
-                .resolve_image(&config.projects["ur"].container.image)
+                .resolve_image(&config.projects["ur"].container.image, "latest")
                 .unwrap(),
             "ur-worker-claude:latest"
         );
@@ -4107,24 +4124,24 @@ image = "ur-worker"
         let cfg = Config::load_from(tmp.path()).unwrap();
         let image = &cfg.projects["ur"].container.image;
         assert_eq!(
-            AgentType::Claude.resolve_image(image).unwrap(),
+            AgentType::Claude.resolve_image(image, "latest").unwrap(),
             "ur-worker-claude:latest"
         );
         assert_eq!(
-            AgentType::Codex.resolve_image(image).unwrap(),
+            AgentType::Codex.resolve_image(image, "latest").unwrap(),
             "ur-worker-codex:latest"
         );
     }
 
-    /// Table-driven: every alias resolves to `<alias>-<agent>:latest` for
+    /// Table-driven: every alias resolves to `<alias>-<agent>:<tag>` for
     /// every agent.
     #[test]
     fn resolve_image_per_alias_and_agent() {
         for &alias in IMAGE_ALIASES {
             for agent in AgentType::ALL {
                 assert_eq!(
-                    agent.resolve_image(alias).unwrap(),
-                    format!("{alias}-{}:latest", agent.name())
+                    agent.resolve_image(alias, "ci-abc12").unwrap(),
+                    format!("{alias}-{}:ci-abc12", agent.name())
                 );
             }
         }
@@ -4135,7 +4152,7 @@ image = "ur-worker"
         for agent in AgentType::ALL {
             assert_eq!(
                 agent
-                    .resolve_image("myregistry/custom-image:v1.2.3")
+                    .resolve_image("myregistry/custom-image:v1.2.3", "ci-abc12")
                     .unwrap(),
                 "myregistry/custom-image:v1.2.3"
             );
@@ -4144,7 +4161,9 @@ image = "ur-worker"
 
     #[test]
     fn resolve_image_unknown_alias_names_agent_and_valid_aliases() {
-        let err = AgentType::Codex.resolve_image("bogus").unwrap_err();
+        let err = AgentType::Codex
+            .resolve_image("bogus", "latest")
+            .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("bogus"), "{msg}");
         assert!(msg.contains("codex"), "{msg}");
@@ -4155,10 +4174,18 @@ image = "ur-worker"
     #[test]
     fn fallback_image_is_base_variant_per_agent() {
         assert_eq!(
-            AgentType::Claude.fallback_image(),
+            AgentType::Claude.fallback_image("latest"),
             "ur-worker-claude:latest"
         );
-        assert_eq!(AgentType::Codex.fallback_image(), "ur-worker-codex:latest");
+        assert_eq!(
+            AgentType::Codex.fallback_image("ci-abc12"),
+            "ur-worker-codex:ci-abc12"
+        );
+    }
+
+    #[test]
+    fn default_image_alias_is_ur_worker() {
+        assert_eq!(default_image_alias(), "ur-worker");
     }
 
     #[test]

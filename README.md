@@ -152,7 +152,7 @@ crates/
   ur/        — Host CLI (TUI, process management, ticket management)
   server/    — Server (orchestration, gRPC server, container management)
   ur_rpc/    — Shared RPC contract (protobuf/tonic service definitions)
-  workercmd/ — Worker binaries for containers (ur-ping, git proxy)
+  workercmd/ — Worker binaries for containers (git proxy)
 docs/
   design.md  — Architecture and security model
   codeflows/ — Detailed flow diagrams for cross-cutting concerns

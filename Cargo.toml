@@ -18,7 +18,6 @@ members = [
     "crates/urui",
     "crates/server",
     "crates/tmux",
-    "crates/ur-ping",
     "crates/workerd",
     "crates/workertools",
     "tools/tk-import",

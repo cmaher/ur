@@ -24,10 +24,9 @@ RUN chmod +x /entrypoint.sh
 COPY open-auth-link.sh /usr/local/bin/xdg-open
 RUN chmod +x /usr/local/bin/xdg-open
 
-COPY bin/ur-ping /usr/local/bin/ur-ping
 COPY bin/workertools /usr/local/bin/workertools
 COPY bin/workerd /usr/local/bin/workerd
-RUN chmod +x /usr/local/bin/ur-ping /usr/local/bin/workertools /usr/local/bin/workerd
+RUN chmod +x /usr/local/bin/workertools /usr/local/bin/workerd
 
 COPY potential-settings.json /home/worker/.gemini/antigravity-cli/potential-settings.json
 COPY onboarding.json /home/worker/.gemini/antigravity-cli/cache/onboarding.json

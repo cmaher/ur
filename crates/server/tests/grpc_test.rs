@@ -162,6 +162,7 @@ async fn make_grpc_handler(
         network_config: network_config.clone(),
         workspace_brain_dir: None,
         config_dir: workspace.clone(),
+        worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
     };
     let handler = ur_server::grpc::CoreServiceHandler {
         launch_manager,
@@ -289,6 +290,7 @@ async fn make_worker_handler() -> (
         network_config,
         workspace_brain_dir: None,
         config_dir: workspace.clone(),
+        worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
     };
 
     let handler = ur_server::grpc::WorkerCoreServiceHandler {

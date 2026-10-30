@@ -163,18 +163,19 @@ impl AgentType {
     /// Resolve a config `container.image` value for this agent.
     ///
     /// A known alias (one of [`crate::IMAGE_ALIASES`]) becomes
-    /// `<alias>-<agent-name>:latest`. The retired `ur-worker-rust` alias maps to
-    /// the base per-agent image for compatibility. A value containing `:` or `/`
-    /// is a full image reference and is returned unchanged.
-    pub fn resolve_image(&self, raw: &str) -> Result<String, UnknownAliasError> {
+    /// `<alias>-<agent-name>:<tag>`, where `tag` is the locally built image tag
+    /// (see [`crate::worker_image_tag`]). The retired `ur-worker-rust` alias maps
+    /// to the base per-agent image for compatibility. A value containing `:` or
+    /// `/` is a full image reference and is returned unchanged.
+    pub fn resolve_image(&self, raw: &str, tag: &str) -> Result<String, UnknownAliasError> {
         if raw.contains(':') || raw.contains('/') {
             return Ok(raw.to_string());
         }
         if raw == crate::LEGACY_RUST_IMAGE_ALIAS {
-            return Ok(format!("ur-worker-{}:latest", self.name()));
+            return Ok(format!("ur-worker-{}:{tag}", self.name()));
         }
         if crate::IMAGE_ALIASES.contains(&raw) {
-            return Ok(format!("{raw}-{}:latest", self.name()));
+            return Ok(format!("{raw}-{}:{tag}", self.name()));
         }
         Err(UnknownAliasError {
             raw: raw.to_string(),
@@ -185,8 +186,8 @@ impl AgentType {
     /// Image used when a project configures none.
     ///
     /// Toolchain-specific behavior is supplied by per-project startup hooks.
-    pub fn fallback_image(&self) -> String {
-        self.resolve_image("ur-worker")
+    pub fn fallback_image(&self, tag: &str) -> String {
+        self.resolve_image(crate::default_image_alias(), tag)
             .expect("'ur-worker' is always a valid alias")
     }
 
@@ -564,13 +565,16 @@ mod tests {
     #[test]
     fn image_resolution_per_agent() {
         assert_eq!(
-            AgentType::Agy.resolve_image("ur-worker").unwrap(),
+            AgentType::Agy.resolve_image("ur-worker", "latest").unwrap(),
             "ur-worker-agy:latest"
         );
-        assert_eq!(AgentType::Agy.fallback_image(), "ur-worker-agy:latest");
+        assert_eq!(
+            AgentType::Agy.fallback_image("ci-abc12"),
+            "ur-worker-agy:ci-abc12"
+        );
         assert_eq!(
             AgentType::Agy
-                .resolve_image("registry.example/worker:v1")
+                .resolve_image("registry.example/worker:v1", "ci-abc12")
                 .unwrap(),
             "registry.example/worker:v1"
         );
