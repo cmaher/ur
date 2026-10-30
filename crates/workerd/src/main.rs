@@ -1,31 +1,33 @@
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tonic::transport::Endpoint;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
-use ur_rpc::proto::core::WorkerStopRequest;
-use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::hostexec::HostExecCommandEntry;
 use ur_rpc::proto::hostexec::ListHostExecCommandsRequest;
 use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonServiceServer;
 
-mod grpc_service;
-mod init;
-mod init_git_hooks;
-mod init_skill_hooks;
+use workerd::{
+    ContainerExitSink, ExitWatcherManager, InitGitHooksManager, InitInstructionsManager,
+    InitSettingsManager, InitSkillHooksManager, InitSkillsManager, SkillLayout,
+    StartupHooksManager, WorkerDaemonServiceImpl, WorkerIdentity, WorkerInitInputs, WorkerPaths,
+};
+
 mod logging;
 
-const SHIM_DIR: &str = ".local/bin";
 const MAX_RETRIES: u32 = 30;
 const INITIAL_BACKOFF_MS: u64 = 500;
 const MAX_BACKOFF_MS: u64 = 5000;
 const WORKERD_GRPC_PORT: u16 = 9120;
 const EXIT_WATCHER_POLL_SECS: u64 = 5;
+const AGENT_SESSION_NAME: &str = "agent";
+const DESIGN_STRATEGY: &str = "design";
 
 #[derive(Parser)]
 #[command(name = "workerd", about = "Ur worker daemon")]
@@ -48,69 +50,65 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // Resolve the agent, container paths and per-worker inputs once and
+    // inject them everywhere, so init and daemon agree on one agent rather
+    // than each component re-reading the environment for itself.
+    let agent = ur_config::AgentType::from_env();
+    let paths = WorkerPaths::container(agent);
+    let inputs = WorkerInitInputs::from_env(agent);
+
     match cli.command {
-        Some(Commands::Init) => run_init().await,
-        Some(Commands::Daemon) => run_daemon_only().await,
-        None => run_daemon().await,
+        Some(Commands::Init) => run_init(agent, &paths, &inputs).await,
+        Some(Commands::Daemon) => run_daemon_only(agent, &inputs).await,
+        None => run_daemon(agent, &paths, &inputs).await,
     }
 }
 
 /// Synchronous initialization: skills, git hooks, and hostexec shim creation.
-async fn run_init() -> Result<()> {
-    // Resolve the agent and home once here and inject them into every init
-    // manager, so the whole init phase agrees on one agent rather than each
-    // manager re-reading UR_AGENT_TYPE for itself.
-    let agent = ur_config::AgentType::from_env();
-    let home = init::worker_home();
-    info!(agent = agent.name(), home = %home.display(), "workerd init starting");
+async fn run_init(
+    agent: ur_config::AgentType,
+    paths: &WorkerPaths,
+    inputs: &WorkerInitInputs,
+) -> Result<()> {
+    info!(agent = agent.name(), "workerd init starting");
 
-    // Initialize skills
-    let skills_manager = init::InitSkillsManager::new(home.clone(), agent);
-    skills_manager
-        .run()
+    InitSkillsManager::new(paths.clone(), SkillLayout::AgentHome)
+        .run(&inputs.skills)
         .await
         .context("skills initialization failed")?;
 
-    // Initialize instruction file (e.g. CLAUDE.md)
-    let instructions_manager = init::InitInstructionsManager::new(home.clone(), agent);
-    instructions_manager
-        .run()
+    InitInstructionsManager::new(paths.clone(), SkillLayout::AgentHome)
+        .run(&inputs.instructions)
         .await
         .context("instructions initialization failed")?;
 
-    // Initialize settings file (e.g. settings.json)
-    let settings_manager = init::InitSettingsManager::new(home, agent);
-    settings_manager
+    InitSettingsManager::new(paths.clone())
         .run()
         .await
         .context("settings initialization failed")?;
 
-    // Initialize git hooks
-    let git_hooks_manager = init_git_hooks::InitGitHooksManager;
-    git_hooks_manager
+    InitGitHooksManager::new(paths.clone())
         .run()
         .await
         .context("git hooks initialization failed")?;
 
-    // Initialize skill hooks
-    let skill_hooks_manager = init_skill_hooks::InitSkillHooksManager::new(agent);
-    skill_hooks_manager
+    InitSkillHooksManager::new(paths.clone())
         .run()
         .await
         .context("skill hooks initialization failed")?;
 
     // Create hostexec shims
-    let shim_dir = resolve_shim_dir();
+    let shim_dir = &paths.shim_dir;
     info!(shim_dir = %shim_dir.display(), "resolved shim directory");
 
-    tokio::fs::create_dir_all(&shim_dir)
+    tokio::fs::create_dir_all(shim_dir)
         .await
         .with_context(|| format!("creating shim dir {}", shim_dir.display()))?;
 
     let entries = fetch_commands_with_retry().await?;
 
     for entry in &entries {
-        create_shim(&shim_dir, entry).await?;
+        create_shim(shim_dir, entry).await?;
     }
 
     let command_names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
@@ -119,17 +117,19 @@ async fn run_init() -> Result<()> {
 }
 
 /// Background daemon: runs init, creates tmux session, launches the agent, serves healthz + gRPC.
-async fn run_daemon() -> Result<()> {
+async fn run_daemon(
+    agent: ur_config::AgentType,
+    paths: &WorkerPaths,
+    inputs: &WorkerInitInputs,
+) -> Result<()> {
     info!("workerd daemon starting");
 
     // 0. Run initialization (skills, git hooks, hostexec shims)
-    run_init().await.context("init phase failed")?;
+    run_init(agent, paths, inputs)
+        .await
+        .context("init phase failed")?;
 
-    let startup_hooks_manager = init::StartupHooksManager::new(
-        PathBuf::from("/workspace"),
-        PathBuf::from("/var/ur/host-hooks"),
-    );
-    let spawned_hooks = startup_hooks_manager
+    let spawned_hooks = StartupHooksManager::new(paths.clone())
         .run()
         .await
         .context("startup hooks phase failed")?;
@@ -137,13 +137,21 @@ async fn run_daemon() -> Result<()> {
         info!(hook = %hook.name, pid = hook.pid, "spawned background startup hook");
     }
 
-    run_daemon_only().await
+    run_daemon_only(agent, inputs).await
+}
+
+/// Worker identity from the container environment.
+fn identity_from_env() -> WorkerIdentity {
+    WorkerIdentity {
+        server_addr: std::env::var(ur_config::UR_SERVER_ADDR_ENV)
+            .unwrap_or_else(|_| "localhost:50051".into()),
+        worker_id: std::env::var(ur_config::UR_WORKER_ID_ENV).unwrap_or_else(|_| "unknown".into()),
+        worker_secret: std::env::var(ur_config::UR_WORKER_SECRET_ENV).unwrap_or_default(),
+    }
 }
 
 /// Daemon without init — expects `workerd init` to have been called already.
-async fn run_daemon_only() -> Result<()> {
-    let agent = ur_config::AgentType::from_env();
-
+async fn run_daemon_only(agent: ur_config::AgentType, inputs: &WorkerInitInputs) -> Result<()> {
     // 0. Bind the gRPC listener before launching the agent. The agent's
     // SessionStart hook calls NotifyIdle on this port as soon as it boots;
     // binding first lets that connection queue in the backlog instead of
@@ -153,9 +161,14 @@ async fn run_daemon_only() -> Result<()> {
         .await
         .with_context(|| format!("binding gRPC listener on {addr}"))?;
 
+    let identity = identity_from_env();
+
     // 1. Create tmux session `agent` (220x55)
     let session = tmux::Session::create(tmux::CreateOptions {
-        name: "agent".into(),
+        name: AGENT_SESSION_NAME.into(),
+        socket: None,
+        start_dir: None,
+        env: Vec::new(),
         width: Some(220),
         height: Some(55),
         detached: true,
@@ -163,8 +176,7 @@ async fn run_daemon_only() -> Result<()> {
     .await?;
 
     // 2. Set tmux status line with worker ID
-    let worker_id = std::env::var(ur_config::UR_WORKER_ID_ENV).unwrap_or_else(|_| "unknown".into());
-    let status_left = format!("[{worker_id}] ");
+    let status_left = format!("[{}] ", identity.worker_id);
     session.set_option("status-left-length", "50").await?;
     session.set_status_left(&status_left).await?;
 
@@ -180,204 +192,38 @@ async fn run_daemon_only() -> Result<()> {
     session.send_keys(&spawn_cmd).await?;
     info!(cmd = %spawn_cmd, agent = agent.name(), "agent launched in tmux session");
 
-    // 3b. Spawn exit watcher that polls tmux pane and triggers shutdown when the agent exits
-    {
-        let server_addr = std::env::var(ur_config::UR_SERVER_ADDR_ENV)
-            .unwrap_or_else(|_| "localhost:50051".into());
-        let worker_id =
-            std::env::var(ur_config::UR_WORKER_ID_ENV).unwrap_or_else(|_| "unknown".into());
-        let worker_secret =
-            std::env::var(ur_config::UR_WORKER_SECRET_ENV).unwrap_or_else(|_| String::new());
-        tokio::spawn(run_exit_watcher(server_addr, worker_id, worker_secret));
-    }
+    // 3b. Watch for the agent exiting; the container sink stops the container.
+    let is_design_worker = inputs.instructions.strategy.as_deref() == Some(DESIGN_STRATEGY);
+    let exit_watcher = ExitWatcherManager::new(
+        Arc::new(session.clone()),
+        Arc::new(ContainerExitSink::new(identity.clone())),
+        is_design_worker,
+        Duration::from_secs(EXIT_WATCHER_POLL_SECS),
+    )
+    .spawn();
+
+    let service = WorkerDaemonServiceImpl::new(identity, agent, SkillLayout::AgentHome, session);
 
     // 4. Spawn healthz HTTP server (port 9119) in background
     tokio::spawn(serve_healthz());
 
-    // 5. Serve gRPC on the listener bound in step 0 (this is the long-lived process)
-    let server_addr =
-        std::env::var(ur_config::UR_SERVER_ADDR_ENV).unwrap_or_else(|_| "localhost:50051".into());
-    let worker_id = std::env::var(ur_config::UR_WORKER_ID_ENV).unwrap_or_else(|_| "unknown".into());
-    let worker_secret =
-        std::env::var(ur_config::UR_WORKER_SECRET_ENV).unwrap_or_else(|_| String::new());
-    let service = grpc_service::WorkerDaemonServiceImpl {
-        server_addr,
-        worker_id,
-        worker_secret,
-        dispatch_buffer: std::sync::Arc::new(tokio::sync::Mutex::new(
-            grpc_service::DispatchBuffer {
-                commands: std::collections::VecDeque::new(),
-                step_complete: false,
-                lifecycle_step: String::new(),
-                nudge_suppressed_until: None,
-            },
-        )),
-        dispatch_ticket_id: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
-        agent,
-    };
+    // 5. Serve gRPC on the listener bound in step 0 (this is the long-lived
+    // process). The container sink never returns, so the watcher arm only
+    // fires if it surfaces an error.
     info!(port = WORKERD_GRPC_PORT, "starting gRPC server");
 
-    tonic::transport::Server::builder()
+    let server = tonic::transport::Server::builder()
         .add_service(WorkerDaemonServiceServer::new(service))
-        .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
-        .await
-        .context("gRPC server exited")?;
+        .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener));
 
-    Ok(())
-}
-
-/// State machine for tracking whether the agent has started and then exited in a design worker.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum AgentWatchState {
-    /// The agent hasn't started yet — the foreground process is still a shell.
-    Waiting,
-    /// The agent is running — a non-shell process is in the foreground.
-    Running,
-}
-
-/// Returns `true` if `name` is a common shell process name.
-fn is_shell_process(name: &str) -> bool {
-    matches!(name, "bash" | "sh" | "zsh" | "dash" | "fish")
-}
-
-/// Advance the state machine given the current foreground process name.
-///
-/// Returns `(next_state, should_stop)`. `should_stop` is true when the state
-/// transitions from `Running` back to a shell, indicating the agent has exited.
-fn advance_agent_watch_state(state: AgentWatchState, foreground: &str) -> (AgentWatchState, bool) {
-    match state {
-        AgentWatchState::Waiting => {
-            if is_shell_process(foreground) {
-                (AgentWatchState::Waiting, false)
-            } else {
-                (AgentWatchState::Running, false)
-            }
-        }
-        AgentWatchState::Running => {
-            if is_shell_process(foreground) {
-                (AgentWatchState::Running, true)
-            } else {
-                (AgentWatchState::Running, false)
-            }
+    tokio::select! {
+        result = server => result.context("gRPC server exited")?,
+        result = exit_watcher => {
+            let reason = result.context("exit watcher task failed")??;
+            info!(?reason, "agent exit handled");
         }
     }
-}
 
-/// Check the foreground process for a design worker and advance the state machine.
-///
-/// Returns `true` if the agent has exited and the container should stop.
-async fn check_design_worker_exit(session: &tmux::Session, state: &mut AgentWatchState) -> bool {
-    match session.pane_current_command().await {
-        Ok(foreground) => {
-            let (next_state, stop) = advance_agent_watch_state(*state, &foreground);
-            debug!(
-                foreground = %foreground,
-                state = ?state,
-                next_state = ?next_state,
-                "design worker foreground process check"
-            );
-            *state = next_state;
-            if stop {
-                info!(
-                    foreground = %foreground,
-                    "agent process exited in design worker, initiating shutdown"
-                );
-            }
-            stop
-        }
-        Err(e) => {
-            warn!(error = %e, "failed to query pane_current_command, treating as stopped");
-            true
-        }
-    }
-}
-
-/// Poll the tmux agent session and initiate container shutdown when the agent exits.
-async fn run_exit_watcher(server_addr: String, worker_id: String, worker_secret: String) {
-    let session = tmux::Session::agent();
-    let interval = Duration::from_secs(EXIT_WATCHER_POLL_SECS);
-    let is_design_worker = std::env::var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV)
-        .unwrap_or_default()
-        == "design";
-
-    info!(
-        is_design_worker,
-        "exit watcher started, polling every {EXIT_WATCHER_POLL_SECS}s"
-    );
-
-    let mut agent_watch_state = AgentWatchState::Waiting;
-
-    loop {
-        tokio::time::sleep(interval).await;
-
-        let should_stop = match session.is_pane_alive().await {
-            Ok(true) => {
-                debug!("agent pane is alive");
-                if is_design_worker {
-                    check_design_worker_exit(&session, &mut agent_watch_state).await
-                } else {
-                    false
-                }
-            }
-            Ok(false) => {
-                info!("agent pane is dead, initiating shutdown");
-                true
-            }
-            Err(e) => {
-                warn!(error = %e, "failed to check pane status, treating as dead");
-                true
-            }
-        };
-
-        if !should_stop {
-            continue;
-        }
-
-        // Pane is dead, agent exited (design), or check failed — send WorkerStop RPC
-        send_stop_and_wait(&server_addr, &worker_id, &worker_secret).await;
-    }
-}
-
-/// Send WorkerStop RPC and wait for the server to kill the container.
-async fn send_stop_and_wait(server_addr: &str, worker_id: &str, worker_secret: &str) {
-    info!(worker_id, server_addr, "sending WorkerStop RPC");
-    match self_stop_rpc(server_addr, worker_id, worker_secret).await {
-        Ok(()) => {
-            info!("WorkerStop RPC succeeded, waiting for server to stop container");
-            loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-            }
-        }
-        Err(e) => {
-            error!(error = %e, "WorkerStop RPC failed, falling back to process::exit(0)");
-            std::process::exit(0);
-        }
-    }
-}
-
-/// Send a one-shot WorkerStop RPC to the ur-server to request container shutdown.
-async fn self_stop_rpc(server_addr: &str, worker_id: &str, worker_secret: &str) -> Result<()> {
-    let addr = format!("http://{server_addr}");
-    let channel = Endpoint::try_from(addr)?.connect().await?;
-    let mut client = CoreServiceClient::new(channel);
-
-    let mut request = tonic::Request::new(WorkerStopRequest {
-        worker_id: worker_id.to_owned(),
-    });
-
-    if let Ok(val) = worker_id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>() {
-        request
-            .metadata_mut()
-            .insert(ur_config::WORKER_ID_HEADER, val);
-    }
-    if let Ok(val) = worker_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-    {
-        request
-            .metadata_mut()
-            .insert(ur_config::WORKER_SECRET_HEADER, val);
-    }
-
-    client.worker_stop(request).await?;
     Ok(())
 }
 
@@ -404,11 +250,6 @@ async fn serve_healthz() -> Result<()> {
             let _ = stream.write_all(resp.as_bytes()).await;
         });
     }
-}
-
-fn resolve_shim_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ur_config::WORKER_HOME.into());
-    PathBuf::from(home).join(SHIM_DIR)
 }
 
 async fn fetch_commands_with_retry() -> Result<Vec<HostExecCommandEntry>> {
@@ -482,7 +323,7 @@ async fn create_shim(shim_dir: &Path, entry: &HostExecCommandEntry) -> Result<()
     let command = &entry.name;
     let shim_path = shim_dir.join(command);
     let bidi_flag = if entry.bidi { " --bidi" } else { "" };
-    let content = format!("#!/bin/sh\nexec workertools host-exec{bidi_flag} {command} \"$@\"\n");
+    let content = format!("#!/bin/sh\nexec ur-workertools host-exec{bidi_flag} {command} \"$@\"\n");
 
     debug!(command, bidi = entry.bidi, path = %shim_path.display(), "writing shim");
 
@@ -501,71 +342,4 @@ async fn create_shim(shim_dir: &Path, entry: &HostExecCommandEntry) -> Result<()
 
     info!(command, path = %shim_path.display(), "shim created");
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_waiting_stays_waiting_on_shell() {
-        let (state, stop) = advance_agent_watch_state(AgentWatchState::Waiting, "bash");
-        assert_eq!(state, AgentWatchState::Waiting);
-        assert!(!stop);
-    }
-
-    #[test]
-    fn test_waiting_transitions_to_running_on_non_shell() {
-        let (state, stop) = advance_agent_watch_state(AgentWatchState::Waiting, "vim");
-        assert_eq!(state, AgentWatchState::Running);
-        assert!(!stop);
-    }
-
-    #[test]
-    fn test_running_stays_running_on_non_shell() {
-        let (state, stop) = advance_agent_watch_state(AgentWatchState::Running, "vim");
-        assert_eq!(state, AgentWatchState::Running);
-        assert!(!stop);
-    }
-
-    #[test]
-    fn test_running_triggers_stop_on_shell() {
-        let (state, stop) = advance_agent_watch_state(AgentWatchState::Running, "bash");
-        assert_eq!(state, AgentWatchState::Running);
-        assert!(stop);
-    }
-
-    #[test]
-    fn test_full_waiting_running_stop_sequence() {
-        let state = AgentWatchState::Waiting;
-
-        // Shell processes keep us in Waiting
-        let (state, stop) = advance_agent_watch_state(state, "sh");
-        assert_eq!(state, AgentWatchState::Waiting);
-        assert!(!stop);
-
-        // Non-shell transitions to Running
-        let (state, stop) = advance_agent_watch_state(state, "vim");
-        assert_eq!(state, AgentWatchState::Running);
-        assert!(!stop);
-
-        // Still running — Claude Code's real foreground process is `node`, not `claude`
-        let (state, stop) = advance_agent_watch_state(state, "node");
-        assert_eq!(state, AgentWatchState::Running);
-        assert!(!stop);
-
-        // Agent exits, shell returns → stop
-        let (state, stop) = advance_agent_watch_state(state, "zsh");
-        assert_eq!(state, AgentWatchState::Running);
-        assert!(stop);
-    }
-
-    #[test]
-    fn test_all_shell_names_recognized() {
-        for shell in &["bash", "sh", "zsh", "dash", "fish"] {
-            let (state, stop) = advance_agent_watch_state(AgentWatchState::Running, shell);
-            assert_eq!(state, AgentWatchState::Running);
-            assert!(stop, "shell '{shell}' should trigger stop");
-        }
-    }
 }

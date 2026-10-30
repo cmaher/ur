@@ -32,3 +32,11 @@ run_step "CI (fmt + clippy + build + test)" cargo make ci
 run_step "image build + acceptance" cargo make acceptance-ci
 
 rm -f "$LOGFILE"
+
+# Housekeeping: cargo never evicts stale artifacts, so target/ grows without
+# bound. Drop anything not used in the last 7 days. Never blocks the push.
+if command -v cargo-sweep >/dev/null 2>&1; then
+    cargo sweep --time 7 >/dev/null 2>&1 || echo "pre-push: cargo sweep failed (push continues)" >&2
+else
+    echo "pre-push: cargo-sweep not installed; run 'cargo install cargo-sweep' to prune target/" >&2
+fi

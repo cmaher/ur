@@ -3,10 +3,10 @@ use tonic::transport::Channel;
 
 use ur_rpc::proto::core::UpdateAgentStatusRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
-use ur_rpc::proto::workerd::worker_daemon_service_client::WorkerDaemonServiceClient;
 use ur_rpc::proto::workerd::{PauseNudgeRequest, StepCompleteRequest};
 
-use crate::{WORKERD_PORT, inject_auth};
+use crate::inject_auth;
+use crate::workerd_client::{connect_workerd, workerd_request};
 
 #[derive(Subcommand)]
 pub enum StatusCommands {
@@ -21,22 +21,6 @@ pub enum StatusCommands {
     },
 }
 
-async fn connect_workerd() -> Result<WorkerDaemonServiceClient<Channel>, i32> {
-    let addr = format!("http://127.0.0.1:{WORKERD_PORT}");
-    let channel = match tonic::transport::Endpoint::try_from(addr)
-        .unwrap()
-        .connect()
-        .await
-    {
-        Ok(ch) => ch,
-        Err(e) => {
-            eprintln!("[workertools] status: failed to connect to workerd: {e}");
-            return Err(1);
-        }
-    };
-    Ok(WorkerDaemonServiceClient::new(channel))
-}
-
 async fn connect_server() -> Result<CoreServiceClient<Channel>, i32> {
     let server_addr =
         std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
@@ -49,7 +33,7 @@ async fn connect_server() -> Result<CoreServiceClient<Channel>, i32> {
     {
         Ok(ch) => ch,
         Err(e) => {
-            eprintln!("[workertools] status: failed to connect to ur server: {e}");
+            eprintln!("[ur-workertools] status: failed to connect to ur server: {e}");
             return Err(1);
         }
     };
@@ -65,36 +49,42 @@ pub async fn run(command: StatusCommands) -> i32 {
 }
 
 async fn run_step_complete() -> i32 {
-    eprintln!("[workertools] step-complete: signaling step completion to workerd");
-    let mut client = match connect_workerd().await {
+    eprintln!("[ur-workertools] step-complete: signaling step completion to workerd");
+    let mut client = match connect_workerd("status").await {
         Ok(c) => c,
         Err(code) => return code,
     };
-    match client.step_complete(StepCompleteRequest {}).await {
+    match client
+        .step_complete(workerd_request(StepCompleteRequest {}))
+        .await
+    {
         Ok(_) => {
-            eprintln!("[workertools] step-complete: success");
+            eprintln!("[ur-workertools] step-complete: success");
             0
         }
         Err(e) => {
-            eprintln!("[workertools] step-complete: RPC failed: {e}");
+            eprintln!("[ur-workertools] step-complete: RPC failed: {e}");
             1
         }
     }
 }
 
 async fn run_pause_nudge() -> i32 {
-    eprintln!("[workertools] pause-nudge: suppressing nudges via workerd");
-    let mut client = match connect_workerd().await {
+    eprintln!("[ur-workertools] pause-nudge: suppressing nudges via workerd");
+    let mut client = match connect_workerd("status").await {
         Ok(c) => c,
         Err(code) => return code,
     };
-    match client.pause_nudge(PauseNudgeRequest {}).await {
+    match client
+        .pause_nudge(workerd_request(PauseNudgeRequest {}))
+        .await
+    {
         Ok(_) => {
-            eprintln!("[workertools] pause-nudge: success");
+            eprintln!("[ur-workertools] pause-nudge: success");
             0
         }
         Err(e) => {
-            eprintln!("[workertools] pause-nudge: RPC failed: {e}");
+            eprintln!("[ur-workertools] pause-nudge: RPC failed: {e}");
             1
         }
     }

@@ -19,7 +19,7 @@ members = [
     "crates/server",
     "crates/tmux",
     "crates/workerd",
-    "crates/workertools",
+    "crates/ur-workertools",
     "tools/tk-import",
     "tools/tk-verify",
     "tools/sqlite-to-pg",
@@ -37,7 +37,7 @@ default-members = [
     "crates/urui",
     "crates/server",
     "crates/workerd",
-    "crates/workertools",
+    "crates/ur-workertools",
 ]
 
 [workspace.package]
@@ -60,6 +60,14 @@ tracing-appender = "0.2"
 thiserror = "2"
 tonic-types = "0.13"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
+
+# Full DWARF debuginfo dominates target/ size. Keep line tables for our own
+# crates (backtraces still have file:line) and drop debuginfo for dependencies.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [workspace.lints.clippy]
 too_many_lines = "warn"

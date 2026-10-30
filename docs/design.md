@@ -58,7 +58,7 @@ The server only runs on localhost and is not exposed to LAN or the internet.
 
 ### Host Exec
 
-The worker is given several "host-exec" command wrappers, that are simple scripts delegating to the **workertools** binary loaded on the worker. Host-exec commands submit requests to the server, essentially mimicking the form of `command args...`.
+The worker is given several "host-exec" command wrappers, that are simple scripts delegating to the **ur-workertools** binary loaded on the worker. Host-exec commands submit requests to the server, essentially mimicking the form of `command args...`.
 
 Each worker has a UUID granted to it by the server that it must present with requests to ensure that it does not try to submit commands on behalf of other workers.
 

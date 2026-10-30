@@ -150,7 +150,8 @@ context with `/clear`, but Codex has no custom slash commands — it discovers s
 the skill explicitly (`` Run the `implement` skill. DO NOT USE DESIGN SKILL. Arguments: ur-x ``), and it resets context
 with `/new`. `skill_invocation` takes `args: &[&str]` rather than a pre-joined string so a
 multi-argument skill (e.g. `address-feedback`, which takes a ticket and a PR number) doesn't
-push joining logic out to the caller.
+push joining logic out to the caller. `skill_invocation` accepts a plugin-qualified name (`ur:implement`) and compares the
+unqualified part for agent-specific phrasing (Codex's implement-only design prohibition).
 
 ## Top-level `agent` default
 
@@ -196,4 +197,5 @@ concern.
 
 - Proxy constants: `DEFAULT_PROXY_HOSTNAME` ("ur-squid"), `SQUID_PORT` (3128); `hostname` replaces the old `port` field
 - `Config::squid_dir()` returns `$UR_CONFIG/squid/` — where SquidManager writes config files
-- Worker binaries (`workertools`, `workerd`) depend on this crate for env var constant names only
+- Worker binaries (`ur-workertools`, `workerd`) depend on this crate for env var constant names only
+- `UR_WORKERD_ADDR_ENV` (`UR_WORKERD_ADDR`) overrides the workerd address `ur-workertools` dials; unset → `http://127.0.0.1:WORKERD_GRPC_PORT` (the in-container daemon)
