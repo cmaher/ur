@@ -96,11 +96,13 @@ github_scan_interval_secs = 60
 
 ## `[db]`, `[ticket_db]`, `[workflow_db]` Sections
 
-Three separate Postgres connection configs. `[db]` — and the top-level `[backup]` table, which
-resolves into `[db].backup` — is legacy: it configures neither live pool. It is read only by the
-`ur db backup` / `ur db restore` CLI, which dumps `db.name` (`"ur"` by default, not `ur_tickets`
-or `ur_workflow`). **Periodic backups come from `[ticket_db.backup]` and `[workflow_db.backup]`
-only**, so a config with just a top-level `[backup]` has no periodic backups running.
+Three separate Postgres connection configs. `[db]` is legacy: it configures neither live pool
+nor any backup. The legacy top-level `[backup]` and `[db.backup]` tables are a **config-load
+error** — move their settings into `[ticket_db.backup]` and `[workflow_db.backup]`, which drive
+both periodic backups and the `ur db backup` / `list` / `restore` CLI. The CLI covers both
+databases by default; `--db tickets|workflow` selects one. `restore` infers the database from
+the filename (legacy unnamed files need `--db`), checks the archive header's dbname, and
+requires the file to be in that database's backup directory.
 
 All three sections share the same fields:
 
@@ -117,13 +119,12 @@ Password env var overrides: `UR_TICKET_DB_PASSWORD`, `UR_WORKFLOW_DB_PASSWORD`.
 
 ### `[*.backup]` Sub-section
 
-Nested under any database section as `[db.backup]`, `[ticket_db.backup]`, or `[workflow_db.backup]`.
+Nested under `[ticket_db.backup]` or `[workflow_db.backup]`.
 
-**Both databases share one host directory.** Compose mounts a single `/backup` volume in the
-postgres container, sourced from `ticket_db.backup.path`; `workflow_db.backup.path` is never
-mounted, so give both sections the *same* path. Automatic dumps are named
-`ur-backup-<timestamp>.pgdump` with no database name in them, so the two databases share a
-filename space and a `retain_count` budget in that directory.
+Each database with a `path` gets its own mount in the postgres container at `/backup/<db_name>`
+(mounted even with `enabled = false`, so manual `ur db backup` works). The two paths may be the
+same host directory or different ones: dumps are named `ur-backup-<db_name>-<timestamp>.pgdump`
+(`manual-ur-backup-…` for on-demand), and `retain_count` applies per database.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

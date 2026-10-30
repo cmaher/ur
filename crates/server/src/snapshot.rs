@@ -2,6 +2,7 @@
 
 use std::process::Stdio;
 use tokio::process::Command;
+use ur_config::backup::backup_container_dir;
 
 #[derive(Clone)]
 pub struct SnapshotManager {
@@ -19,11 +20,21 @@ impl SnapshotManager {
         }
     }
 
-    /// Create a pg_dump backup inside the container at /backup/<filename>.
+    /// Name of the database this manager dumps and restores.
+    pub fn db_name(&self) -> &str {
+        &self.db_name
+    }
+
+    /// Container-side path of `filename` in this database's backup directory.
+    fn container_backup_path(&self, filename: &str) -> String {
+        format!("{}/{filename}", backup_container_dir(&self.db_name))
+    }
+
+    /// Create a pg_dump backup inside the container at /backup/<dbname>/<filename>.
     ///
-    /// Runs: docker exec <container> pg_dump -Fc -f /backup/<filename> <dbname>
+    /// Runs: docker exec <container> pg_dump -Fc -f /backup/<dbname>/<filename> <dbname>
     pub async fn dump_to(&self, filename: &str) -> Result<(), String> {
-        let backup_path = format!("/backup/{filename}");
+        let backup_path = self.container_backup_path(filename);
         let output = Command::new(&self.container_command)
             .args([
                 "exec",
@@ -47,11 +58,11 @@ impl SnapshotManager {
         Ok(())
     }
 
-    /// Restore a pg_dump backup from /backup/<filename> into the live database.
+    /// Restore a pg_dump backup from /backup/<dbname>/<filename> into the live database.
     ///
-    /// Runs: docker exec <container> pg_restore --clean --if-exists -d <dbname> /backup/<filename>
+    /// Runs: docker exec <container> pg_restore --clean --if-exists -d <dbname> /backup/<dbname>/<filename>
     pub async fn restore_from(&self, filename: &str) -> Result<(), String> {
-        let backup_path = format!("/backup/{filename}");
+        let backup_path = self.container_backup_path(filename);
         let output = Command::new(&self.container_command)
             .args([
                 "exec",

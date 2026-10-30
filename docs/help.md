@@ -107,7 +107,11 @@ it after moving each transform to its command-named Lua file.
 I backup my database to google drive.
 
 ```
-[backup]
+[ticket_db.backup]
+interval\_minutes = 30
+path = "/some/path/on/host"
+
+[workflow_db.backup]
 interval\_minutes = 30
 path = "/some/path/on/host"
 ```

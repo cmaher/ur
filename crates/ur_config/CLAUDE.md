@@ -55,6 +55,11 @@ interval_minutes = 30                       # default: 30
 retain_count     = 3                        # default: 3
 ```
 
+### Backup naming and legacy tables
+
+- `ur_config::backup` (`src/backup.rs`) owns backup filenames (`ur-backup-<db_name>-<ts>.pgdump`, `manual-` prefix for on-demand), parsing (legacy unnamed files still parse, `db_name: None`), the per-DB container dir (`/backup/<db_name>`), and per-DB retention. Server and CLI both use it — don't re-derive names elsewhere.
+- Top-level `[backup]` and `[db.backup]` are rejected at load (`reject_legacy_backup_sections`). `DatabaseConfig` (`[db]`) has no backup settings.
+
 ### Environment Variables for Passwords
 
 | Env var | Applies to |

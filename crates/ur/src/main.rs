@@ -191,14 +191,25 @@ enum Component {
 
 #[derive(Subcommand)]
 enum DbCommands {
-    /// Create an on-demand database backup
-    Backup,
+    /// Create an on-demand backup of the ticket and workflow databases
+    Backup {
+        /// Back up only this database (default: every database with a backup path)
+        #[arg(long)]
+        db: Option<db::DbTarget>,
+    },
     /// List available backup files
-    List,
+    List {
+        /// List only this database's backups (default: both)
+        #[arg(long)]
+        db: Option<db::DbTarget>,
+    },
     /// Restore a database from a backup file
     Restore {
-        /// Path to the backup file to restore
+        /// Path to the backup file to restore; must be in that database's backup directory
         path: PathBuf,
+        /// Database to restore into (default: inferred from the backup filename)
+        #[arg(long)]
+        db: Option<db::DbTarget>,
     },
 }
 
@@ -1666,11 +1677,11 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
     match cli.command {
         Commands::Builder { command } => builder::handle(command, config.builderd_port).await?,
         Commands::Db { command } => match command {
-            DbCommands::Backup => db::backup(&config, output).await?,
-            DbCommands::List => db::list(&config, output)?,
-            DbCommands::Restore { path } => {
+            DbCommands::Backup { db } => db::backup(&config, db, output).await?,
+            DbCommands::List { db } => db::list(&config, db, output)?,
+            DbCommands::Restore { path, db } => {
                 input::reject_path_traversal(&path, "path")?;
-                db::restore(&config, &path, output).await?
+                db::restore(&config, &path, db, output).await?
             }
         },
         Commands::Init { .. } => unreachable!(),

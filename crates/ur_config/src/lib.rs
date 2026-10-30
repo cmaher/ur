@@ -1,4 +1,5 @@
 mod agent;
+pub mod backup;
 pub mod forge;
 mod template_path;
 
@@ -346,8 +347,6 @@ struct RawConfig {
     db: Option<RawDatabaseConfig>,
     ticket_db: Option<RawTicketDbConfig>,
     workflow_db: Option<RawWorkflowDbConfig>,
-    /// Deprecated: use `[db.backup]` instead. Kept for backward compatibility.
-    backup: Option<RawBackupConfig>,
     server: Option<RawServerConfig>,
     logs_dir: Option<PathBuf>,
     tui: Option<RawTuiConfig>,
@@ -539,7 +538,6 @@ struct RawDatabaseConfig {
     name: Option<String>,
     /// Network interface to bind the postgres container port on (e.g. Tailscale IP).
     bind_address: Option<String>,
-    backup: Option<RawBackupConfig>,
 }
 
 /// Raw TOML representation for the `[ticket_db]` section.
@@ -568,7 +566,7 @@ struct RawWorkflowDbConfig {
     backup: Option<RawBackupConfig>,
 }
 
-/// Raw TOML representation for the `[backup]` or `[db.backup]` section.
+/// Raw TOML representation for a `[ticket_db.backup]` or `[workflow_db.backup]` section.
 #[derive(Debug, Deserialize)]
 struct RawBackupConfig {
     path: Option<PathBuf>,
@@ -1041,9 +1039,12 @@ impl WorkflowDbConfig {
     }
 }
 
-/// Database configuration, including connection details and backup settings.
+/// Legacy `[db]` connection settings for the pre-split shared `ur` database.
 ///
-/// The `backup` field nests the existing `BackupConfig` under `[db.backup]`.
+/// Nothing reads these to reach live data; the ticket and workflow databases
+/// are configured by [`TicketDbConfig`] and [`WorkflowDbConfig`]. Backup
+/// settings live under `[ticket_db.backup]` / `[workflow_db.backup]` — the
+/// legacy `[backup]` and `[db.backup]` tables are rejected at config load.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatabaseConfig {
     /// Database hostname (default: "ur-postgres").
@@ -1059,8 +1060,6 @@ pub struct DatabaseConfig {
     /// Network interface to bind the postgres container port on (e.g. a Tailscale IP).
     /// When set, the postgres service exposes `<bind_address>:<port>:<port>`.
     pub bind_address: Option<String>,
-    /// Periodic backup settings for the database.
-    pub backup: BackupConfig,
 }
 
 impl DatabaseConfig {
@@ -1259,7 +1258,7 @@ pub struct Config {
     pub proxy: ProxyConfig,
     /// Docker network settings for container networking.
     pub network: NetworkConfig,
-    /// Database configuration (connection details + backup settings).
+    /// Legacy `[db]` connection settings (see [`DatabaseConfig`]).
     pub db: DatabaseConfig,
     /// Ticket database configuration (connection details + backup settings).
     pub ticket_db: TicketDbConfig,
@@ -1342,6 +1341,7 @@ impl Config {
     pub fn from_toml_str(contents: &str, config_dir: &Path) -> anyhow::Result<Self> {
         let document: toml::Value = toml::from_str(contents)?;
         reject_removed_hostexec_section(&document)?;
+        reject_legacy_backup_sections(&document)?;
         let raw: RawConfig = toml::from_str(contents)?;
 
         let agent = resolve_top_level_agent(raw.agent.as_deref())?;
@@ -1358,7 +1358,7 @@ impl Config {
         let proxy = resolve_proxy(raw.proxy);
         let network = resolve_network(raw.network);
 
-        let db = resolve_database(raw.db, raw.backup);
+        let db = resolve_database(raw.db);
         let ticket_db = resolve_ticket_db(raw.ticket_db);
         let workflow_db = resolve_workflow_db(raw.workflow_db);
         let server = resolve_server(raw.server);
@@ -1433,6 +1433,31 @@ fn reject_removed_hostexec_section(document: &toml::Value) -> anyhow::Result<()>
         "ur.toml: the [hostexec] section has been removed. Lua transforms are now \
          discovered from $UR_CONFIG/hostexec/<command>.lua by filename.\n\
          Delete the [hostexec] section.\n  found: {}",
+        found.join(", ")
+    )
+}
+
+/// Reject the legacy `[backup]` and `[db.backup]` tables.
+///
+/// Both configured backups of the pre-split shared `ur` database. Periodic and
+/// manual backups now read `[ticket_db.backup]` and `[workflow_db.backup]`
+/// exclusively, so a config carrying only a legacy table would silently get
+/// no backups at all.
+fn reject_legacy_backup_sections(document: &toml::Value) -> anyhow::Result<()> {
+    let mut found = Vec::new();
+    if document.get("backup").is_some() {
+        found.push("backup");
+    }
+    if document.get("db").and_then(|db| db.get("backup")).is_some() {
+        found.push("db.backup");
+    }
+    if found.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "ur.toml: the [backup] and [db.backup] sections are no longer supported — they \
+         backed up the legacy 'ur' database, not the live ones.\n\
+         Move the settings to [ticket_db.backup] and [workflow_db.backup].\n  found: {}",
         found.join(", ")
     )
 }
@@ -1829,19 +1854,9 @@ fn resolve_backup(raw: Option<RawBackupConfig>) -> BackupConfig {
     }
 }
 
-/// Resolve the `[db]` config, with backward compatibility for top-level `[backup]`.
-///
-/// If `[db.backup]` is present, it takes precedence. If only `[backup]` is present
-/// at the top level (legacy format), it is used as the backup config. If neither
-/// is present, defaults are used.
-fn resolve_database(
-    raw_db: Option<RawDatabaseConfig>,
-    raw_backup_legacy: Option<RawBackupConfig>,
-) -> DatabaseConfig {
+/// Resolve the legacy `[db]` connection settings.
+fn resolve_database(raw_db: Option<RawDatabaseConfig>) -> DatabaseConfig {
     let raw = raw_db.unwrap_or_default();
-    // [db.backup] takes precedence over top-level [backup]
-    let backup_raw = raw.backup.or(raw_backup_legacy);
-    let backup = resolve_backup(backup_raw);
     DatabaseConfig {
         host: raw.host.unwrap_or_else(|| DEFAULT_DB_HOST.to_string()),
         port: raw.port.unwrap_or(DEFAULT_DB_PORT),
@@ -1851,7 +1866,6 @@ fn resolve_database(
             .unwrap_or_else(|| DEFAULT_DB_PASSWORD.to_string()),
         name: raw.name.unwrap_or_else(|| DEFAULT_DB_NAME.to_string()),
         bind_address: raw.bind_address,
-        backup,
     }
 }
 
@@ -3709,27 +3723,37 @@ long_lived = true
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.db.backup.path, None);
+        assert_eq!(cfg.ticket_db.backup.path, None);
         assert_eq!(
-            cfg.db.backup.interval_minutes,
+            cfg.ticket_db.backup.interval_minutes,
             DEFAULT_BACKUP_INTERVAL_MINUTES
         );
-        assert!(cfg.db.backup.enabled);
-        assert_eq!(cfg.db.backup.retain_count, DEFAULT_BACKUP_RETAIN_COUNT);
+        assert!(cfg.ticket_db.backup.enabled);
+        assert_eq!(
+            cfg.ticket_db.backup.retain_count,
+            DEFAULT_BACKUP_RETAIN_COUNT
+        );
     }
 
     #[test]
     fn backup_defaults_when_present_but_empty() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n[backup]\n").unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\n[ticket_db.backup]\n",
+        )
+        .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.db.backup.path, None);
+        assert_eq!(cfg.ticket_db.backup.path, None);
         assert_eq!(
-            cfg.db.backup.interval_minutes,
+            cfg.ticket_db.backup.interval_minutes,
             DEFAULT_BACKUP_INTERVAL_MINUTES
         );
-        assert!(cfg.db.backup.enabled);
-        assert_eq!(cfg.db.backup.retain_count, DEFAULT_BACKUP_RETAIN_COUNT);
+        assert!(cfg.ticket_db.backup.enabled);
+        assert_eq!(
+            cfg.ticket_db.backup.retain_count,
+            DEFAULT_BACKUP_RETAIN_COUNT
+        );
     }
 
     #[test]
@@ -3737,15 +3761,15 @@ long_lived = true
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "node_id = \"n\"\n[backup]\npath = \"/backups/ur\"\ninterval_minutes = 60\n",
+            "node_id = \"n\"\n[ticket_db.backup]\npath = \"/backups/ur\"\ninterval_minutes = 60\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(
-            cfg.db.backup.path,
+            cfg.ticket_db.backup.path,
             Some(std::path::PathBuf::from("/backups/ur"))
         );
-        assert_eq!(cfg.db.backup.interval_minutes, 60);
+        assert_eq!(cfg.ticket_db.backup.interval_minutes, 60);
     }
 
     #[test]
@@ -3753,16 +3777,16 @@ long_lived = true
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "node_id = \"n\"\n[backup]\npath = \"/backups/ur\"\n",
+            "node_id = \"n\"\n[ticket_db.backup]\npath = \"/backups/ur\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(
-            cfg.db.backup.path,
+            cfg.ticket_db.backup.path,
             Some(std::path::PathBuf::from("/backups/ur"))
         );
         assert_eq!(
-            cfg.db.backup.interval_minutes,
+            cfg.ticket_db.backup.interval_minutes,
             DEFAULT_BACKUP_INTERVAL_MINUTES
         );
     }
@@ -3804,11 +3828,11 @@ long_lived = true
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "node_id = \"n\"\n[backup]\npath = \"/backups/ur\"\nenabled = false\n",
+            "node_id = \"n\"\n[ticket_db.backup]\npath = \"/backups/ur\"\nenabled = false\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert!(!cfg.db.backup.enabled);
+        assert!(!cfg.ticket_db.backup.enabled);
     }
 
     #[test]
@@ -3816,11 +3840,11 @@ long_lived = true
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "node_id = \"n\"\n[backup]\npath = \"/backups/ur\"\nretain_count = 7\n",
+            "node_id = \"n\"\n[ticket_db.backup]\npath = \"/backups/ur\"\nretain_count = 7\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.db.backup.retain_count, 7);
+        assert_eq!(cfg.ticket_db.backup.retain_count, 7);
     }
 
     #[test]
@@ -3878,51 +3902,42 @@ bind_address = "100.64.1.5"
     }
 
     #[test]
-    fn db_backup_nested_under_db_section() {
+    fn workflow_db_backup_reads_own_section() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            r#"
-node_id = "n"
-[db.backup]
-path = "/backups/ur"
-interval_minutes = 45
-retain_count = 5
-"#,
+            "node_id = \"n\"\n[workflow_db.backup]\npath = \"/backups/wf\"\nretain_count = 4\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(
-            cfg.db.backup.path,
-            Some(std::path::PathBuf::from("/backups/ur"))
+            cfg.workflow_db.backup.path,
+            Some(std::path::PathBuf::from("/backups/wf"))
         );
-        assert_eq!(cfg.db.backup.interval_minutes, 45);
-        assert_eq!(cfg.db.backup.retain_count, 5);
+        assert_eq!(cfg.workflow_db.backup.retain_count, 4);
+        assert_eq!(cfg.ticket_db.backup.path, None);
     }
 
     #[test]
-    fn db_backup_prefers_nested_over_legacy() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            r#"
-node_id = "n"
-[backup]
-path = "/old/path"
-retain_count = 2
-
-[db.backup]
-path = "/new/path"
-retain_count = 10
-"#,
+    fn legacy_top_level_backup_section_is_rejected() {
+        let err = Config::from_toml_str(
+            "node_id = \"n\"\n[backup]\npath = \"/backups/ur\"\n",
+            Path::new("/tmp"),
         )
-        .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(
-            cfg.db.backup.path,
-            Some(std::path::PathBuf::from("/new/path"))
-        );
-        assert_eq!(cfg.db.backup.retain_count, 10);
+        .expect_err("legacy [backup] must be rejected");
+        let message = err.to_string();
+        assert!(message.contains("[ticket_db.backup]"), "{message}");
+        assert!(message.contains("found: backup"), "{message}");
+    }
+
+    #[test]
+    fn legacy_db_backup_section_is_rejected() {
+        let err = Config::from_toml_str(
+            "node_id = \"n\"\n[db.backup]\npath = \"/backups/ur\"\n",
+            Path::new("/tmp"),
+        )
+        .expect_err("legacy [db.backup] must be rejected");
+        assert!(err.to_string().contains("found: db.backup"), "{err}");
     }
 
     #[test]
@@ -3934,12 +3949,6 @@ retain_count = 10
             password: "secret".to_string(),
             name: "testdb".to_string(),
             bind_address: None,
-            backup: BackupConfig {
-                path: None,
-                interval_minutes: DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: DEFAULT_BACKUP_RETAIN_COUNT,
-            },
         };
         assert_eq!(
             db.database_url(),
@@ -3956,12 +3965,6 @@ retain_count = 10
             password: DEFAULT_DB_PASSWORD.to_string(),
             name: DEFAULT_DB_NAME.to_string(),
             bind_address: None,
-            backup: BackupConfig {
-                path: None,
-                interval_minutes: DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: DEFAULT_BACKUP_RETAIN_COUNT,
-            },
         };
         assert_eq!(db.database_url(), "postgres://ur:ur@ur-postgres:5432/ur");
     }
