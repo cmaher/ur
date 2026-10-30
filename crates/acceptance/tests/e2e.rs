@@ -275,7 +275,7 @@ impl ProjectEntry {
 ///
 /// Every project's `container.image` is the bare `ur-worker` alias: the server
 /// resolves it against the launch's agent and `UR_IMAGE_TAG` (forwarded by
-/// `ur start`), so a CI-tagged run launches `ur-worker-<agent>:ci-<label>`.
+/// `ur start`), so a CI-tagged run launches `ur-worker-<agent>:ci-<hash>`.
 /// Optional fields (`hostexec_scripts`, `mounts`, `memory_dir`, `brain_dir`,
 /// `forge`) are emitted only when set.
 fn render_projects_toml(projects: &[ProjectEntry]) -> String {

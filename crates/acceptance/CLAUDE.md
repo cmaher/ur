@@ -54,7 +54,7 @@ Tests MUST use only CLI commands (`ur`, `git`, the container runtime) — never 
 Every test project configures the bare `ur-worker` alias. The server resolves it against the
 launch's agent and `UR_IMAGE_TAG` (forwarded into the server container by `ur start`; see
 `docs/codeflows/config.md`), so under `scripts/acceptance-ci.sh` workers run
-`ur-worker-<agent>:ci-<label>` — the anchors assert exactly that. `codexproj` / `agyproj` exist
+`ur-worker-<agent>:ci-<hash>` — the anchors assert exactly that. `codexproj` / `agyproj` exist
 so `--agent codex` / `--agent agy` launches get their own repos and skill-hook overlays; the
 same alias resolves to each agent's image.
 

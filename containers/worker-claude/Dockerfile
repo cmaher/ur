@@ -11,13 +11,6 @@ RUN rm /tmp/install-claude.sh
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Copy pre-built worker command binaries into the image
-COPY bin/workertools /usr/local/bin/workertools
-RUN chmod +x /usr/local/bin/workertools
-
-COPY bin/workerd /usr/local/bin/workerd
-RUN chmod +x /usr/local/bin/workerd
-
 # Shim directory — workerd writes shims here at startup
 RUN mkdir -p /home/worker/.local/bin && chown worker:worker /home/worker/.local/bin
 ENV PATH="/usr/local/bin:/home/worker/.local/bin:${PATH}"
@@ -49,6 +42,13 @@ RUN chown worker:worker /home/worker/.claude.json && chown -R worker:worker /hom
 ARG CACHEBUST=0
 USER worker
 RUN echo "CACHEBUST=$CACHEBUST" && claude update && claude --version
+
+# Worker binaries change on nearly every commit, so they are the last layer:
+# everything above (agent CLI install/update, config) stays cached across
+# Rust-only changes. --chmod avoids a second full copy from `RUN chmod`.
+COPY --chmod=755 bin/workertools /usr/local/bin/workertools
+COPY --chmod=755 bin/workerd /usr/local/bin/workerd
+
 WORKDIR /workspace
 
 HEALTHCHECK --interval=1s --timeout=1s --start-period=30s --retries=1 \

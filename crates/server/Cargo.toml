@@ -33,7 +33,6 @@ serde_json.workspace = true
 sqlx = { git = "https://github.com/cmaher/sqlx", branch = "main", features = ["runtime-tokio", "postgres"] }
 
 [features]
-temporal = ["ur_rpc/temporal"]
 acceptance = []
 
 [dev-dependencies]

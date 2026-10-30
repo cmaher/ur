@@ -9,8 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the cross-compiled ur-server binary (staged by the build script)
-COPY ur-server /usr/local/bin/ur-server
-RUN chmod +x /usr/local/bin/ur-server
+COPY --chmod=755 ur-server /usr/local/bin/ur-server
 
 # Default gRPC port (ur_config::DEFAULT_SERVER_PORT)
 EXPOSE 12321

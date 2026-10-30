@@ -6,8 +6,8 @@
 target/
 containers/worker-claude/bin/
 containers/worker-codex/bin/
+containers/worker-agy/bin/
 containers/server/ur-server
-containers/server/builderd
 containers/server/libonnxruntime.so
 
 # Claude Code local skills

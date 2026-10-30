@@ -23,7 +23,6 @@ tower = { workspace = true, features = ["retry"] }
 stream = ["dep:tokio", "dep:tracing"]
 error = ["dep:tonic-types", "dep:anyhow"]
 retry = ["dep:tower", "dep:tokio", "dep:tracing", "dep:anyhow"]
-temporal = []
 
 [build-dependencies]
 tonic-build = { workspace = true }

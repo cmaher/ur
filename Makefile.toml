@@ -22,12 +22,16 @@ args = ["fmt", "--all"]
 [tasks.clippy]
 description = "Run clippy lints on all workspace crates"
 command = "cargo"
-args = ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
+args = ["clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
 
+# Same features and targets as `test`, so `test` reuses every artifact instead
+# of compiling the workspace a second time. --all-targets builds test harnesses
+# too (activating dev-dependency features); `ur`/`builderd` binaries in
+# target/debug are what the acceptance suite runs.
 [tasks.build]
-description = "Build all workspace crates"
+description = "Build all workspace crates and test targets"
 command = "cargo"
-args = ["build", "--workspace", "--all-features"]
+args = ["build", "--workspace", "--all-targets"]
 
 [tasks.test]
 description = "Run tests on all workspace crates"
@@ -40,45 +44,26 @@ description = "Run cargo audit for dependency vulnerabilities"
 command = "cargo"
 args = ["audit"]
 
-[tasks.stage-workercmd]
-description = "Build workercmd binaries and stage for Dockerfile (cross-compiles on macOS, native on Linux)"
+[tasks.stage]
+description = "Build image binaries (ur-server, workerd, workertools) in one cross-compile and stage them into the container build contexts"
 script_runner = "@shell"
-script = ["scripts/build/stage-workercmd.sh"]
+script = ["scripts/build/stage.sh"]
 
-[tasks.stage-workercmd-native]
-description = "Build workercmd binaries natively and stage for Dockerfile (for Linux CI)"
+[tasks.stage-native]
+description = "Same as stage but with a native (non-zig) build (Linux hosts only)"
+env = { "UR_NATIVE_BUILD" = "1" }
 script_runner = "@shell"
-script = ["scripts/build/stage-workercmd-native.sh"]
-
-[tasks.stage-server]
-description = "Build ur-server binary and stage for Dockerfile (cross-compiles on macOS, native on Linux)"
-script_runner = "@shell"
-script = ["scripts/build/stage-server.sh"]
-
-[tasks.stage-server-native]
-description = "Build ur-server binary natively and stage for Dockerfile (for Linux CI)"
-script_runner = "@shell"
-script = ["scripts/build/stage-server-native.sh"]
-
-[tasks.stage-builderd]
-description = "Build builderd binary and stage for container build context (cross-compiles on macOS, native on Linux)"
-script_runner = "@shell"
-script = ["scripts/build/stage-builderd.sh"]
-
-[tasks.stage-builderd-native]
-description = "Build builderd binary natively and stage for container build context (for Linux CI)"
-script_runner = "@shell"
-script = ["scripts/build/stage-builderd-native.sh"]
+script = ["scripts/build/stage.sh"]
 
 [tasks.image]
 description = "Build all container images (worker + server)"
-dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]
+dependencies = ["stage"]
 script_runner = "@shell"
 script = ["scripts/build/image.sh"]
 
 [tasks.image-native]
 description = "Build all container images using native compilation (for Linux CI)"
-dependencies = ["stage-workercmd-native", "stage-server-native", "stage-builderd-native"]
+dependencies = ["stage-native"]
 script_runner = "@shell"
 script = ["scripts/build/image.sh"]
 
@@ -101,7 +86,7 @@ script = ["scripts/build/install.sh"]
 
 [tasks.image-update-claude]
 description = "Build all container images, forcing a Claude Code update in the worker image (keeps the base image cache)"
-dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]
+dependencies = ["stage"]
 env = { "UR_UPDATE_AGENT" = "claude" }
 script_runner = "@shell"
 script = ["scripts/build/image.sh"]
@@ -114,7 +99,7 @@ script = ["scripts/build/install.sh"]
 
 [tasks.image-update-codex]
 description = "Build all container images, forcing a codex update in the worker image (keeps the base image cache)"
-dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]
+dependencies = ["stage"]
 env = { "UR_UPDATE_AGENT" = "codex" }
 script_runner = "@shell"
 script = ["scripts/build/image.sh"]
@@ -127,7 +112,7 @@ script = ["scripts/build/install.sh"]
 
 [tasks.image-update-agy]
 description = "Build all container images, forcing an AGY update in the worker image (keeps the base image cache)"
-dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]
+dependencies = ["stage"]
 env = { "UR_UPDATE_AGENT" = "agy" }
 script_runner = "@shell"
 script = ["scripts/build/image.sh"]
@@ -140,7 +125,7 @@ script = ["scripts/build/install.sh"]
 
 [tasks.image-force-base]
 description = "Build all container images, force-rebuilding the base image (no Docker cache)"
-dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]
+dependencies = ["stage"]
 env = { "UR_FORCE_REBUILD_BASE" = "1" }
 script_runner = "@shell"
 script = ["scripts/build/image.sh"]
@@ -159,10 +144,14 @@ command = "cargo"
 args = ["test", "-p", "acceptance", "--features", "acceptance"]
 
 [tasks.acceptance-ci]
-description = "Build isolated CI-tagged images and run acceptance tests (cleans up after)"
-dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]
+description = "Build content-hash-tagged CI images (skipped when already built) and run acceptance tests"
 script_runner = "@shell"
 script = ["scripts/acceptance-ci.sh"]
+
+[tasks.housekeeping]
+description = "Prune stale target/ artifacts (cargo-sweep) and cap Docker's build cache"
+script_runner = "@shell"
+script = ["scripts/build/housekeeping.sh"]
 
 [tasks.install-hooks]
 description = "Install git hooks (pre-commit formats, pre-push runs CI + acceptance)"

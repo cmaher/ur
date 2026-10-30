@@ -264,7 +264,7 @@ Resolution happens at the single point in the launch path where the agent is alr
 `<tag>` is `$UR_IMAGE_TAG` (default `latest`, `ur_config::worker_image_tag`), read once at
 server startup into `LaunchManager.worker_image_tag`. `ur start` forwards the CLI's
 `UR_IMAGE_TAG` into the server container's environment (`write_server_service` in
-`crates/ur/src/compose.rs`), so a stack started against CI-tagged images (`ci-<label>`)
+`crates/ur/src/compose.rs`), so a stack started against CI-tagged images (`ci-<hash>`)
 launches CI-tagged workers too — the acceptance suite relies on this for bare-alias projects.
 
 `resolve_worker_image` picks the raw value first (`ur --image` request field, else the

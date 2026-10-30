@@ -11,8 +11,8 @@ source "$(dirname "$0")/../build/agent-images.sh"
 
 PROCESS_ID="${1:-ur}"
 
-echo "=== Staging workercmd binaries ==="
-scripts/build/stage-workercmd.sh
+echo "=== Staging image binaries ==="
+scripts/build/stage.sh
 
 echo ""
 echo "=== Building worker images ==="

@@ -27,7 +27,7 @@ Cargo workspace:
 ## Development
 
 - **`ur` CLI is pre-built and available on PATH** (`/home/worker/.local/bin/ur`). Use `ur` directly — do NOT use `cargo run --bin ur`. This applies to all `ur` subcommands (ticket, server, etc.).
-- **CI runs via the pre-push git hook, NOT GitHub Actions** — GitHub Actions are too expensive for this repo, so all CI (fmt, clippy, tests, build, image build, e2e acceptance) runs locally on `git push`. Pushes can take several minutes; use a ≥5 min timeout when waiting in the background. Avoid running `cargo make ci` manually since the hook will do it. Consequence: a regression on master is silent until someone tries to push — if `git push` fails on a pre-existing test failure, fix it before pushing rather than assuming master is healthy.
+- **CI runs via the pre-push git hook, NOT GitHub Actions** — GitHub Actions are too expensive for this repo, so all CI (fmt, clippy, tests, build, image build, e2e acceptance) runs locally on `git push`. Images are tagged `ci-<hash>` from `scripts/build/image-hash.sh`, so a push that doesn't change image inputs skips the release build and `docker build`; `scripts/build/housekeeping.sh` prunes `target/` and the Docker build cache after every push. Keep `build` and `test` on the same features/targets so they share artifacts (no `--all-features` outside clippy). Pushes can take several minutes; use a ≥5 min timeout when waiting in the background. Avoid running `cargo make ci` manually since the hook will do it. Consequence: a regression on master is silent until someone tries to push — if `git push` fails on a pre-existing test failure, fix it before pushing rather than assuming master is healthy.
 - `cargo make fmt-fix` - Fix formatting
 - `cargo make clippy` - Run clippy lints
 - `cargo make audit` - Check dependency vulnerabilities
@@ -52,7 +52,7 @@ Cargo workspace:
 - **Cross-compile**: Use `cargo zigbuild` (requires `zig` + `cargo-zigbuild`) targeting `aarch64-unknown-linux-gnu` / `x86_64-unknown-linux-gnu` to match the debian bookworm container. Match the host arch like the container crate does (`std::env::consts::ARCH`).
 - **Container tests**: Docker backend tested locally on macOS and in CI (ubuntu-latest).
 - **String-based enum constants**: When a domain concept is represented as strings in proto/gRPC but has a fixed set of values, use defined constants or Rust enums instead of string literals. For example, use `ur_rpc::lifecycle::*` constants (e.g., `lifecycle::OPEN`, `lifecycle::IMPLEMENTING`) for lifecycle statuses, and `ticket_db::model::LifecycleStatus` or `workflow_db::model::*` for server-side code. Apply this pattern to any new string-based enums.
-- **No feature flags**: Do NOT add Cargo feature flags unless explicitly instructed. The only remaining feature flags are `temporal` (ur_rpc/server, gating unreleased temporal service), `stream`/`error` (ur_rpc, gating optional dependencies), and `acceptance` (acceptance tests). All gRPC services compile unconditionally.
+- **No feature flags**: Do NOT add Cargo feature flags unless explicitly instructed. The only feature flags are `stream`/`error`/`retry` (ur_rpc, gating optional dependencies) and `acceptance` (acceptance tests). All gRPC services compile unconditionally.
 - **Codeflows** (`docs/codeflows/`): Detailed flow diagrams for cross-cutting concerns (credential injection, process launch, etc.). Consult these before modifying multi-component flows.
 
 @docs/codeflows/CLAUDE.md

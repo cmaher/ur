@@ -24,10 +24,6 @@ RUN chmod +x /entrypoint.sh
 COPY open-auth-link.sh /usr/local/bin/xdg-open
 RUN chmod +x /usr/local/bin/xdg-open
 
-COPY bin/workertools /usr/local/bin/workertools
-COPY bin/workerd /usr/local/bin/workerd
-RUN chmod +x /usr/local/bin/workertools /usr/local/bin/workerd
-
 COPY potential-settings.json /home/worker/.gemini/antigravity-cli/potential-settings.json
 COPY onboarding.json /home/worker/.gemini/antigravity-cli/cache/onboarding.json
 COPY hooks.json /home/worker/.gemini/config/hooks.json
@@ -36,6 +32,12 @@ RUN chown -R worker:worker /home/worker/.gemini
 ENV PATH="/usr/local/bin:/home/worker/.local/bin:${PATH}"
 ENV AGY_CLI_DISABLE_AUTO_UPDATE=1
 ENV BROWSER=/usr/local/bin/xdg-open
+
+# Worker binaries change on nearly every commit, so they are the last layer:
+# everything above (agent CLI install/update, config) stays cached across
+# Rust-only changes. --chmod avoids a second full copy from `RUN chmod`.
+COPY --chmod=755 bin/workertools /usr/local/bin/workertools
+COPY --chmod=755 bin/workerd /usr/local/bin/workerd
 
 USER worker
 WORKDIR /workspace

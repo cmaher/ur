@@ -82,7 +82,7 @@ the `NotifyIdle` RPC) rather than trusting `codex` to complain about a bad event
   still toggle the mode for the current session with `/vim`
 - Entrypoint runs `exec workerd`, making workerd PID 1 — same as `worker-claude`
 - Worker command binaries (`workertools`, `workerd`) are staged into `bin/` by
-  `stage-workercmd.sh`, then copied into the image at `/usr/local/bin/`
+  `scripts/build/stage.sh`, then copied into the image at `/usr/local/bin/`
 - `workerd` handles initialization (skills, git hooks, hostexec shims), creates the tmux
   session, launches codex, and serves gRPC — reads agent-agnostic content from
   `/home/worker/.agent-shared/` (baked by `worker-base`) and writes it into codex's own layout

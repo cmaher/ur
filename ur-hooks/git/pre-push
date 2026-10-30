@@ -10,6 +10,10 @@ set -euo pipefail
 mkdir -p tmp
 LOGFILE=$(mktemp tmp/ur-pre-push.XXXXXX)
 
+# Prune target/ and Docker build cache on every exit, pass or fail: a full disk
+# is usually what made the push fail in the first place.
+trap 'scripts/build/housekeeping.sh' EXIT
+
 # Capture the branch being pushed from stdin (format: <local ref> <local sha> <remote ref> <remote sha>)
 while IFS=' ' read -r local_ref _local_sha _remote_ref _remote_sha; do
     export UR_PUSH_BRANCH="${local_ref#refs/heads/}"
@@ -27,7 +31,7 @@ run_step() {
     fi
 }
 
-run_step "Cargo.lock check" cargo check --locked --quiet
+# clippy runs with --locked, which also verifies Cargo.lock is up to date.
 run_step "CI (fmt + clippy + build + test)" cargo make ci
 run_step "image build + acceptance" cargo make acceptance-ci
 
