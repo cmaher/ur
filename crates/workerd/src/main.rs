@@ -16,7 +16,7 @@ use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonServiceSer
 use workerd::{
     ContainerExitSink, ExitWatcherManager, InitGitHooksManager, InitInstructionsManager,
     InitSettingsManager, InitSkillHooksManager, InitSkillsManager, SkillLayout,
-    StartupHooksManager, WorkerDaemonServiceImpl, WorkerIdentity, WorkerPaths,
+    StartupHooksManager, WorkerDaemonServiceImpl, WorkerIdentity, WorkerInitInputs, WorkerPaths,
 };
 
 mod logging;
@@ -50,30 +50,35 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Resolve the agent and container paths once and inject them everywhere,
-    // so init and daemon agree on one agent rather than each component
-    // re-reading UR_AGENT_TYPE for itself.
+    // Resolve the agent, container paths and per-worker inputs once and
+    // inject them everywhere, so init and daemon agree on one agent rather
+    // than each component re-reading the environment for itself.
     let agent = ur_config::AgentType::from_env();
     let paths = WorkerPaths::container(agent);
+    let inputs = WorkerInitInputs::from_env(agent);
 
     match cli.command {
-        Some(Commands::Init) => run_init(agent, &paths).await,
-        Some(Commands::Daemon) => run_daemon_only(agent).await,
-        None => run_daemon(agent, &paths).await,
+        Some(Commands::Init) => run_init(agent, &paths, &inputs).await,
+        Some(Commands::Daemon) => run_daemon_only(agent, &inputs).await,
+        None => run_daemon(agent, &paths, &inputs).await,
     }
 }
 
 /// Synchronous initialization: skills, git hooks, and hostexec shim creation.
-async fn run_init(agent: ur_config::AgentType, paths: &WorkerPaths) -> Result<()> {
-    info!(agent = agent.name(), home = %paths.agent_home.display(), "workerd init starting");
+async fn run_init(
+    agent: ur_config::AgentType,
+    paths: &WorkerPaths,
+    inputs: &WorkerInitInputs,
+) -> Result<()> {
+    info!(agent = agent.name(), "workerd init starting");
 
     InitSkillsManager::new(paths.clone(), SkillLayout::AgentHome)
-        .run()
+        .run(&inputs.skills)
         .await
         .context("skills initialization failed")?;
 
-    InitInstructionsManager::new(paths.clone(), agent, SkillLayout::AgentHome)
-        .run()
+    InitInstructionsManager::new(paths.clone(), SkillLayout::AgentHome)
+        .run(&inputs.instructions)
         .await
         .context("instructions initialization failed")?;
 
@@ -112,11 +117,17 @@ async fn run_init(agent: ur_config::AgentType, paths: &WorkerPaths) -> Result<()
 }
 
 /// Background daemon: runs init, creates tmux session, launches the agent, serves healthz + gRPC.
-async fn run_daemon(agent: ur_config::AgentType, paths: &WorkerPaths) -> Result<()> {
+async fn run_daemon(
+    agent: ur_config::AgentType,
+    paths: &WorkerPaths,
+    inputs: &WorkerInitInputs,
+) -> Result<()> {
     info!("workerd daemon starting");
 
     // 0. Run initialization (skills, git hooks, hostexec shims)
-    run_init(agent, paths).await.context("init phase failed")?;
+    run_init(agent, paths, inputs)
+        .await
+        .context("init phase failed")?;
 
     let spawned_hooks = StartupHooksManager::new(paths.clone())
         .run()
@@ -126,7 +137,7 @@ async fn run_daemon(agent: ur_config::AgentType, paths: &WorkerPaths) -> Result<
         info!(hook = %hook.name, pid = hook.pid, "spawned background startup hook");
     }
 
-    run_daemon_only(agent).await
+    run_daemon_only(agent, inputs).await
 }
 
 /// Worker identity from the container environment.
@@ -140,7 +151,7 @@ fn identity_from_env() -> WorkerIdentity {
 }
 
 /// Daemon without init — expects `workerd init` to have been called already.
-async fn run_daemon_only(agent: ur_config::AgentType) -> Result<()> {
+async fn run_daemon_only(agent: ur_config::AgentType, inputs: &WorkerInitInputs) -> Result<()> {
     // 0. Bind the gRPC listener before launching the agent. The agent's
     // SessionStart hook calls NotifyIdle on this port as soon as it boots;
     // binding first lets that connection queue in the backlog instead of
@@ -181,37 +192,37 @@ async fn run_daemon_only(agent: ur_config::AgentType) -> Result<()> {
     session.send_keys(&spawn_cmd).await?;
     info!(cmd = %spawn_cmd, agent = agent.name(), "agent launched in tmux session");
 
-    // 3b. Build the service with an exit watcher whose sink stops the container
-    // when the agent exits, and start watching.
-    let is_design_worker = std::env::var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV)
-        .unwrap_or_default()
-        == DESIGN_STRATEGY;
+    // 3b. Watch for the agent exiting; the container sink stops the container.
+    let is_design_worker = inputs.instructions.strategy.as_deref() == Some(DESIGN_STRATEGY);
     let exit_watcher = ExitWatcherManager::new(
         Arc::new(session.clone()),
         Arc::new(ContainerExitSink::new(identity.clone())),
         is_design_worker,
         Duration::from_secs(EXIT_WATCHER_POLL_SECS),
-    );
-    let service = WorkerDaemonServiceImpl::new(
-        identity,
-        agent,
-        SkillLayout::AgentHome,
-        session,
-        exit_watcher,
-    );
-    service.spawn_exit_watcher();
+    )
+    .spawn();
+
+    let service = WorkerDaemonServiceImpl::new(identity, agent, SkillLayout::AgentHome, session);
 
     // 4. Spawn healthz HTTP server (port 9119) in background
     tokio::spawn(serve_healthz());
 
-    // 5. Serve gRPC on the listener bound in step 0 (this is the long-lived process)
+    // 5. Serve gRPC on the listener bound in step 0 (this is the long-lived
+    // process). The container sink never returns, so the watcher arm only
+    // fires if it surfaces an error.
     info!(port = WORKERD_GRPC_PORT, "starting gRPC server");
 
-    tonic::transport::Server::builder()
+    let server = tonic::transport::Server::builder()
         .add_service(WorkerDaemonServiceServer::new(service))
-        .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
-        .await
-        .context("gRPC server exited")?;
+        .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener));
+
+    tokio::select! {
+        result = server => result.context("gRPC server exited")?,
+        result = exit_watcher => {
+            let reason = result.context("exit watcher task failed")??;
+            info!(?reason, "agent exit handled");
+        }
+    }
 
     Ok(())
 }

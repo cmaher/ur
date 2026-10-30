@@ -25,10 +25,17 @@ the host CLI (attach command generation), and host-local worker management (dedi
   type-then-Enter for shell windows (no Claude input-box handling).
 - `kill()` is idempotent (missing session/server is `Ok`); `exists()` uses `has-session`;
   `Session::list_sessions(socket)` returns an empty list when the server is not running.
-  Destructive/targeted ops use exact-match targets (`=name`) so `ur-w1` never prefix-matches `ur-w10`.
-- Argv construction is pure (`CreateOptions::argv`, `Session::argv`/`kill_args`/`new_window_args`)
+- **Every** op uses an exact-match target so `ur-w1` never prefix-matches `ur-w10`:
+  `exact_target()` = `=name` for session commands (`has-session`, `kill-session`,
+  `attach-session`); `session_target()` = `=name:` for pane/window commands (`send-keys`,
+  `set-option`, `capture-pane`, `new-window`), which reject a bare `=name` ("can't find pane");
+  `agent_pane_target()` = `=name:0.0`; `window_target(w)` = `=name:w`. Never pass `self.name`
+  as a `-t` target directly. Note `display-message -p` on a missing target exits 0 with empty
+  output on tmux 3.6, so `is_pane_alive` reports it as an unexpected `pane_dead` value.
+- Argv construction is pure (`CreateOptions::argv`, `Session::argv`/`kill_args`/`new_window_args`/
+  `set_option_args`/`send_literal_args`/`send_keys_args`/`capture_pane_args`/`agent_pane_query_args`)
   and unit-tested; `tests/socket.rs` exercises a real tmux server on a unique throwaway socket
-  (requires `tmux` on PATH) and kills that server on drop.
+  (requires `tmux` on PATH) and kills that server on drop, including a prefix-named sibling case.
 
 ## Submitting to Claude Code (`send_keys`)
 

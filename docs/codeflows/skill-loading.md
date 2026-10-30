@@ -132,20 +132,25 @@ entrypoint.sh
     ▼
 workerd init                          [crates/workerd/src/init/{skills,instructions,settings}.rs]
     │   let agent = AgentType::from_env();   // reads UR_AGENT_TYPE, defaults to claude
+    │   let paths = WorkerPaths::container(agent);
+    │   let inputs = WorkerInitInputs::from_env(agent);  // UR_WORKER_SKILLS, UR_WORKER_INSTRUCTION_STRATEGY,
+    │                                                    // UR_WORKER_FORGE, UR_PROJECT_INSTRUCTION, UR_HOST_WORKSPACE
     │
-    ├─ InitSkillsManager::run()            [init/skills.rs]
+    ├─ InitSkillsManager::run(&inputs.skills)            [init/skills.rs]
     │     1. Wipe ~/{agent.customization_root()}/{agent.skill_subdir()}/ (remove + recreate)
-    │     2. Read UR_WORKER_SKILLS env var
-    │     3. For each comma-separated skill name:
+    │     2. inputs.skills = UR_WORKER_SKILLS split on ',' (trimmed, blanks dropped)
+    │     3. For each skill name:
     │        - src: ~/.agent-shared/potential-skills/<name>/
     │        - dst: ~/{agent.customization_root()}/{agent.skill_subdir()}/<name>/
     │        - Recursive directory copy (preserves subdirs)
     │        - Render every UTF-8 file: `%UR_SKILL_HOOKS%` → WorkerPaths.skill_hooks
-    │          (container Claude: /home/worker/.claude/skill-hooks — identical to the
-    │          literal skills used to hard-code). Binary files are copied untouched.
+    │          (container: /home/worker/{agent.customization_root()}/skill-hooks, e.g.
+    │          /home/worker/.claude/skill-hooks, /home/worker/.codex/skill-hooks,
+    │          /home/worker/.gemini/config/skill-hooks — where InitSkillHooksManager
+    │          copies the hooks). Binary files are copied untouched.
     │        - Missing skills log a warning, don't fail
     │
-    ├─ InitInstructionsManager::run()      [init/instructions.rs]
+    ├─ InitInstructionsManager::run(&inputs.instructions)  [init/instructions.rs]
     │     (compose strategy instruction file + shared fragments — see below)
     │
     ├─ InitSettingsManager::run()          [init/settings.rs]
@@ -178,7 +183,9 @@ A plugin is used for local workers because the user's own `~/.claude/skills` sha
 2. **Cross-skill rewrite** (`init/skill_render.rs`) — inside installed skills, references to *other installed* skills become `ur:<name>`: slash references (`/code-review` → `/ur:code-review`, at a word boundary, not followed by `/`) and backtick prose (`` the `implement` skill `` → `` the `ur:implement` skill ``). References to skills not in the installed set, built-ins like `/clear`, and paths are left alone. A name that the same file also uses as a directory (`/brain/…`) is treated as a path throughout that file, so the `/brain` mount is not rewritten while `/brain:init` is. The rewrite runs before placeholder rendering so the rendered hooks path is never rewritten, and it is idempotent.
 3. **Instructions** — `InitInstructionsManager` appends a `# Skill Precedence` fragment after the shared fragments: "When a skill exists as both `ur:<name>` and `<name>`, ALWAYS use `ur:<name>`." The fragment is embedded in `init/instructions.rs`, not in `shared-instructions/`, because shared fragments go to every (container) worker.
 
-`crates/workerd/src/init/mod.rs` holds the shared `copy_dir_recursive`/`collect_md_files` helpers used by the skills and instructions managers. Source paths under `.agent-shared/` are plain literals (agent-agnostic, baked by the base image); destinations are agent-derived via `AgentType`.
+`crates/workerd/src/init/mod.rs` holds the shared `copy_dir_recursive`/`collect_md_files` helpers used by the skills and instructions managers. No manager hardcodes a path: sources come from `WorkerPaths.agent_shared` (`potential-skills/`, `instructions/`, `shared-instructions/`; container: `~/.agent-shared`, agent-agnostic, baked by the base image) and destinations from `WorkerPaths.skills_dest` / `WorkerPaths.instructions_dest` / `WorkerPaths.skill_hooks`. `WorkerPaths::container(agent)` is the only place the container values are derived from `AgentType`.
+
+What to install comes from `WorkerInitInputs` (`init/inputs.rs`), passed to the managers' `run()` rather than read from the environment, so a host-side runtime can run them per worker: `InitSkillsManager::run(&inputs.skills)` and `InitInstructionsManager::run(&inputs.instructions)` (`InstructionInputs { strategy, forge, project: Option<ProjectInstruction { path, host_workspace, mode }> }`). The container binary builds them once with `WorkerInitInputs::from_env(agent)`.
 
 ## Per-Strategy Instruction File Delivery
 
@@ -197,16 +204,21 @@ COPY shared-instructions/ /home/worker/.agent-shared/shared-instructions/
 ### Runtime (workerd init)
 
 ```
-InitInstructionsManager::run()
-    1. Read UR_WORKER_INSTRUCTION_STRATEGY env var (set by server from WorkerStrategy)
-    2. Read ~/.agent-shared/instructions/{value}.md as strategy content
-    3. Append all ~/.agent-shared/shared-instructions/*.md files (sorted alphabetically)
-    4. If UR_PROJECT_INSTRUCTION names a readable file, resolve %WORKSPACE% in it,
-       write it to ~/{agent.home_subdir()}/PROJECT_{agent.instruction_filename()},
-       and append an `@<path>` reference to the composed output
-    5. Write composed result to ~/{agent.home_subdir()}/{agent.instruction_filename()}
-       (e.g. ~/.claude/CLAUDE.md for Claude)
-    6. Missing strategy file → warning (non-fatal); empty/unset env var → skip entirely
+InitInstructionsManager::run(&InstructionInputs)
+    1. inputs.strategy (container: UR_WORKER_INSTRUCTION_STRATEGY, set by server from WorkerStrategy)
+    2. Read <agent_shared>/instructions/{strategy}.md as strategy content
+    3. Append all <agent_shared>/shared-instructions/*.md files (sorted alphabetically),
+       then the skill-precedence fragment (plugin layout only) and forge instructions
+    4. If inputs.project is set (container: UR_PROJECT_INSTRUCTION), read it (a read error
+       fails init), resolve %WORKSPACE% against host_workspace (UR_HOST_WORKSPACE), and
+       include it per ProjectInstructionMode:
+         Import → write PROJECT_{filename} beside instructions_dest and append `@<path>`
+         Inline → append the content directly
+       The container picks ProjectInstructionMode::for_agent(agent): Inline for AGY (no
+       workspace CLAUDE.md, no `@` import), Import otherwise.
+    5. Write composed result to WorkerPaths.instructions_dest
+       (container: ~/{agent.customization_root()}/{agent.instruction_filename()}, e.g. ~/.claude/CLAUDE.md)
+    6. Missing strategy file → warning (non-fatal); no strategy → skip entirely
 ```
 
 ## Host Skills (Runtime Injection via ur.toml)

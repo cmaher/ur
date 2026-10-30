@@ -23,8 +23,6 @@ const POTENTIAL_SETTINGS_FILENAME: &str = "potential-settings.json";
 pub struct WorkerPaths {
     /// Repository checkout the agent works in (in-repo `ur-hooks/` lives here).
     pub workspace: PathBuf,
-    /// Home directory the agent runs under (`$HOME` in a container).
-    pub agent_home: PathBuf,
     /// Destination for skill hooks (in-repo `ur-hooks/skills` + host overlay).
     pub skill_hooks: PathBuf,
     /// Destination directory for selected skills.
@@ -47,9 +45,10 @@ pub struct WorkerPaths {
 impl WorkerPaths {
     /// The paths used inside an agent container for `agent`.
     ///
-    /// The agent home is `$HOME`, falling back to the container's known home.
-    /// Skill hooks always live under the container's known home, matching the
-    /// paths baked into skill sources.
+    /// Everything is rooted at `$HOME` (falling back to the container's known
+    /// home) except `skill_hooks`, which is always under the container's known
+    /// home in the agent's customization root. Skill sources reference hooks
+    /// via `%UR_SKILL_HOOKS%`, rendered from `skill_hooks` at install time.
     pub fn container(agent: AgentType) -> Self {
         let home = std::env::var("HOME")
             .map(PathBuf::from)
@@ -73,7 +72,6 @@ impl WorkerPaths {
             host_hooks: PathBuf::from(CONTAINER_HOST_HOOKS),
             agent_shared: home.join(AGENT_SHARED_DIR),
             shim_dir: home.join(SHIM_DIR),
-            agent_home: home,
         }
     }
 
@@ -91,31 +89,15 @@ impl WorkerPaths {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::ENV_LOCK;
-
-    async fn container_with_home(agent: AgentType, home: &str) -> WorkerPaths {
-        let _lock = ENV_LOCK.lock().await;
-        let prev = std::env::var("HOME").ok();
-        // SAFETY: serialized via ENV_LOCK; restored below.
-        unsafe { std::env::set_var("HOME", home) };
-        let paths = WorkerPaths::container(agent);
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-        }
-        paths
-    }
+    use crate::test_support::container_paths_with_home;
 
     #[tokio::test]
     async fn container_paths_for_claude() {
-        let paths = container_with_home(AgentType::Claude, "/home/worker").await;
+        let paths = container_paths_with_home(AgentType::Claude, "/home/worker").await;
         assert_eq!(
             paths,
             WorkerPaths {
                 workspace: "/workspace".into(),
-                agent_home: "/home/worker".into(),
                 skill_hooks: "/home/worker/.claude/skill-hooks".into(),
                 skills_dest: "/home/worker/.claude/skills".into(),
                 instructions_dest: "/home/worker/.claude/CLAUDE.md".into(),
@@ -134,8 +116,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn container_paths_for_codex() {
+        let paths = container_paths_with_home(AgentType::Codex, "/home/worker").await;
+        assert_eq!(
+            paths.skills_dest,
+            PathBuf::from("/home/worker/.codex/skills")
+        );
+        assert_eq!(
+            paths.skill_hooks,
+            PathBuf::from("/home/worker/.codex/skill-hooks")
+        );
+    }
+
+    #[tokio::test]
     async fn container_paths_for_agy() {
-        let paths = container_with_home(AgentType::Agy, "/home/worker").await;
+        let paths = container_paths_with_home(AgentType::Agy, "/home/worker").await;
         assert_eq!(
             paths.skills_dest,
             PathBuf::from("/home/worker/.gemini/config/skills")
@@ -158,7 +153,7 @@ mod tests {
 
     #[tokio::test]
     async fn container_skill_hooks_ignore_home_override() {
-        let paths = container_with_home(AgentType::Claude, "/tmp/elsewhere").await;
+        let paths = container_paths_with_home(AgentType::Claude, "/tmp/elsewhere").await;
         assert_eq!(
             paths.skills_dest,
             PathBuf::from("/tmp/elsewhere/.claude/skills")

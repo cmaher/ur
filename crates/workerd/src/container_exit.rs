@@ -14,7 +14,7 @@ use crate::grpc_service::WorkerIdentity;
 ///
 /// Sends `WorkerStop` to ur-server and then waits forever for the server to
 /// kill the container. If the RPC fails, exits the process (code 0), which
-/// stops the container directly.
+/// stops the container directly. Never returns.
 #[derive(Clone)]
 pub struct ContainerExitSink {
     identity: WorkerIdentity,
@@ -42,7 +42,7 @@ impl ContainerExitSink {
 
 #[tonic::async_trait]
 impl AgentExitSink for ContainerExitSink {
-    async fn agent_exited(&self, reason: AgentExitReason) {
+    async fn agent_exited(&self, reason: AgentExitReason) -> Result<()> {
         info!(
             ?reason,
             worker_id = self.identity.worker_id,

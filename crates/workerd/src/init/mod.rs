@@ -1,9 +1,14 @@
+pub mod inputs;
 pub mod instructions;
 pub mod settings;
 pub mod skill_render;
 pub mod skills;
 pub mod startup_hooks;
 
+pub use inputs::{
+    InstructionInputs, ProjectInstruction, ProjectInstructionMode, UR_WORKER_SKILLS_ENV,
+    WorkerInitInputs,
+};
 pub use instructions::InitInstructionsManager;
 pub use settings::InitSettingsManager;
 pub use skills::InitSkillsManager;

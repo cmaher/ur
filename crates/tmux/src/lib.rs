@@ -170,9 +170,7 @@ impl Session {
 
     /// Set the status-left string for this session.
     pub async fn set_status_left(&self, value: &str) -> Result<()> {
-        let result = self
-            .run(&["set-option", "-t", &self.name, "status-left", value])
-            .await;
+        let result = run_tmux(&self.set_option_args("status-left", value)).await;
 
         match result {
             Ok(_) => {
@@ -188,7 +186,7 @@ impl Session {
 
     /// Set any tmux option on this session.
     pub async fn set_option(&self, key: &str, value: &str) -> Result<()> {
-        self.run(&["set-option", "-t", &self.name, key, value])
+        run_tmux(&self.set_option_args(key, value))
             .await
             .with_context(|| {
                 format!(
@@ -224,7 +222,7 @@ impl Session {
 
     /// Send a single `Enter` keypress.
     pub async fn send_enter(&self) -> Result<()> {
-        self.run(&["send-keys", "-t", &self.name, "Enter"])
+        run_tmux(&self.send_keys_args(&self.session_target(), &["Enter"]))
             .await
             .with_context(|| format!("failed to send Enter to tmux session '{}'", self.name))
     }
@@ -299,7 +297,7 @@ impl Session {
             input = stale.as_str(),
             "input box not empty before send, clearing it"
         );
-        self.run(&["send-keys", "-t", &self.name, "C-c"])
+        run_tmux(&self.send_keys_args(&self.session_target(), &["C-c"]))
             .await
             .with_context(|| format!("failed to clear input in tmux session '{}'", self.name))?;
         tokio::time::sleep(SUBMIT_SETTLE).await;
@@ -325,7 +323,7 @@ impl Session {
 
     /// Capture the visible contents of the session's pane as text.
     pub async fn capture_pane(&self) -> Result<String> {
-        self.run_stdout(&["capture-pane", "-p", "-t", &self.name])
+        run_tmux_stdout(&self.capture_pane_args())
             .await
             .with_context(|| format!("failed to capture pane for tmux session '{}'", self.name))
     }
@@ -334,16 +332,14 @@ impl Session {
     /// pressing Enter afterwards. This is useful for pre-filling text in a prompt
     /// without submitting it.
     pub async fn send_keys_no_enter(&self, text: &str) -> Result<()> {
-        self.run(&["send-keys", "-t", &self.name, "-l", text])
+        run_tmux(&self.send_literal_args(&self.session_target(), text))
             .await
             .with_context(|| format!("failed to send keys to tmux session '{}'", self.name))
     }
 
     /// Send raw keys without escaping (e.g., "Enter", "C-c").
     pub async fn send_keys_raw(&self, keys: &[&str]) -> Result<()> {
-        let mut args: Vec<&str> = vec!["send-keys", "-t", &self.name];
-        args.extend(keys);
-        self.run(&args)
+        run_tmux(&self.send_keys_args(&self.session_target(), keys))
             .await
             .with_context(|| format!("failed to send raw keys to tmux session '{}'", self.name))
     }
@@ -353,15 +349,7 @@ impl Session {
     /// Targets the original agent pane, even when a helper pane is selected.
     /// Returns the process name (e.g., `"claude"`, `"bash"`).
     pub async fn pane_current_command(&self) -> Result<String> {
-        let target = format!("{}:0.0", self.name);
-        let output = self
-            .run_stdout(&[
-                "display-message",
-                "-p",
-                "-t",
-                &target,
-                "#{pane_current_command}",
-            ])
+        let output = run_tmux_stdout(&self.agent_pane_query_args("#{pane_current_command}"))
             .await
             .with_context(|| {
                 format!(
@@ -379,9 +367,7 @@ impl Session {
     /// lifecycle detection. The tmux `pane_dead` variable: `0` means the process is
     /// still running (alive), `1` means it has exited (dead).
     pub async fn is_pane_alive(&self) -> Result<bool> {
-        let target = format!("{}:0.0", self.name);
-        let output = self
-            .run_stdout(&["display-message", "-p", "-t", &target, "#{pane_dead}"])
+        let output = run_tmux_stdout(&self.agent_pane_query_args("#{pane_dead}"))
             .await
             .with_context(|| {
                 format!(
@@ -408,7 +394,7 @@ impl Session {
     /// Window 0 stays the current window, so session-level operations and
     /// lifecycle checks (`<session>:0.0`) are unaffected.
     pub async fn new_window(&self, window: &str) -> Result<()> {
-        self.run(&self.new_window_args(window))
+        run_tmux(&self.new_window_args(window))
             .await
             .with_context(|| {
                 format!(
@@ -424,10 +410,10 @@ impl Session {
     /// handling — it is meant for shell windows such as a background hook window.
     pub async fn send_keys_to_window(&self, window: &str, text: &str) -> Result<()> {
         let target = self.window_target(window);
-        self.run(&["send-keys", "-t", &target, "-l", text])
+        run_tmux(&self.send_literal_args(&target, text))
             .await
             .with_context(|| format!("failed to send keys to tmux window '{target}'"))?;
-        self.run(&["send-keys", "-t", &target, "Enter"])
+        run_tmux(&self.send_keys_args(&target, &["Enter"]))
             .await
             .with_context(|| format!("failed to send Enter to tmux window '{target}'"))
     }
@@ -474,7 +460,7 @@ impl Session {
     /// `exec_interactive`, or for running directly on the host.
     pub fn attach_command(&self) -> Vec<String> {
         let mut cmd = vec!["tmux".to_string()];
-        cmd.extend(self.argv(&["-u", "attach-session", "-t", &self.name]));
+        cmd.extend(self.argv(&["-u", "attach-session", "-t", &self.exact_target()]));
         cmd
     }
 
@@ -486,36 +472,73 @@ impl Session {
     }
 
     fn new_window_args(&self, window: &str) -> Vec<String> {
-        // Trailing `:` targets the session itself, so the new window gets the
-        // next free index rather than replacing the current one.
-        let target = format!("{}:", self.exact_target());
-        self.argv(&["new-window", "-d", "-t", &target, "-n", window])
+        // The session target (`=name:`) lets the new window take the next
+        // free index rather than replacing the current one.
+        self.argv(&[
+            "new-window",
+            "-d",
+            "-t",
+            &self.session_target(),
+            "-n",
+            window,
+        ])
+    }
+
+    fn capture_pane_args(&self) -> Vec<String> {
+        self.argv(&["capture-pane", "-p", "-t", &self.session_target()])
+    }
+
+    fn set_option_args(&self, key: &str, value: &str) -> Vec<String> {
+        self.argv(&["set-option", "-t", &self.session_target(), key, value])
+    }
+
+    fn send_literal_args(&self, target: &str, text: &str) -> Vec<String> {
+        self.argv(&["send-keys", "-t", target, "-l", text])
+    }
+
+    fn send_keys_args(&self, target: &str, keys: &[&str]) -> Vec<String> {
+        let mut argv = self.argv(&["send-keys", "-t", target]);
+        argv.extend(keys.iter().map(|k| k.to_string()));
+        argv
+    }
+
+    /// `display-message -p` against the original agent pane (`=name:0.0`).
+    fn agent_pane_query_args(&self, format: &str) -> Vec<String> {
+        self.argv(&[
+            "display-message",
+            "-p",
+            "-t",
+            &self.agent_pane_target(),
+            format,
+        ])
     }
 
     fn kill_args(&self) -> Vec<String> {
         self.argv(&["kill-session", "-t", &self.exact_target()])
     }
 
-    /// `=name` matches the session name exactly instead of by prefix, so
-    /// destructive operations never hit a similarly-named session.
+    /// Every target matches the session name exactly (`=name`) instead of by
+    /// prefix, so no operation ever hits a similarly-named session (`ur-w1`
+    /// vs `ur-w10`). Session-scoped commands (`has-session`, `kill-session`,
+    /// `attach-session`) take this bare form.
     fn exact_target(&self) -> String {
         format!("={}", self.name)
     }
 
+    /// The session's current window/pane (`=name:`). Pane- and window-targeted
+    /// commands (`send-keys`, `set-option`, `capture-pane`, `new-window`)
+    /// reject a bare `=name`, so they need the trailing `:`.
+    fn session_target(&self) -> String {
+        format!("{}:", self.exact_target())
+    }
+
+    /// The original agent pane (`=name:0.0`).
+    fn agent_pane_target(&self) -> String {
+        format!("{}:0.0", self.exact_target())
+    }
+
     fn window_target(&self, window: &str) -> String {
-        format!("{}:{window}", self.name)
-    }
-
-    /// Run a tmux command against this session's server and check for success.
-    async fn run(&self, args: &[impl AsRef<str>]) -> Result<()> {
-        self.run_stdout(args).await.map(|_| ())
-    }
-
-    /// Run a tmux command against this session's server and return stdout.
-    async fn run_stdout(&self, args: &[impl AsRef<str>]) -> Result<String> {
-        let mut argv = socket_args(self.socket());
-        argv.extend(args.iter().map(|a| a.as_ref().to_string()));
-        run_tmux_stdout(&argv).await
+        format!("{}:{window}", self.exact_target())
     }
 }
 
@@ -662,7 +685,7 @@ mod tests {
         let session = Session::agent();
         assert_eq!(
             session.attach_command(),
-            vec!["tmux", "-u", "attach-session", "-t", "agent"]
+            vec!["tmux", "-u", "attach-session", "-t", "=agent"]
         );
     }
 
@@ -671,7 +694,7 @@ mod tests {
         let session = Session::on_socket("ur", "ur-w1");
         assert_eq!(
             session.attach_command(),
-            vec!["tmux", "-L", "ur", "-u", "attach-session", "-t", "ur-w1"]
+            vec!["tmux", "-L", "ur", "-u", "attach-session", "-t", "=ur-w1"]
         );
     }
 
@@ -752,12 +775,77 @@ mod tests {
     #[test]
     fn test_session_level_argv_prefixes_socket_only_when_set() {
         assert_eq!(
-            Session::agent().argv(&["send-keys", "-t", "agent", "Enter"]),
-            vec!["send-keys", "-t", "agent", "Enter"]
+            Session::agent().argv(&["list-windows"]),
+            vec!["list-windows"]
         );
         assert_eq!(
-            Session::on_socket("ur", "ur-w1").argv(&["send-keys", "-t", "ur-w1", "Enter"]),
-            vec!["-L", "ur", "send-keys", "-t", "ur-w1", "Enter"]
+            Session::on_socket("ur", "ur-w1").argv(&["list-windows"]),
+            vec!["-L", "ur", "list-windows"]
+        );
+    }
+
+    /// The container's default-socket argv differs from the historical one
+    /// only by the exact-match `=` prefix (and `:` for pane targets).
+    #[test]
+    fn test_default_socket_targets_are_exact() {
+        let s = Session::agent();
+        let pane = s.session_target();
+        assert_eq!(
+            s.send_literal_args(&pane, "/clear"),
+            vec!["send-keys", "-t", "=agent:", "-l", "/clear"]
+        );
+        assert_eq!(
+            s.send_keys_args(&pane, &["Enter"]),
+            vec!["send-keys", "-t", "=agent:", "Enter"]
+        );
+        assert_eq!(
+            s.set_option_args("status-left", "[w1] "),
+            vec!["set-option", "-t", "=agent:", "status-left", "[w1] "]
+        );
+        assert_eq!(
+            s.capture_pane_args(),
+            vec!["capture-pane", "-p", "-t", "=agent:"]
+        );
+        assert_eq!(
+            s.agent_pane_query_args("#{pane_dead}"),
+            vec!["display-message", "-p", "-t", "=agent:0.0", "#{pane_dead}"]
+        );
+        assert_eq!(
+            s.send_keys_args(&s.window_target("bg"), &["Enter"]),
+            vec!["send-keys", "-t", "=agent:bg", "Enter"]
+        );
+    }
+
+    #[test]
+    fn test_socket_targets_are_exact() {
+        let s = Session::on_socket("ur", "ur-w1");
+        assert_eq!(
+            s.send_literal_args(&s.window_target("bg"), "make"),
+            vec!["-L", "ur", "send-keys", "-t", "=ur-w1:bg", "-l", "make"]
+        );
+        assert_eq!(
+            s.agent_pane_query_args("#{pane_current_command}"),
+            vec![
+                "-L",
+                "ur",
+                "display-message",
+                "-p",
+                "-t",
+                "=ur-w1:0.0",
+                "#{pane_current_command}"
+            ]
+        );
+        assert_eq!(
+            s.set_option_args("status-left-length", "50"),
+            vec![
+                "-L",
+                "ur",
+                "set-option",
+                "-t",
+                "=ur-w1:",
+                "status-left-length",
+                "50"
+            ]
         );
     }
 
@@ -784,14 +872,6 @@ mod tests {
         assert_eq!(session.name(), "agent");
     }
 
-    /// Verify that `send_keys_no_enter` sends literal text without Enter.
-    /// We cannot run tmux in unit tests, so we verify the command construction
-    /// by checking that the method produces the correct tmux arguments.
-    /// `send_keys_no_enter` should call `send-keys -t <session> -l <text>` only,
-    /// while `send_keys` additionally calls `send-keys -t <session> Enter`.
-    /// Verify that `is_pane_alive` targets the correct session.
-    /// tmux isn't running in unit tests so the command will fail, but the error
-    /// message encodes the session name, confirming correct argument construction.
     /// Verify `pane_current_command` runs the correct tmux subcommand and targets the session.
     /// If tmux is not running, the call fails with an error referencing the session name or tmux.
     /// If tmux is running, the call may succeed and return a process name string.

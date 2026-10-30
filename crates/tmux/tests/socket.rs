@@ -139,3 +139,87 @@ async fn kill_prefix_does_not_match_other_session() {
 
     assert!(keep.exists().await.expect("ur-w10 survives"));
 }
+
+/// Every targeted op on a missing `ur-w1` must fail rather than prefix-match
+/// the live `ur-w10`, and `ur-w10` must be left untouched.
+#[tokio::test]
+async fn targeted_ops_do_not_prefix_match_sibling_session() {
+    let socket = unique_socket("exact-ops");
+    let _guard = ServerGuard {
+        socket: socket.clone(),
+    };
+
+    let keep = Session::create(CreateOptions {
+        name: "ur-w10".into(),
+        socket: Some(socket.clone()),
+        width: Some(120),
+        height: Some(40),
+        detached: true,
+        ..Default::default()
+    })
+    .await
+    .expect("create ur-w10");
+    keep.new_window("bg").await.expect("bg window on ur-w10");
+    let missing = Session::on_socket(&socket, "ur-w1");
+
+    const MARKER: &str = "PREFIX_MATCH_MARKER";
+    assert!(missing.send_keys_no_enter(MARKER).await.is_err());
+    assert!(missing.send_keys_raw(&["Enter"]).await.is_err());
+    assert!(missing.send_enter().await.is_err());
+    assert!(missing.send_keys_to_window("bg", MARKER).await.is_err());
+    assert!(missing.set_option("status-left", MARKER).await.is_err());
+    assert!(missing.set_status_left(MARKER).await.is_err());
+    assert!(missing.capture_pane().await.is_err());
+    assert!(missing.new_window("other").await.is_err());
+    assert!(missing.is_pane_alive().await.is_err());
+    // Older tmux errors; newer tmux prints nothing for a missing target.
+    assert!(
+        missing
+            .pane_current_command()
+            .await
+            .map_or(true, |cmd| cmd.is_empty())
+    );
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !keep
+            .capture_pane()
+            .await
+            .expect("capture ur-w10")
+            .contains(MARKER)
+    );
+    let out = std::process::Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "show-options",
+            "-t",
+            "=ur-w10:",
+            "status-left",
+        ])
+        .output()
+        .expect("show-options");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(MARKER));
+    let windows = std::process::Command::new("tmux")
+        .args([
+            "-L",
+            &socket,
+            "list-windows",
+            "-t",
+            "=ur-w10",
+            "-F",
+            "#{window_name}",
+        ])
+        .output()
+        .expect("list-windows");
+    assert!(!String::from_utf8_lossy(&windows.stdout).contains("other"));
+
+    // Exact targets still reach the session itself.
+    assert!(keep.is_pane_alive().await.expect("ur-w10 pane alive"));
+    keep.set_option("status-left", "ok")
+        .await
+        .expect("set on ur-w10");
+    keep.send_keys_to_window("bg", "true")
+        .await
+        .expect("send to ur-w10:bg");
+}

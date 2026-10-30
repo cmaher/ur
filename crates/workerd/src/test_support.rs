@@ -11,6 +11,22 @@ use crate::paths::WorkerPaths;
 /// Serializes every test in this crate that mutates process environment variables.
 pub static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
+/// [`WorkerPaths::container`] for `agent` with `$HOME` set to `home`.
+pub async fn container_paths_with_home(agent: AgentType, home: &str) -> WorkerPaths {
+    let _lock = ENV_LOCK.lock().await;
+    let prev = std::env::var("HOME").ok();
+    // SAFETY: serialized via ENV_LOCK; restored below.
+    unsafe { std::env::set_var("HOME", home) };
+    let paths = WorkerPaths::container(agent);
+    unsafe {
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+    paths
+}
+
 /// Build `WorkerPaths` for `agent` rooted entirely under `tmp`, mirroring the
 /// container layout: `<tmp>/workspace`, `<tmp>/home`, `<tmp>/host-hooks`.
 pub fn temp_paths(tmp: &TempDir, agent: AgentType) -> WorkerPaths {
@@ -35,6 +51,5 @@ fn rooted_paths(root: &Path, agent: AgentType) -> WorkerPaths {
         host_hooks: root.join("host-hooks"),
         agent_shared: home.join(".agent-shared"),
         shim_dir: home.join(".local/bin"),
-        agent_home: home,
     }
 }

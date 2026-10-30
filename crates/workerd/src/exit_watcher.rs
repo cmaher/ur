@@ -4,11 +4,13 @@
 //! injected [`AgentExitSink`] when the agent has exited. It never decides what
 //! "exited" means for the hosting process: the container binary's sink asks
 //! the server to stop the container, while a host-side daemon can tear down
-//! just its own worker.
+//! just its own worker. The owner spawns the watcher (see
+//! [`ExitWatcherManager::spawn`]) and handles the task's result.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context;
 use tracing::{debug, info, warn};
 
 /// Why the exit watcher concluded the agent is gone.
@@ -25,10 +27,17 @@ pub enum AgentExitReason {
 /// Receives the exit watcher's single "agent exited" notification.
 ///
 /// Implementations own the consequence (container shutdown, local teardown).
-/// The watcher stops polling once `agent_exited` returns.
+/// The watcher stops polling once `agent_exited` returns and returns its
+/// result from the watcher task, so a failed teardown reaches whoever awaits
+/// the task's `JoinHandle`.
+///
+/// `agent_exited` runs *inside* the watcher task. A sink must not abort that
+/// task (e.g. via the `JoinHandle` its owner holds) as part of teardown: the
+/// abort would cancel the sink mid-teardown and drop its result. Report
+/// failures through the returned `Result` instead.
 #[tonic::async_trait]
 pub trait AgentExitSink: Send + Sync {
-    async fn agent_exited(&self, reason: AgentExitReason);
+    async fn agent_exited(&self, reason: AgentExitReason) -> anyhow::Result<()>;
 }
 
 /// The pane queries the exit watcher needs. Implemented for [`tmux::Session`];
@@ -110,8 +119,17 @@ impl ExitWatcherManager {
         }
     }
 
-    /// Poll until the agent exits, invoke the sink once, then return.
-    pub async fn run(&self) {
+    /// Run [`ExitWatcherManager::run`] on a new task. Await the handle for the
+    /// sink's outcome, or abort it to stop watching (e.g. when the host tears
+    /// this worker down for another reason).
+    pub fn spawn(&self) -> tokio::task::JoinHandle<anyhow::Result<AgentExitReason>> {
+        let watcher = self.clone();
+        tokio::spawn(async move { watcher.run().await })
+    }
+
+    /// Poll until the agent exits, invoke the sink once, then return the exit
+    /// reason, or the sink's error.
+    pub async fn run(&self) -> anyhow::Result<AgentExitReason> {
         info!(
             is_design_worker = self.is_design_worker,
             poll_interval = ?self.poll_interval,
@@ -122,8 +140,11 @@ impl ExitWatcherManager {
         loop {
             tokio::time::sleep(self.poll_interval).await;
             if let Some(reason) = self.check(&mut state).await {
-                self.sink.agent_exited(reason).await;
-                return;
+                self.sink
+                    .agent_exited(reason)
+                    .await
+                    .with_context(|| format!("agent exit sink failed ({reason:?})"))?;
+                return Ok(reason);
             }
         }
     }
@@ -220,12 +241,17 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         reasons: Mutex<Vec<AgentExitReason>>,
+        fail: bool,
     }
 
     #[tonic::async_trait]
     impl AgentExitSink for RecordingSink {
-        async fn agent_exited(&self, reason: AgentExitReason) {
+        async fn agent_exited(&self, reason: AgentExitReason) -> anyhow::Result<()> {
             self.reasons.lock().await.push(reason);
+            if self.fail {
+                anyhow::bail!("teardown failed");
+            }
+            Ok(())
         }
     }
 
@@ -242,8 +268,27 @@ mod tests {
         let pane = ScriptedPane::new(vec![Ok(true), Ok(true), Ok(false)], vec![]);
         let sink = Arc::new(RecordingSink::default());
 
-        watcher(pane, sink.clone(), false).run().await;
+        let reason = watcher(pane, sink.clone(), false).run().await.unwrap();
 
+        assert_eq!(reason, AgentExitReason::PaneDead);
+        assert_eq!(*sink.reasons.lock().await, vec![AgentExitReason::PaneDead]);
+    }
+
+    #[tokio::test]
+    async fn sink_error_is_returned_from_spawned_task() {
+        let pane = ScriptedPane::new(vec![Ok(false)], vec![]);
+        let sink = Arc::new(RecordingSink {
+            fail: true,
+            ..Default::default()
+        });
+
+        let err = watcher(pane, sink.clone(), false)
+            .spawn()
+            .await
+            .expect("watcher task panicked")
+            .unwrap_err();
+
+        assert!(format!("{err:#}").contains("teardown failed"), "{err:#}");
         assert_eq!(*sink.reasons.lock().await, vec![AgentExitReason::PaneDead]);
     }
 
@@ -252,7 +297,7 @@ mod tests {
         let pane = ScriptedPane::new(vec![Err(anyhow::anyhow!("no server"))], vec![]);
         let sink = Arc::new(RecordingSink::default());
 
-        watcher(pane, sink.clone(), false).run().await;
+        watcher(pane, sink.clone(), false).run().await.unwrap();
 
         assert_eq!(
             *sink.reasons.lock().await,
@@ -265,7 +310,7 @@ mod tests {
         let pane = ScriptedPane::new(vec![], vec!["zsh", "node", "node", "zsh"]);
         let sink = Arc::new(RecordingSink::default());
 
-        watcher(pane, sink.clone(), true).run().await;
+        watcher(pane, sink.clone(), true).run().await.unwrap();
 
         assert_eq!(
             *sink.reasons.lock().await,
@@ -282,7 +327,7 @@ mod tests {
         );
         let sink = Arc::new(RecordingSink::default());
 
-        watcher(pane, sink.clone(), false).run().await;
+        watcher(pane, sink.clone(), false).run().await.unwrap();
 
         assert_eq!(*sink.reasons.lock().await, vec![AgentExitReason::PaneDead]);
     }

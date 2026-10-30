@@ -10,7 +10,6 @@ use tracing::{error, info, warn};
 use ur_rpc::proto::core::UpdateAgentStatusRequest;
 
 use crate::dispatch::dispatch_commands;
-use crate::exit_watcher::ExitWatcherManager;
 use crate::skill_layout::SkillLayout;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonService;
@@ -58,10 +57,10 @@ impl WorkerIdentity {
 
 /// gRPC `WorkerDaemonService` for one worker.
 ///
-/// Does not own process lifetime: the agent's tmux session and the exit
-/// watcher (with its [`AgentExitSink`](crate::exit_watcher::AgentExitSink))
-/// are injected, so the same service runs as a container's PID 1 or as one of
-/// many in-process daemons on the host.
+/// Does not own process lifetime: the agent's tmux session is injected, and
+/// the owner runs the [`ExitWatcherManager`](crate::exit_watcher::ExitWatcherManager)
+/// itself, so the same service runs as a container's PID 1 or as one of many
+/// in-process daemons on the host.
 #[derive(Clone)]
 pub struct WorkerDaemonServiceImpl {
     identity: WorkerIdentity,
@@ -76,7 +75,6 @@ pub struct WorkerDaemonServiceImpl {
     skill_layout: SkillLayout,
     /// The agent's tmux session; every send-keys / status update targets it.
     session: tmux::Session,
-    exit_watcher: ExitWatcherManager,
 }
 
 /// How long to wait before typing into the agent session from a hook-driven RPC.
@@ -93,7 +91,6 @@ impl WorkerDaemonServiceImpl {
         agent: ur_config::AgentType,
         skill_layout: SkillLayout,
         session: tmux::Session,
-        exit_watcher: ExitWatcherManager,
     ) -> Self {
         WorkerDaemonServiceImpl {
             identity,
@@ -107,15 +104,7 @@ impl WorkerDaemonServiceImpl {
             agent,
             skill_layout,
             session,
-            exit_watcher,
         }
-    }
-
-    /// Start the injected exit watcher in the background. Abort the returned
-    /// handle to stop watching (e.g. when the host tears this worker down).
-    pub fn spawn_exit_watcher(&self) -> tokio::task::JoinHandle<()> {
-        let watcher = self.exit_watcher.clone();
-        tokio::spawn(async move { watcher.run().await })
     }
 
     /// Fire-and-forget: type text into the agent session once the hook that
@@ -623,7 +612,8 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         let Some(ticket_id) = ticket_id else {
             info!("DispatchTicket called with no ticket set");
             return Ok(Response::new(DispatchTicketResponse {
-                error: "No ticket set. Use `ur-workertools set-ticket <id>` first.".to_string(),
+                error: "No ticket set. Use `ur-workertools workflow set-ticket <id>` first."
+                    .to_string(),
             }));
         };
 

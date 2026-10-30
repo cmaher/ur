@@ -141,14 +141,14 @@ impl AgentType {
         }
     }
 
-    /// Subdirectory (relative to `home_subdir()`) holding installed skills.
+    /// Subdirectory (relative to `customization_root()`) holding installed skills.
     pub fn skill_subdir(&self) -> &'static str {
         match self {
             Self::Claude | Self::Codex | Self::Agy => "skills",
         }
     }
 
-    /// Subdirectory (relative to `home_subdir()`) holding skill hooks.
+    /// Subdirectory (relative to `customization_root()`) holding skill hooks.
     pub fn skill_hooks_subdir(&self) -> &'static str {
         match self {
             Self::Claude | Self::Codex | Self::Agy => "skill-hooks",

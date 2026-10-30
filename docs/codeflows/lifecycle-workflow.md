@@ -174,11 +174,13 @@ it at `$UR_WORKERD_ADDR` (`ur_config::UR_WORKERD_ADDR_ENV`), defaulting to `http
 when unset, and sends the `ur-worker-id`/`ur-worker-secret` headers on every workerd call.
 
 **`Implement(ticket_id)`** -- Server dispatches implementation work.
-- Populates `DispatchBuffer` via `dispatch_commands(agent, "implement", &[ticket_id])`:
-  `[agent.clear_command(), agent.skill_invocation("implement", &[ticket_id])]` — for Claude
+- Populates `DispatchBuffer` via `dispatch_commands(agent, &skill_layout, "implement", &[ticket_id])`:
+  `[agent.clear_command(), agent.skill_invocation(&skill_layout.qualify("implement"), &[ticket_id])]`
+  (the container's `SkillLayout::AgentHome` leaves the name bare; the local-worker plugin layout
+  yields `ur:implement`) — for Claude
   and AGY that's `["/clear", "/implement {ticket_id}"]`; Codex has no custom slash commands, so it's
   `["/new", "Run the `implement` skill. DO NOT USE DESIGN SKILL. Arguments: {ticket_id}"]`. `agent` is injected into
-  the gRPC service at startup (`WorkerDaemonServiceImpl.agent`), never read per-handler.
+  the gRPC service at startup (`WorkerDaemonServiceImpl.agent`, alongside `skill_layout`), never read per-handler.
 - Sets `lifecycle_step = "implementing"`
 - Pops and sends the first command (context reset) to tmux immediately
 

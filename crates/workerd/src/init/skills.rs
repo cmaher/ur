@@ -8,13 +8,12 @@ use super::skill_render::render_skill_text;
 use crate::paths::WorkerPaths;
 use crate::skill_layout::SkillLayout;
 
-const SKILLS_ENV: &str = "UR_WORKER_SKILLS";
 const POTENTIAL_SKILLS_DIR: &str = "potential-skills";
 const PLUGIN_MANIFEST_DIR: &str = ".claude-plugin";
 const PLUGIN_MANIFEST_FILE: &str = "plugin.json";
 const PLUGIN_DESCRIPTION: &str = "ur worker skills";
 
-/// Manages skill directory initialization from potential-skills based on an env var.
+/// Installs a worker's selected skills from `potential-skills/`.
 ///
 /// The injected [`SkillLayout`] decides where skills land and whether
 /// cross-skill references are namespaced; every layout renders the
@@ -30,9 +29,10 @@ impl InitSkillsManager {
         InitSkillsManager { paths, layout }
     }
 
-    /// Install the skills named in `UR_WORKER_SKILLS` from
-    /// `<agent_shared>/potential-skills/` into `skills_dest` per the layout.
-    pub async fn run(&self) -> Result<(), std::io::Error> {
+    /// Install `skills` from `<agent_shared>/potential-skills/` into
+    /// `skills_dest` per the layout. `skills_dest` is always wiped and
+    /// recreated, even when `skills` is empty.
+    pub async fn run(&self, skills: &[String]) -> Result<(), std::io::Error> {
         let skills_dest = &self.paths.skills_dest;
         let potential_dir = self.paths.agent_shared.join(POTENTIAL_SKILLS_DIR);
 
@@ -49,22 +49,16 @@ impl InitSkillsManager {
             write_plugin_manifest(skills_dest, namespace).await?;
         }
 
-        let skill_names = match std::env::var(SKILLS_ENV) {
-            Ok(val) if !val.trim().is_empty() => val,
-            _ => {
-                info!(
-                    env = SKILLS_ENV,
-                    "env var empty or missing, no skills to copy"
-                );
-                return Ok(());
-            }
-        };
-        info!(skills = %skill_names, "processing skill list");
+        if skills.is_empty() {
+            info!("no skills requested");
+            return Ok(());
+        }
+        info!(?skills, "processing skill list");
 
         // Resolve the full installed set first: cross-skill rewriting must
         // know every skill that will exist, not just those copied so far.
         let mut installed: Vec<&str> = Vec::new();
-        for name in skill_names.split(',').map(str::trim) {
+        for name in skills.iter().map(|s| s.trim()) {
             if name.is_empty() {
                 continue;
             }
@@ -132,12 +126,11 @@ async fn write_plugin_manifest(plugin_root: &Path, namespace: &str) -> std::io::
 mod tests {
     use super::*;
     use crate::init::skill_render::SKILL_HOOKS_PLACEHOLDER;
-    use crate::test_support::{ENV_LOCK, temp_paths};
+    use crate::test_support::{container_paths_with_home, temp_paths};
     use std::path::PathBuf;
     use tempfile::TempDir;
     use ur_config::AgentType;
 
-    /// Old literal baked into skill sources before `%UR_SKILL_HOOKS%`.
     const CONTAINER_SKILL_HOOKS: &str = "/home/worker/.claude/skill-hooks";
 
     fn write_skill(paths: &WorkerPaths, name: &str, file: &str, content: &str) {
@@ -146,12 +139,12 @@ mod tests {
         std::fs::write(dir.join(file), content).unwrap();
     }
 
-    async fn run_with_skills(paths: &WorkerPaths, layout: SkillLayout, skills: &str) {
-        // SAFETY: callers hold ENV_LOCK
-        unsafe { std::env::set_var(SKILLS_ENV, skills) };
-        let result = InitSkillsManager::new(paths.clone(), layout).run().await;
-        unsafe { std::env::remove_var(SKILLS_ENV) };
-        result.unwrap();
+    async fn run_with_skills(paths: &WorkerPaths, layout: SkillLayout, skills: &[&str]) {
+        let skills: Vec<String> = skills.iter().map(|s| (*s).to_owned()).collect();
+        InitSkillsManager::new(paths.clone(), layout)
+            .run(&skills)
+            .await
+            .unwrap();
     }
 
     fn repo_potential_skills() -> PathBuf {
@@ -210,12 +203,11 @@ mod tests {
 
     #[tokio::test]
     async fn run_copies_named_skills() {
-        let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         let paths = temp_paths(&tmp, AgentType::Claude);
         write_skill(&paths, "my-skill", "SKILL.md", "# My Skill");
 
-        run_with_skills(&paths, SkillLayout::AgentHome, "my-skill").await;
+        run_with_skills(&paths, SkillLayout::AgentHome, &["my-skill"]).await;
 
         let dest = paths.skills_dest.join("my-skill/SKILL.md");
         assert!(
@@ -228,27 +220,23 @@ mod tests {
 
     #[tokio::test]
     async fn run_missing_skill_warns_but_succeeds() {
-        let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         let paths = temp_paths(&tmp, AgentType::Claude);
 
-        run_with_skills(&paths, SkillLayout::AgentHome, "nonexistent").await;
+        run_with_skills(&paths, SkillLayout::AgentHome, &["nonexistent"]).await;
 
         assert!(!paths.skills_dest.join("nonexistent").exists());
     }
 
     #[tokio::test]
-    async fn run_unset_env_skips_with_empty_skills_dir() {
-        let _lock = ENV_LOCK.lock().await;
+    async fn run_no_skills_leaves_empty_skills_dir() {
         let tmp = TempDir::new().unwrap();
 
-        // SAFETY: tests are serialized via ENV_LOCK
-        unsafe { std::env::remove_var(SKILLS_ENV) };
         let mgr =
             InitSkillsManager::new(temp_paths(&tmp, AgentType::Claude), SkillLayout::AgentHome);
-        let result = mgr.run().await;
+        let result = mgr.run(&[]).await;
 
-        assert!(result.is_ok(), "unset env should not cause an error");
+        assert!(result.is_ok(), "no skills should not cause an error");
         assert!(
             temp_paths(&tmp, AgentType::Claude).skills_dest.exists(),
             "skills dir is always (re)created"
@@ -257,17 +245,14 @@ mod tests {
 
     #[tokio::test]
     async fn run_wipes_existing_skills_dir_first() {
-        let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         let skills_dir = temp_paths(&tmp, AgentType::Claude).skills_dest;
         std::fs::create_dir_all(skills_dir.join("stale-skill")).unwrap();
         std::fs::write(skills_dir.join("stale-skill/SKILL.md"), "old").unwrap();
 
-        // SAFETY: tests are serialized via ENV_LOCK
-        unsafe { std::env::remove_var(SKILLS_ENV) };
         let mgr =
             InitSkillsManager::new(temp_paths(&tmp, AgentType::Claude), SkillLayout::AgentHome);
-        mgr.run().await.unwrap();
+        mgr.run(&[]).await.unwrap();
 
         assert!(
             !skills_dir.join("stale-skill").exists(),
@@ -277,12 +262,10 @@ mod tests {
 
     #[tokio::test]
     async fn agy_uses_customization_root() {
-        let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
 
-        unsafe { std::env::remove_var(SKILLS_ENV) };
         InitSkillsManager::new(temp_paths(&tmp, AgentType::Agy), SkillLayout::AgentHome)
-            .run()
+            .run(&[])
             .await
             .unwrap();
 
@@ -296,7 +279,6 @@ mod tests {
 
     #[tokio::test]
     async fn agent_home_renders_hooks_from_injected_path() {
-        let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         let paths = temp_paths(&tmp, AgentType::Claude);
         write_skill(
@@ -307,7 +289,12 @@ mod tests {
         );
         write_skill(&paths, "code-review", "SKILL.md", "# Review");
 
-        run_with_skills(&paths, SkillLayout::AgentHome, "implement,code-review").await;
+        run_with_skills(
+            &paths,
+            SkillLayout::AgentHome,
+            &["implement", "code-review"],
+        )
+        .await;
 
         let out = std::fs::read_to_string(paths.skills_dest.join("implement/SKILL.md")).unwrap();
         assert_eq!(
@@ -323,15 +310,15 @@ mod tests {
     /// sources except `%UR_SKILL_HOOKS%`, which renders to the old literal.
     #[tokio::test]
     async fn container_install_of_repo_skills_matches_old_literal_output() {
-        let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         let mut paths = temp_paths(&tmp, AgentType::Claude);
         paths.agent_shared = repo_potential_skills().parent().unwrap().to_path_buf();
         paths.skill_hooks = PathBuf::from(CONTAINER_SKILL_HOOKS);
         let names = repo_skill_names();
         assert!(names.iter().any(|n| n == "implement"));
+        let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
 
-        run_with_skills(&paths, SkillLayout::AgentHome, &names.join(",")).await;
+        run_with_skills(&paths, SkillLayout::AgentHome, &name_refs).await;
 
         let mut files = Vec::new();
         for name in &names {
@@ -348,9 +335,40 @@ mod tests {
         );
     }
 
+    /// Container skills render `%UR_SKILL_HOOKS%` to the agent's own
+    /// skill-hooks dir, where `InitSkillHooksManager` copies the hooks.
+    async fn assert_container_hook_render(agent: AgentType, expected: &str) {
+        let tmp = TempDir::new().unwrap();
+        let mut paths = temp_paths(&tmp, agent);
+        paths.skill_hooks = container_paths_with_home(agent, "/home/worker")
+            .await
+            .skill_hooks;
+        write_skill(
+            &paths,
+            "implement",
+            "SKILL.md",
+            "@%UR_SKILL_HOOKS%/implement/style-guide.md\n",
+        );
+
+        run_with_skills(&paths, SkillLayout::AgentHome, &["implement"]).await;
+
+        let out = std::fs::read_to_string(paths.skills_dest.join("implement/SKILL.md")).unwrap();
+        assert_eq!(out, format!("@{expected}/implement/style-guide.md\n"));
+    }
+
+    #[tokio::test]
+    async fn codex_container_renders_codex_skill_hooks() {
+        assert_container_hook_render(AgentType::Codex, "/home/worker/.codex/skill-hooks").await;
+    }
+
+    #[tokio::test]
+    async fn agy_container_renders_gemini_config_skill_hooks() {
+        assert_container_hook_render(AgentType::Agy, "/home/worker/.gemini/config/skill-hooks")
+            .await;
+    }
+
     #[tokio::test]
     async fn plugin_layout_writes_manifest_and_nested_skills() {
-        let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         let paths = temp_paths(&tmp, AgentType::Claude);
         write_skill(
@@ -367,7 +385,12 @@ mod tests {
             "See the `implement` skill.",
         );
 
-        run_with_skills(&paths, SkillLayout::ur_plugin(), "implement,code-review").await;
+        run_with_skills(
+            &paths,
+            SkillLayout::ur_plugin(),
+            &["implement", "code-review"],
+        )
+        .await;
 
         let manifest: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(paths.skills_dest.join(".claude-plugin/plugin.json")).unwrap(),
@@ -400,13 +423,13 @@ mod tests {
 
     #[tokio::test]
     async fn plugin_install_of_repo_skills_leaves_no_placeholder() {
-        let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         let mut paths = temp_paths(&tmp, AgentType::Claude);
         paths.agent_shared = repo_potential_skills().parent().unwrap().to_path_buf();
         let names = repo_skill_names();
+        let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
 
-        run_with_skills(&paths, SkillLayout::ur_plugin(), &names.join(",")).await;
+        run_with_skills(&paths, SkillLayout::ur_plugin(), &name_refs).await;
 
         let mut files = Vec::new();
         walk_files(&paths.skills_dest, &mut files);
