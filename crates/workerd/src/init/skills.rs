@@ -1,40 +1,34 @@
-use std::path::PathBuf;
-
 use tracing::{info, warn};
-use ur_config::AgentType;
 
 use super::copy_dir_recursive;
+use crate::paths::WorkerPaths;
 
 const SKILLS_ENV: &str = "UR_WORKER_SKILLS";
-const POTENTIAL_SKILLS_DIR: &str = ".agent-shared/potential-skills";
+const POTENTIAL_SKILLS_DIR: &str = "potential-skills";
 
 /// Manages skill directory initialization from potential-skills based on an env var.
 #[derive(Clone)]
 pub struct InitSkillsManager {
-    home: PathBuf,
-    agent: AgentType,
+    paths: WorkerPaths,
 }
 
 impl InitSkillsManager {
-    pub fn new(home: PathBuf, agent: AgentType) -> Self {
-        InitSkillsManager { home, agent }
+    pub fn new(paths: WorkerPaths) -> Self {
+        InitSkillsManager { paths }
     }
 
-    /// Copy the skills named in `UR_WORKER_SKILLS` from `.agent-shared/potential-skills/`
-    /// into `~/{agent.customization_root()}/{agent.skill_subdir()}/`.
+    /// Copy the skills named in `UR_WORKER_SKILLS` from
+    /// `<agent_shared>/potential-skills/` into `<skills_dest>/`.
     pub async fn run(&self) -> Result<(), std::io::Error> {
-        let skills_dir = self
-            .home
-            .join(self.agent.customization_root())
-            .join(self.agent.skill_subdir());
-        let potential_dir = self.home.join(POTENTIAL_SKILLS_DIR);
+        let skills_dir = &self.paths.skills_dest;
+        let potential_dir = self.paths.agent_shared.join(POTENTIAL_SKILLS_DIR);
 
         // Always wipe and recreate skills dir
         if skills_dir.exists() {
-            tokio::fs::remove_dir_all(&skills_dir).await?;
+            tokio::fs::remove_dir_all(skills_dir).await?;
             info!(path = %skills_dir.display(), "removed existing skills directory");
         }
-        tokio::fs::create_dir_all(&skills_dir).await?;
+        tokio::fs::create_dir_all(skills_dir).await?;
         info!(path = %skills_dir.display(), "created skills directory");
 
         let skill_names = match std::env::var(SKILLS_ENV) {
@@ -74,27 +68,30 @@ impl InitSkillsManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{ENV_LOCK, temp_paths};
     use tempfile::TempDir;
-    use tokio::sync::Mutex;
-
-    // Serialize tests that modify env vars
-    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+    use ur_config::AgentType;
 
     #[tokio::test]
     async fn run_copies_named_skills() {
         let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
-        let potential_dir = tmp.path().join(POTENTIAL_SKILLS_DIR);
+        let paths = temp_paths(&tmp, AgentType::Claude);
+        let potential_dir = paths.agent_shared.join(POTENTIAL_SKILLS_DIR);
         std::fs::create_dir_all(potential_dir.join("my-skill")).unwrap();
         std::fs::write(potential_dir.join("my-skill/SKILL.md"), "# My Skill").unwrap();
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::set_var(SKILLS_ENV, "my-skill") };
-        let mgr = InitSkillsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        let mgr = InitSkillsManager::new(paths.clone());
         mgr.run().await.unwrap();
         unsafe { std::env::remove_var(SKILLS_ENV) };
 
-        let dest = tmp.path().join(".claude/skills/my-skill/SKILL.md");
+        let dest = paths.skills_dest.join("my-skill/SKILL.md");
+        assert!(
+            dest.starts_with(tmp.path()),
+            "output must land under temp root"
+        );
         assert!(dest.exists(), "skill should be copied");
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "# My Skill");
     }
@@ -106,12 +103,17 @@ mod tests {
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::set_var(SKILLS_ENV, "nonexistent") };
-        let mgr = InitSkillsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        let mgr = InitSkillsManager::new(temp_paths(&tmp, AgentType::Claude));
         let result = mgr.run().await;
         unsafe { std::env::remove_var(SKILLS_ENV) };
 
         assert!(result.is_ok(), "missing skill should not cause an error");
-        assert!(!tmp.path().join(".claude/skills/nonexistent").exists());
+        assert!(
+            !temp_paths(&tmp, AgentType::Claude)
+                .skills_dest
+                .join("nonexistent")
+                .exists()
+        );
     }
 
     #[tokio::test]
@@ -121,12 +123,12 @@ mod tests {
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::remove_var(SKILLS_ENV) };
-        let mgr = InitSkillsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        let mgr = InitSkillsManager::new(temp_paths(&tmp, AgentType::Claude));
         let result = mgr.run().await;
 
         assert!(result.is_ok(), "unset env should not cause an error");
         assert!(
-            tmp.path().join(".claude/skills").exists(),
+            temp_paths(&tmp, AgentType::Claude).skills_dest.exists(),
             "skills dir is always (re)created"
         );
     }
@@ -135,13 +137,13 @@ mod tests {
     async fn run_wipes_existing_skills_dir_first() {
         let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
-        let skills_dir = tmp.path().join(".claude/skills");
+        let skills_dir = temp_paths(&tmp, AgentType::Claude).skills_dest;
         std::fs::create_dir_all(skills_dir.join("stale-skill")).unwrap();
         std::fs::write(skills_dir.join("stale-skill/SKILL.md"), "old").unwrap();
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::remove_var(SKILLS_ENV) };
-        let mgr = InitSkillsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        let mgr = InitSkillsManager::new(temp_paths(&tmp, AgentType::Claude));
         mgr.run().await.unwrap();
 
         assert!(
@@ -156,12 +158,16 @@ mod tests {
         let tmp = TempDir::new().unwrap();
 
         unsafe { std::env::remove_var(SKILLS_ENV) };
-        InitSkillsManager::new(tmp.path().to_path_buf(), AgentType::Agy)
+        InitSkillsManager::new(temp_paths(&tmp, AgentType::Agy))
             .run()
             .await
             .unwrap();
 
-        assert!(tmp.path().join(".gemini/config/skills").exists());
-        assert!(!tmp.path().join(".gemini/antigravity-cli/skills").exists());
+        assert!(tmp.path().join("home/.gemini/config/skills").exists());
+        assert!(
+            !tmp.path()
+                .join("home/.gemini/antigravity-cli/skills")
+                .exists()
+        );
     }
 }

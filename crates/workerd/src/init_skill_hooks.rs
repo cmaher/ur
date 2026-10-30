@@ -1,42 +1,39 @@
 use std::path::PathBuf;
 
 use tracing::info;
-use ur_config::AgentType;
 
-const IN_REPO_SKILL_HOOKS: &str = "/workspace/ur-hooks/skills";
-const HOST_OVERLAY_SKILL_HOOKS: &str = "/var/ur/host-hooks/skills";
+use crate::paths::WorkerPaths;
+
+const SKILL_HOOKS_DIR: &str = "skills";
 
 /// Manages copying skill hooks from two source directories into
-/// `~/{agent.customization_root()}/{agent.skill_hooks_subdir()}/`.
+/// `WorkerPaths::skill_hooks` (e.g. `~/.claude/skill-hooks/`).
 ///
 /// Source resolution order (both are always checked, independently):
-/// 1. `/workspace/ur-hooks/skills/` (in-repo convention — copied first)
-/// 2. `/var/ur/host-hooks/skills/` (host overlay — wins on identical relative paths)
+/// 1. `<workspace>/ur-hooks/skills/` (in-repo convention — copied first)
+/// 2. `<host_hooks>/skills/` (host overlay — wins on identical relative paths)
 ///
 /// Missing source directory is a no-op for that side. Copies are recursive.
 #[derive(Clone)]
 pub struct InitSkillHooksManager {
-    agent: AgentType,
+    paths: WorkerPaths,
 }
 
 impl InitSkillHooksManager {
-    pub fn new(agent: AgentType) -> Self {
-        InitSkillHooksManager { agent }
+    pub fn new(paths: WorkerPaths) -> Self {
+        InitSkillHooksManager { paths }
     }
 
     pub async fn run(&self) -> Result<(), std::io::Error> {
-        let target_dir = target_dir(self.agent);
-        copy_skill_hooks_from(&PathBuf::from(IN_REPO_SKILL_HOOKS), &target_dir).await?;
-        copy_skill_hooks_from(&PathBuf::from(HOST_OVERLAY_SKILL_HOOKS), &target_dir).await?;
+        let target_dir = &self.paths.skill_hooks;
+        copy_skill_hooks_from(
+            &self.paths.in_repo_hooks().join(SKILL_HOOKS_DIR),
+            target_dir,
+        )
+        .await?;
+        copy_skill_hooks_from(&self.paths.host_hooks.join(SKILL_HOOKS_DIR), target_dir).await?;
         Ok(())
     }
-}
-
-/// Resolve the skill-hooks target directory for `agent`.
-fn target_dir(agent: AgentType) -> PathBuf {
-    PathBuf::from(ur_config::WORKER_HOME)
-        .join(agent.customization_root())
-        .join(agent.skill_hooks_subdir())
 }
 
 /// Recursively copy all files from `source_dir` into `target_dir`.
@@ -87,19 +84,32 @@ mod tests {
     use std::path::Path;
     use tempfile::TempDir;
 
-    #[test]
-    fn target_dir_resolves_for_claude() {
-        assert_eq!(
-            target_dir(AgentType::Claude),
-            PathBuf::from(ur_config::WORKER_HOME).join(".claude/skill-hooks")
+    #[tokio::test]
+    async fn run_writes_under_injected_skill_hooks_dir() {
+        let tmp = TempDir::new().unwrap();
+        let paths = crate::test_support::temp_paths(&tmp, ur_config::AgentType::Claude);
+        populate_dir(
+            &paths.in_repo_hooks().join("skills"),
+            vec![("implement/pre.md", "in-repo")],
         );
-    }
+        populate_dir(
+            &paths.host_hooks.join("skills"),
+            vec![
+                ("implement/pre.md", "overlay"),
+                ("design/pre.md", "overlay"),
+            ],
+        );
 
-    #[test]
-    fn target_dir_resolves_for_agy() {
+        InitSkillHooksManager::new(paths).run().await.unwrap();
+
+        let target = tmp.path().join("home/.claude/skill-hooks");
         assert_eq!(
-            target_dir(AgentType::Agy),
-            PathBuf::from(ur_config::WORKER_HOME).join(".gemini/config/skill-hooks")
+            fs::read_to_string(target.join("implement/pre.md")).unwrap(),
+            "overlay"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("design/pre.md")).unwrap(),
+            "overlay"
         );
     }
 

@@ -2,25 +2,31 @@ use std::path::PathBuf;
 
 use tracing::info;
 
-const IN_REPO_GIT_HOOKS: &str = "/workspace/ur-hooks/git";
-const HOST_OVERLAY_GIT_HOOKS: &str = "/var/ur/host-hooks/git";
-const WORKSPACE_GIT_HOOKS: &str = "/workspace/.git/hooks";
+use crate::paths::WorkerPaths;
+
+const GIT_HOOKS_DIR: &str = "git";
 
 /// Manages copying git hooks from two source directories into the workspace `.git/hooks/`.
 ///
 /// Source resolution order (both are always checked, independently):
-/// 1. `/workspace/ur-hooks/git/` (in-repo convention)
-/// 2. `/var/ur/host-hooks/git/` (host overlay — wins on identical filenames)
+/// 1. `<workspace>/ur-hooks/git/` (in-repo convention)
+/// 2. `<host_hooks>/git/` (host overlay — wins on identical filenames)
 ///
 /// Missing source directory is a no-op for that side. Files are `chmod 0o755` after copy.
 #[derive(Clone)]
-pub struct InitGitHooksManager;
+pub struct InitGitHooksManager {
+    paths: WorkerPaths,
+}
 
 impl InitGitHooksManager {
+    pub fn new(paths: WorkerPaths) -> Self {
+        InitGitHooksManager { paths }
+    }
+
     pub async fn run(&self) -> Result<(), std::io::Error> {
-        let target_dir = PathBuf::from(WORKSPACE_GIT_HOOKS);
-        copy_git_hooks_from(PathBuf::from(IN_REPO_GIT_HOOKS), &target_dir).await?;
-        copy_git_hooks_from(PathBuf::from(HOST_OVERLAY_GIT_HOOKS), &target_dir).await?;
+        let target_dir = self.paths.workspace_git_hooks();
+        copy_git_hooks_from(self.paths.in_repo_hooks().join(GIT_HOOKS_DIR), &target_dir).await?;
+        copy_git_hooks_from(self.paths.host_hooks.join(GIT_HOOKS_DIR), &target_dir).await?;
         Ok(())
     }
 }
@@ -106,6 +112,32 @@ mod tests {
         copy_git_hooks_from(overlay_dir, &target_dir).await.unwrap();
 
         (tmp, target_dir)
+    }
+
+    #[tokio::test]
+    async fn run_writes_under_injected_workspace() {
+        let tmp = TempDir::new().unwrap();
+        let paths = crate::test_support::temp_paths(&tmp, ur_config::AgentType::Claude);
+        let in_repo = paths.in_repo_hooks().join("git");
+        let overlay = paths.host_hooks.join("git");
+        fs::create_dir_all(&in_repo).unwrap();
+        fs::create_dir_all(&overlay).unwrap();
+        fs::write(in_repo.join("pre-push"), "in-repo").unwrap();
+        fs::write(overlay.join("pre-push"), "overlay").unwrap();
+        fs::write(in_repo.join("commit-msg"), "in-repo").unwrap();
+
+        InitGitHooksManager::new(paths.clone()).run().await.unwrap();
+
+        let target = tmp.path().join("workspace/.git/hooks");
+        assert_eq!(paths.workspace_git_hooks(), target);
+        assert_eq!(
+            fs::read_to_string(target.join("pre-push")).unwrap(),
+            "overlay"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("commit-msg")).unwrap(),
+            "in-repo"
+        );
     }
 
     #[tokio::test]

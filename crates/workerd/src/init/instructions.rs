@@ -4,33 +4,32 @@ use tracing::{info, warn};
 use ur_config::AgentType;
 
 use super::collect_md_files;
+use crate::paths::WorkerPaths;
 
-const POTENTIAL_INSTRUCTIONS_DIR: &str = ".agent-shared/instructions";
-const SHARED_INSTRUCTIONS_DIR: &str = ".agent-shared/shared-instructions";
+const POTENTIAL_INSTRUCTIONS_DIR: &str = "instructions";
+const SHARED_INSTRUCTIONS_DIR: &str = "shared-instructions";
 
 /// Manages composing the project instruction file (e.g. `~/.claude/CLAUDE.md`)
 /// from a strategy file, shared fragments, and an optional project reference.
 #[derive(Clone)]
 pub struct InitInstructionsManager {
-    home: PathBuf,
+    paths: WorkerPaths,
     agent: AgentType,
 }
 
 impl InitInstructionsManager {
-    pub fn new(home: PathBuf, agent: AgentType) -> Self {
-        InitInstructionsManager { home, agent }
+    pub fn new(paths: WorkerPaths, agent: AgentType) -> Self {
+        InitInstructionsManager { paths, agent }
     }
 
-    fn instruction_dest(&self) -> PathBuf {
-        self.home
-            .join(self.agent.customization_root())
-            .join(self.agent.instruction_filename())
-    }
-
+    /// `PROJECT_<instruction filename>` next to `instructions_dest`.
     fn project_instruction_dest(&self) -> PathBuf {
-        self.home
-            .join(self.agent.customization_root())
-            .join(format!("PROJECT_{}", self.agent.instruction_filename()))
+        let dest = &self.paths.instructions_dest;
+        let filename = dest
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.agent.instruction_filename().to_owned());
+        dest.with_file_name(format!("PROJECT_{filename}"))
     }
 
     pub async fn run(&self) -> Result<(), std::io::Error> {
@@ -46,10 +45,11 @@ impl InitInstructionsManager {
         };
 
         let strategy_src = self
-            .home
+            .paths
+            .agent_shared
             .join(POTENTIAL_INSTRUCTIONS_DIR)
             .join(format!("{strategy_name}.md"));
-        let dst = self.instruction_dest();
+        let dst = &self.paths.instructions_dest;
 
         if !strategy_src.exists() {
             warn!(
@@ -68,7 +68,7 @@ impl InitInstructionsManager {
             "read strategy instruction file"
         );
 
-        let shared_dir = self.home.join(SHARED_INSTRUCTIONS_DIR);
+        let shared_dir = self.paths.agent_shared.join(SHARED_INSTRUCTIONS_DIR);
         let shared_files = collect_md_files(&shared_dir).await;
         for path in &shared_files {
             let shared_content = tokio::fs::read_to_string(path).await?;
@@ -102,7 +102,7 @@ impl InitInstructionsManager {
             }
         }
 
-        tokio::fs::write(&dst, &content).await?;
+        tokio::fs::write(dst, &content).await?;
         info!(dst = %dst.display(), "wrote composed instruction file");
 
         Ok(())
@@ -149,18 +149,20 @@ fn forge_instructions(forge: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{ENV_LOCK, temp_paths};
     use tempfile::TempDir;
-    use tokio::sync::Mutex;
 
-    // Serialize tests that modify env vars
-    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+    fn claude(tmp: &TempDir) -> WorkerPaths {
+        temp_paths(tmp, AgentType::Claude)
+    }
 
     fn setup_strategy_file(tmp: &TempDir, name: &str, content: &str) {
-        let potential_dir = tmp.path().join(POTENTIAL_INSTRUCTIONS_DIR);
+        let paths = claude(tmp);
+        let potential_dir = paths.agent_shared.join(POTENTIAL_INSTRUCTIONS_DIR);
         std::fs::create_dir_all(&potential_dir).unwrap();
         std::fs::write(potential_dir.join(format!("{name}.md")), content).unwrap();
         // Ensure .claude dir exists for destination
-        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        std::fs::create_dir_all(paths.instructions_dest.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]
@@ -171,11 +173,11 @@ mod tests {
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code") };
-        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
         mgr.run().await.unwrap();
         unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
 
-        let dest = tmp.path().join(".claude/CLAUDE.md");
+        let dest = tmp.path().join("home/.claude/CLAUDE.md");
         assert!(dest.exists(), "CLAUDE.md should be created");
         let content = std::fs::read_to_string(&dest).unwrap();
         assert_eq!(content, "# Code Worker\nBe a coder.");
@@ -188,7 +190,7 @@ mod tests {
         setup_strategy_file(&tmp, "code", "# Code Worker");
 
         // Create shared-instructions with two fragments
-        let shared_dir = tmp.path().join(SHARED_INSTRUCTIONS_DIR);
+        let shared_dir = claude(&tmp).agent_shared.join(SHARED_INSTRUCTIONS_DIR);
         std::fs::create_dir_all(&shared_dir).unwrap();
         std::fs::write(shared_dir.join("alpha.md"), "# Alpha").unwrap();
         std::fs::write(shared_dir.join("beta.md"), "# Beta").unwrap();
@@ -197,11 +199,11 @@ mod tests {
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code") };
-        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
         mgr.run().await.unwrap();
         unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
 
-        let content = std::fs::read_to_string(tmp.path().join(".claude/CLAUDE.md")).unwrap();
+        let content = std::fs::read_to_string(tmp.path().join("home/.claude/CLAUDE.md")).unwrap();
         assert_eq!(content, "# Code Worker\n\n# Alpha\n\n# Beta");
     }
 
@@ -209,16 +211,16 @@ mod tests {
     async fn run_missing_file_warns_but_succeeds() {
         let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("home/.claude")).unwrap();
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "nonexistent") };
-        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
         let result = mgr.run().await;
         unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
 
         assert!(result.is_ok(), "missing file should not cause an error");
-        let dest = tmp.path().join(".claude/CLAUDE.md");
+        let dest = tmp.path().join("home/.claude/CLAUDE.md");
         assert!(!dest.exists(), "CLAUDE.md should not be created");
     }
 
@@ -226,15 +228,15 @@ mod tests {
     async fn run_unset_env_skips() {
         let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("home/.claude")).unwrap();
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
-        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
         let result = mgr.run().await;
 
         assert!(result.is_ok(), "unset env should not cause an error");
-        let dest = tmp.path().join(".claude/CLAUDE.md");
+        let dest = tmp.path().join("home/.claude/CLAUDE.md");
         assert!(!dest.exists(), "CLAUDE.md should not be created");
     }
 
@@ -260,7 +262,7 @@ mod tests {
             std::env::set_var(ur_config::UR_HOST_WORKSPACE_ENV, "/host/workspace");
         };
 
-        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
         mgr.run().await.unwrap();
 
         unsafe {
@@ -270,13 +272,14 @@ mod tests {
         };
 
         // PROJECT_CLAUDE.md should exist with resolved content
-        let project_dest = tmp.path().join(".claude/PROJECT_CLAUDE.md");
+        let project_dest = tmp.path().join("home/.claude/PROJECT_CLAUDE.md");
         assert!(project_dest.exists(), "PROJECT_CLAUDE.md should be created");
         let project_content = std::fs::read_to_string(&project_dest).unwrap();
         assert_eq!(project_content, "# Project\nWorkspace: /host/workspace/src");
 
         // CLAUDE.md should contain @ reference
-        let claude_content = std::fs::read_to_string(tmp.path().join(".claude/CLAUDE.md")).unwrap();
+        let claude_content =
+            std::fs::read_to_string(tmp.path().join("home/.claude/CLAUDE.md")).unwrap();
         let expected_ref = format!("\n\n@{}", project_dest.display());
         assert!(
             claude_content.ends_with(&expected_ref),
@@ -297,20 +300,21 @@ mod tests {
             std::env::remove_var(ur_config::UR_HOST_WORKSPACE_ENV);
         };
 
-        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
         mgr.run().await.unwrap();
 
         unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
 
         // PROJECT_CLAUDE.md should not exist
-        let project_dest = tmp.path().join(".claude/PROJECT_CLAUDE.md");
+        let project_dest = tmp.path().join("home/.claude/PROJECT_CLAUDE.md");
         assert!(
             !project_dest.exists(),
             "PROJECT_CLAUDE.md should not be created"
         );
 
         // CLAUDE.md should not contain @ reference
-        let claude_content = std::fs::read_to_string(tmp.path().join(".claude/CLAUDE.md")).unwrap();
+        let claude_content =
+            std::fs::read_to_string(tmp.path().join("home/.claude/CLAUDE.md")).unwrap();
         assert_eq!(claude_content, "# Code Worker");
     }
 
@@ -336,7 +340,7 @@ mod tests {
             std::env::remove_var(ur_config::UR_HOST_WORKSPACE_ENV);
         };
 
-        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
         mgr.run().await.unwrap();
 
         unsafe {
@@ -345,7 +349,7 @@ mod tests {
         };
 
         // PROJECT_CLAUDE.md should exist with unresolved %WORKSPACE%
-        let project_dest = tmp.path().join(".claude/PROJECT_CLAUDE.md");
+        let project_dest = tmp.path().join("home/.claude/PROJECT_CLAUDE.md");
         assert!(project_dest.exists(), "PROJECT_CLAUDE.md should be created");
         let project_content = std::fs::read_to_string(&project_dest).unwrap();
         assert_eq!(
@@ -359,7 +363,7 @@ mod tests {
         let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         setup_strategy_file(&tmp, "code", "# Code Worker");
-        std::fs::create_dir_all(tmp.path().join(".gemini/config")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("home/.gemini/config")).unwrap();
         let project_path = tmp.path().join("CLAUDE.md");
         std::fs::write(&project_path, "# Project rules").unwrap();
 
@@ -367,7 +371,7 @@ mod tests {
             std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
             std::env::set_var(ur_config::UR_PROJECT_INSTRUCTION_ENV, &project_path);
         }
-        InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Agy)
+        InitInstructionsManager::new(temp_paths(&tmp, AgentType::Agy), AgentType::Agy)
             .run()
             .await
             .unwrap();
@@ -377,10 +381,14 @@ mod tests {
         }
 
         assert_eq!(
-            std::fs::read_to_string(tmp.path().join(".gemini/config/AGENTS.md")).unwrap(),
+            std::fs::read_to_string(tmp.path().join("home/.gemini/config/AGENTS.md")).unwrap(),
             "# Code Worker\n\n# Project rules"
         );
-        assert!(!tmp.path().join(".gemini/config/PROJECT_AGENTS.md").exists());
+        assert!(
+            !tmp.path()
+                .join("home/.gemini/config/PROJECT_AGENTS.md")
+                .exists()
+        );
     }
 
     #[tokio::test]
@@ -393,14 +401,14 @@ mod tests {
             std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
             std::env::set_var(ur_config::UR_WORKER_FORGE_ENV, "gitea");
         }
-        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
         mgr.run().await.unwrap();
         unsafe {
             std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
             std::env::remove_var(ur_config::UR_WORKER_FORGE_ENV);
         }
 
-        let content = std::fs::read_to_string(tmp.path().join(".claude/CLAUDE.md")).unwrap();
+        let content = std::fs::read_to_string(tmp.path().join("home/.claude/CLAUDE.md")).unwrap();
         assert!(content.contains("# Forge Collaboration"));
         assert!(content.contains("Gitea"));
         assert!(content.contains("`tea`"));
@@ -417,14 +425,14 @@ mod tests {
             std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
             std::env::set_var(ur_config::UR_WORKER_FORGE_ENV, "github");
         }
-        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
         mgr.run().await.unwrap();
         unsafe {
             std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
             std::env::remove_var(ur_config::UR_WORKER_FORGE_ENV);
         }
 
-        let content = std::fs::read_to_string(tmp.path().join(".claude/CLAUDE.md")).unwrap();
+        let content = std::fs::read_to_string(tmp.path().join("home/.claude/CLAUDE.md")).unwrap();
         assert!(content.contains("# Forge Collaboration"));
         assert!(content.contains("GitHub"));
         assert!(content.contains("`gh`"));
@@ -441,13 +449,13 @@ mod tests {
             std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
             std::env::remove_var(ur_config::UR_WORKER_FORGE_ENV);
         }
-        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
         mgr.run().await.unwrap();
         unsafe {
             std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
         }
 
-        let content = std::fs::read_to_string(tmp.path().join(".claude/CLAUDE.md")).unwrap();
+        let content = std::fs::read_to_string(tmp.path().join("home/.claude/CLAUDE.md")).unwrap();
         assert!(!content.contains("# Forge Collaboration"));
     }
 
@@ -461,14 +469,14 @@ mod tests {
             std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
             std::env::set_var(ur_config::UR_WORKER_FORGE_ENV, "   ");
         }
-        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
+        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
         mgr.run().await.unwrap();
         unsafe {
             std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
             std::env::remove_var(ur_config::UR_WORKER_FORGE_ENV);
         }
 
-        let content = std::fs::read_to_string(tmp.path().join(".claude/CLAUDE.md")).unwrap();
+        let content = std::fs::read_to_string(tmp.path().join("home/.claude/CLAUDE.md")).unwrap();
         assert!(!content.contains("# Forge Collaboration"));
     }
 
@@ -477,13 +485,13 @@ mod tests {
         let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         setup_strategy_file(&tmp, "code", "# Code Worker");
-        std::fs::create_dir_all(tmp.path().join(".gemini/config")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("home/.gemini/config")).unwrap();
 
         unsafe {
             std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
             std::env::set_var(ur_config::UR_WORKER_FORGE_ENV, "gitea");
         }
-        InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Agy)
+        InitInstructionsManager::new(temp_paths(&tmp, AgentType::Agy), AgentType::Agy)
             .run()
             .await
             .unwrap();
@@ -492,7 +500,8 @@ mod tests {
             std::env::remove_var(ur_config::UR_WORKER_FORGE_ENV);
         }
 
-        let content = std::fs::read_to_string(tmp.path().join(".gemini/config/AGENTS.md")).unwrap();
+        let content =
+            std::fs::read_to_string(tmp.path().join("home/.gemini/config/AGENTS.md")).unwrap();
         assert!(content.contains("# Forge Collaboration"));
         assert!(content.contains("Gitea"));
         assert!(content.contains("`tea`"));
