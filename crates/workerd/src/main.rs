@@ -159,6 +159,7 @@ async fn run_daemon_only() -> Result<()> {
         width: Some(220),
         height: Some(55),
         detached: true,
+        ..Default::default()
     })
     .await?;
 
@@ -482,7 +483,7 @@ async fn create_shim(shim_dir: &Path, entry: &HostExecCommandEntry) -> Result<()
     let command = &entry.name;
     let shim_path = shim_dir.join(command);
     let bidi_flag = if entry.bidi { " --bidi" } else { "" };
-    let content = format!("#!/bin/sh\nexec workertools host-exec{bidi_flag} {command} \"$@\"\n");
+    let content = format!("#!/bin/sh\nexec ur-workertools host-exec{bidi_flag} {command} \"$@\"\n");
 
     debug!(command, bidi = entry.bidi, path = %shim_path.display(), "writing shim");
 

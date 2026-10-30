@@ -167,12 +167,18 @@ pub const UR_CONFIG_ENV: &str = "UR_CONFIG";
 /// Environment variable: `host:port` address for worker→server gRPC connections.
 pub const UR_SERVER_ADDR_ENV: &str = "UR_SERVER_ADDR";
 
+/// Environment variable: workerd gRPC address used by `ur-workertools` for
+/// every WorkerDaemonService call (`notify-idle`, `status`, `workflow`).
+/// Accepts a URL (`http://host:port`) or a bare `host:port`. Unset/empty
+/// means the in-container daemon at `http://127.0.0.1:`[`WORKERD_GRPC_PORT`].
+pub const UR_WORKERD_ADDR_ENV: &str = "UR_WORKERD_ADDR";
+
 /// Environment variable: unique worker ID injected into containers at launch.
 /// Format: `{process_id}-{4 random [a-z0-9]}`, e.g. `deploy-x7q2`.
 pub const UR_WORKER_ID_ENV: &str = "UR_WORKER_ID";
 
 /// gRPC metadata header key for the worker ID.
-/// Sent by workertools and workerd on every request so the server can identify
+/// Sent by ur-workertools and workerd on every request so the server can identify
 /// which worker is making the call.
 pub const WORKER_ID_HEADER: &str = "ur-worker-id";
 
@@ -190,7 +196,7 @@ pub const UR_WORKER_MODEL_ENV: &str = "UR_WORKER_MODEL";
 pub const UR_WORKER_EFFORT_ENV: &str = "UR_WORKER_EFFORT";
 
 /// gRPC metadata header key for the worker secret.
-/// Sent by workertools on every request to the worker server for authentication.
+/// Sent by ur-workertools on every request to the worker server for authentication.
 pub const WORKER_SECRET_HEADER: &str = "ur-worker-secret";
 
 /// Environment variable: which [`AgentType`] a worker container is running.
@@ -282,6 +288,10 @@ pub const WORKERD_HEALTHZ_PORT: u16 = 9119;
 
 /// Port for workerd gRPC server inside worker containers.
 pub const WORKERD_GRPC_PORT: u16 = 9120;
+
+/// tmux server socket name (`tmux -L ur`) for host-local workers, so their
+/// sessions live on a dedicated server instead of the user's default one.
+pub const LOCAL_TMUX_SOCKET: &str = "ur";
 
 /// Default Docker network name for infrastructure (server + squid, internet-connected).
 pub const DEFAULT_NETWORK_NAME: &str = "ur";
