@@ -316,7 +316,6 @@ fn config_with_projects(
             password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
             name: ur_config::DEFAULT_DB_NAME.to_string(),
             bind_address: None,
-            backup: backup.clone(),
         },
         ticket_db: ur_config::TicketDbConfig {
             host: ur_config::DEFAULT_DB_HOST.to_string(),

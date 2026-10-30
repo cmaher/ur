@@ -87,24 +87,39 @@ ui_event_poll_interval_ms = 200
 | `builderd_retry_backoff_ms` | u64 | `200` | Base backoff in ms for builderd retries (exponential) |
 | `ui_event_poll_interval_ms` | u64 | `200` | UI event poll interval in ms |
 
-## `[backup]`
+## `[ticket_db.backup]` / `[workflow_db.backup]`
 
-Periodic database backup configuration.
+Periodic backup configuration, one section per live database (`ur_tickets`,
+`ur_workflow`). Both may share a directory: filenames carry the database name
+(`ur-backup-<db_name>-<timestamp>.pgdump`) and `retain_count` applies per
+database.
 
 ```toml
-[backup]
+[ticket_db.backup]
 path = "~/.ur/backups"
 enabled = true
 interval_minutes = 30
 retain_count = 3
+
+[workflow_db.backup]
+path = "~/.ur/backups"
 ```
+
+The legacy top-level `[backup]` and `[db.backup]` sections backed up the
+pre-split `ur` database and now cause a config-load error; move their settings
+into the two sections above.
+
+`ur db backup`, `ur db list`, and `ur db restore` operate on both databases;
+pass `--db tickets` or `--db workflow` to select one. `restore` infers the
+database from the filename and requires the file to be in that database's
+backup directory.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `path` | path | — | Directory to write backup files. Unset disables backups. |
-| `enabled` | bool | `true` | Whether periodic backups are enabled |
+| `path` | path | — | Directory to write backup files. Unset disables backups (periodic and manual). |
+| `enabled` | bool | `true` | Whether periodic backups are enabled (manual `ur db backup` works either way) |
 | `interval_minutes` | u64 | `30` | Interval between backups in minutes |
-| `retain_count` | u64 | `3` | Number of backup files to retain (older ones deleted) |
+| `retain_count` | u64 | `3` | Number of automatic backups of this database to retain (older ones deleted; manual backups are kept) |
 
 ## Hostexec Lua discovery
 

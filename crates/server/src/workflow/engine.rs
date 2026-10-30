@@ -277,12 +277,6 @@ mod tests {
                 password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
                 name: ur_config::DEFAULT_DB_NAME.to_string(),
                 bind_address: None,
-                backup: ur_config::BackupConfig {
-                    path: None,
-                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                    enabled: true,
-                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-                },
             },
             ticket_db: ur_config::TicketDbConfig {
                 host: ur_config::DEFAULT_DB_HOST.to_string(),

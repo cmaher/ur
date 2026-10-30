@@ -213,8 +213,9 @@ struct ComposeParams {
     postgres_container_name: String,
     infra_network_name: String,
     worker_network_name: String,
-    /// Host-side backup path, if configured. Mounted at `/backup` in the postgres container.
-    backup_path: Option<PathBuf>,
+    /// One bind mount per database with a configured backup path, each at that
+    /// database's own container directory in the postgres container.
+    backup_mounts: Vec<BackupMount>,
     /// Postgres user for env vars and healthcheck.
     db_user: String,
     /// Postgres password for env vars.
@@ -239,6 +240,38 @@ struct ComposeParams {
     ticket_db_name: String,
     /// Logical name of the workflow database (e.g. `ur_workflow`). Used in the healthcheck.
     workflow_db_name: String,
+}
+
+/// A host backup directory mounted into the postgres container for one database.
+struct BackupMount {
+    /// Host-side backup directory from `[<db>.backup] path`.
+    host_path: PathBuf,
+    /// Container-side directory (`/backup/<db_name>`) that pg_dump writes to.
+    container_dir: String,
+}
+
+/// Collect the postgres backup mounts for both databases.
+///
+/// A database gets a mount whenever its backup `path` is set — even with
+/// `enabled = false`, so manual `ur db backup` still has somewhere to write.
+/// Each database mounts at its own container directory, so the two sections
+/// may point at the same or different host directories.
+fn backup_mounts(
+    ticket_db: &ur_config::TicketDbConfig,
+    workflow_db: &ur_config::WorkflowDbConfig,
+) -> Vec<BackupMount> {
+    [
+        (&ticket_db.name, &ticket_db.backup),
+        (&workflow_db.name, &workflow_db.backup),
+    ]
+    .into_iter()
+    .filter_map(|(db_name, backup)| {
+        Some(BackupMount {
+            host_path: backup.path.clone()?,
+            container_dir: ur_config::backup::backup_container_dir(db_name),
+        })
+    })
+    .collect()
 }
 
 /// Generate the docker compose YAML programmatically.
@@ -271,11 +304,7 @@ pub fn generate_compose(
         postgres_container_name: ticket_db.host.clone(),
         infra_network_name: network.name.clone(),
         worker_network_name: network.worker_name.clone(),
-        backup_path: if ticket_db.backup.enabled {
-            ticket_db.backup.path.clone()
-        } else {
-            None
-        },
+        backup_mounts: backup_mounts(ticket_db, workflow_db),
         db_user: ticket_db.user.clone(),
         db_password: ticket_db.password.clone(),
         // POSTGRES_DB sets the default database the server connects to on startup.
@@ -384,12 +413,12 @@ fn write_postgres_service(out: &mut String, params: &ComposeParams) {
         params.postgres_init_dir.display(),
     )
     .unwrap();
-    if let Some(backup_path) = &params.backup_path {
+    for mount in &params.backup_mounts {
         writeln!(
             out,
             "      - {}:{}",
-            backup_path.display(),
-            ur_config::BACKUP_CONTAINER_PATH,
+            mount.host_path.display(),
+            mount.container_dir,
         )
         .unwrap();
     }
@@ -483,7 +512,7 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
         params.workflow_db_url
     )
     .unwrap();
-    if params.backup_path.is_some() {
+    if !params.backup_mounts.is_empty() {
         writeln!(
             out,
             "      - UR_BACKUP_PATH={}",
@@ -647,7 +676,6 @@ mod tests {
                 password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
                 name: ur_config::DEFAULT_DB_NAME.to_string(),
                 bind_address: None,
-                backup: backup(),
             },
             ticket_db: ur_config::TicketDbConfig {
                 host: ur_config::DEFAULT_DB_HOST.to_string(),
@@ -898,8 +926,19 @@ mod tests {
         assert!(services_pos < networks_pos);
     }
 
-    #[test]
-    fn generate_compose_backup_on_postgres_not_server() {
+    fn backup_config(path: Option<&str>, enabled: bool) -> ur_config::BackupConfig {
+        ur_config::BackupConfig {
+            path: path.map(PathBuf::from),
+            interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+            enabled,
+            retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+        }
+    }
+
+    fn generate_with_backups(
+        ticket_backup: ur_config::BackupConfig,
+        workflow_backup: ur_config::BackupConfig,
+    ) -> String {
         let network = ur_config::NetworkConfig {
             name: "ur".to_string(),
             worker_name: "ur-workers".to_string(),
@@ -911,45 +950,89 @@ mod tests {
             allowlist: vec![],
         };
         let ticket_db = ur_config::TicketDbConfig {
-            backup: ur_config::BackupConfig {
-                path: Some(PathBuf::from("/home/user/.ur/backup")),
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-            },
+            backup: ticket_backup,
             ..default_ticket_db()
         };
-        let generated = generate_compose(
+        let workflow_db = ur_config::WorkflowDbConfig {
+            backup: workflow_backup,
+            ..default_workflow_db()
+        };
+        generate_compose(
             &network,
             &proxy,
             &ticket_db,
-            &default_workflow_db(),
+            &workflow_db,
             std::path::Path::new("/test/config"),
+        )
+    }
+
+    fn service_section<'a>(generated: &'a str, service: &str) -> &'a str {
+        generated
+            .split(&format!("  {service}:"))
+            .nth(1)
+            .unwrap()
+            .split("\n\n")
+            .next()
+            .unwrap()
+    }
+
+    #[test]
+    fn generate_compose_backup_on_postgres_not_server() {
+        let generated = generate_with_backups(
+            backup_config(Some("/home/user/.ur/backup"), true),
+            backup_config(None, true),
         );
 
-        // Backup volume should be on postgres container
-        let postgres_section = generated
-            .split("  ur-postgres:")
-            .nth(1)
-            .unwrap()
-            .split("\n\n")
-            .next()
-            .unwrap();
-        assert!(postgres_section.contains("/home/user/.ur/backup:/backup"));
+        // Backup volume should be on postgres container, under the ticket DB's dir
+        let postgres_section = service_section(&generated, "ur-postgres");
+        assert!(postgres_section.contains("/home/user/.ur/backup:/backup/ur_tickets"));
 
         // Backup volume mount should NOT be on server container
-        let server_section = generated
-            .split("  ur-server:")
-            .nth(1)
-            .unwrap()
-            .split("\n\n")
-            .next()
-            .unwrap();
+        let server_section = service_section(&generated, "ur-server");
         assert!(!server_section.contains("/home/user/.ur/backup:/backup"));
 
         // Postgres should only be on infra network
         assert!(postgres_section.contains("- infra"));
         assert!(!postgres_section.contains("- workers"));
+    }
+
+    #[test]
+    fn generate_compose_mounts_each_db_backup_path() {
+        let generated = generate_with_backups(
+            backup_config(Some("/backups/tickets"), true),
+            backup_config(Some("/backups/workflow"), true),
+        );
+        let postgres_section = service_section(&generated, "ur-postgres");
+        assert!(postgres_section.contains("/backups/tickets:/backup/ur_tickets"));
+        assert!(postgres_section.contains("/backups/workflow:/backup/ur_workflow"));
+    }
+
+    #[test]
+    fn generate_compose_mounts_workflow_backup_alone() {
+        let generated = generate_with_backups(
+            backup_config(None, true),
+            backup_config(Some("/backups/workflow"), true),
+        );
+        let postgres_section = service_section(&generated, "ur-postgres");
+        assert!(postgres_section.contains("/backups/workflow:/backup/ur_workflow"));
+        assert!(!postgres_section.contains("/backup/ur_tickets"));
+    }
+
+    #[test]
+    fn generate_compose_mounts_disabled_backup_path_for_manual_backups() {
+        let generated = generate_with_backups(
+            backup_config(Some("/backups/tickets"), false),
+            backup_config(None, true),
+        );
+        let postgres_section = service_section(&generated, "ur-postgres");
+        assert!(postgres_section.contains("/backups/tickets:/backup/ur_tickets"));
+    }
+
+    #[test]
+    fn generate_compose_no_backup_mounts_without_paths() {
+        let generated = generate_with_backups(backup_config(None, true), backup_config(None, true));
+        let postgres_section = service_section(&generated, "ur-postgres");
+        assert!(!postgres_section.contains(":/backup"));
     }
 
     #[test]
@@ -1220,12 +1303,6 @@ mod tests {
                 password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
                 name: ur_config::DEFAULT_DB_NAME.to_string(),
                 bind_address: None,
-                backup: ur_config::BackupConfig {
-                    path: None,
-                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                    enabled: true,
-                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-                },
             },
             ticket_db: ur_config::TicketDbConfig {
                 host: ur_config::DEFAULT_DB_HOST.to_string(),

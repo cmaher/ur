@@ -40,7 +40,6 @@ fn make_test_config(dir: &Path, workspace: &Path) -> (ur_config::Config, ur_conf
             password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
             name: ur_config::DEFAULT_DB_NAME.to_string(),
             bind_address: None,
-            backup: backup.clone(),
         },
         ticket_db: ur_config::TicketDbConfig {
             host: ur_config::DEFAULT_DB_HOST.to_string(),

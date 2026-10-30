@@ -213,20 +213,17 @@ password = "ur"            # default; prefer UR_WORKFLOW_DB_PASSWORD env var
 name     = "ur_workflow"   # default
 
 [workflow_db.backup]
-path             = "/path/to/backup/dir"   # omit to disable; use the same dir as [ticket_db.backup]
+path             = "/path/to/backup/dir"   # omit to disable; may equal or differ from [ticket_db.backup]
 interval_minutes = 30                       # default: 30
 retain_count     = 3                        # default: 3
 ```
 
 ### Legacy `[db]` / top-level `[backup]`
 
-`[db]` (and the top-level `[backup]` table, which resolves into `[db].backup`) predates the
-two-database split and no longer configures either live pool. It survives only for the
-`ur db backup` / `ur db restore` CLI path (`crates/ur/src/db.rs`), which dumps
-`config.db.name` — `"ur"` by default, not `ur_tickets` or `ur_workflow`. Periodic server-side
-backups read `[ticket_db.backup]` and `[workflow_db.backup]` exclusively (`init_backups`,
-`crates/server/src/main.rs`), so a config carrying only a top-level `[backup]` has
-**no periodic backups running at all**.
+`[db]` predates the two-database split and no longer configures either live pool or any
+backup. The legacy `[backup]` and `[db.backup]` tables are a **config-load error**
+(`reject_legacy_backup_sections`, `crates/ur_config/src/lib.rs`) — they used to back up the
+pre-split `ur` database, so accepting them would leave a user with no backups and no warning.
 
 Passwords can be supplied via environment variable instead of the config file:
 
@@ -239,9 +236,9 @@ Passwords can be supplied via environment variable instead of the config file:
 
 The backup architecture runs two independent `BackupTaskManager` instances — one per database. Each follows the same lifecycle.
 
-The backup path on the host is mounted at `/backup` in the `ur-postgres` container via Docker Compose — a **single** mount, whose host source is `ticket_db.backup.path` (`generate_compose`, `crates/ur/src/compose.rs`). `workflow_db.backup.path` is never mounted, so both managers write into whatever directory the ticket config named. Point both sections at the same host path; a `workflow_db.backup.path` that differs from the ticket one is silently ignored.
+Each database with a backup `path` gets its own bind mount in the `ur-postgres` container at `/backup/<db_name>` (`backup_mounts` / `generate_compose`, `crates/ur/src/compose.rs`; container dir from `ur_config::backup::backup_container_dir`). The mount exists whenever `path` is set — even with `enabled = false` — so manual `ur db backup` keeps working. Both sections may point at the same host directory or different ones.
 
-Automatic backup filenames are `ur-backup-<timestamp>.pgdump` and carry **no database name**, so the two managers share a filename space in that one directory and same-second dumps collide. Retention (`retain_count`) likewise counts both databases' dumps together.
+Backup naming lives in `ur_config::backup` and is shared by the server and CLI. Filenames carry the database name — `ur-backup-<db_name>-<timestamp>.pgdump` (automatic) and `manual-ur-backup-<db_name>-<timestamp>.pgdump` (manual) — so dumps never collide even in a shared directory, and `clean_old_backups` applies `retain_count` **per database**. Legacy unnamed files (`ur-backup-<timestamp>.pgdump`) are still listed and restorable but never cleaned.
 
 ### Startup
 
@@ -257,11 +254,11 @@ Automatic backup filenames are `ur-backup-<timestamp>.pgdump` and carry **no dat
 loop {
     tokio::select! {
         sleep(interval) => {
-            1. Generate timestamped filename: ur-backup-YYYYMMDDTHHMMSSZ.pgdump
+            1. Generate filename: ur-backup-<db_name>-YYYYMMDDTHHMMSSZ.pgdump
             2. SnapshotManager::dump_to(filename)
-               → docker exec ur-postgres pg_dump -Fc -f /backup/<filename> <db_name>
-            3. On success: clean_old_backups() removes older ur-backup-*.pgdump files
-               (keeps retain_count most recent; manual-*.pgdump is never cleaned)
+               → docker exec ur-postgres pg_dump -Fc -f /backup/<db_name>/<filename> <db_name>
+            3. On success: clean_old_backups() removes this DB's older automatic dumps
+               (keeps retain_count most recent; manual and legacy files are never cleaned)
             4. On failure: log error, continue loop
         }
         shutdown_rx.changed() => {
@@ -274,12 +271,20 @@ loop {
 ### Restore
 
 `SnapshotManager::restore_from(filename)`:
-1. Runs `docker exec ur-postgres pg_restore --clean --if-exists -d <db_name> /backup/<filename>`
+1. Runs `docker exec ur-postgres pg_restore --clean --if-exists -d <db_name> /backup/<db_name>/<filename>`
 2. Restores directly into the live database, replacing existing data
+
+`ur db restore <path> [--db tickets|workflow]` (`crates/ur/src/db.rs`) infers the target
+database from the filename (legacy unnamed files require `--db`), rejects a `--db` that
+contradicts the filename, requires the file to sit in that database's configured backup
+directory — the only host directory mounted at its container path — and refuses to restore
+unless the archive header's `dbname` (`pg_restore -l`) matches the target. That last check
+matters for legacy `manual-ur-backup-<ts>.pgdump` files, which are dumps of the pre-split `ur`
+database.
 
 ### Manual Backup
 
-`BackupTaskManager::run_once()` creates a manual backup with `manual-` prefix. Manual backups are excluded from automatic retention cleanup.
+`ur db backup [--db tickets|workflow]` dumps the live databases (both by default, skipping and reporting any without a backup `path`; an explicit `--db` without a path is an error) with the `manual-` prefix. `ur db list [--db ...]` lists each database's backups. Manual backups are excluded from automatic retention cleanup.
 
 ## Shutdown
 

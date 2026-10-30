@@ -45,6 +45,16 @@ docker exec ur-postgres ls -lh /backup/pre-migration-ur.pgdump
 
 Keep this file until the migration is fully verified. It is your rollback point.
 
+> **Backup mount layout.** This runbook's `/backup/...` paths assume the pre-split compose
+> layout, where the single backup directory is mounted at `/backup`. Current `ur` mounts each
+> database's backup directory at `/backup/<db_name>` (e.g. `/backup/ur_tickets`), and only for
+> databases with a `[ticket_db.backup]` / `[workflow_db.backup]` `path`. If the compose file
+> has been regenerated (`ur start`) since Step 2, `/backup` itself is no longer a bind mount:
+> write new exports under `/backup/ur_tickets/` instead, and read the Step 2 export from
+> `/backup/ur_tickets/pre-migration-ur.pgdump` when the ticket backup path is the host
+> directory it was written to. Confirm with `docker exec ur-postgres ls -lh /backup/ur_tickets/`
+> before running any `pg_restore` below.
+
 ### Step 3: Upgrade the `ur-server` Binary
 
 Pull the new `ur-server` image or build and deploy the new server binary. The new server:
@@ -222,7 +232,8 @@ If anything goes wrong before Step 10 (dropping the old DB), you can roll back:
 3. Deploy the old `ur-server` binary
 4. Start the server: `ur start`
 
-If you have already dropped the old database, restore it from the export:
+If you have already dropped the old database, restore it from the export (see the
+backup mount layout note in Step 2 for where the file lives after `ur start`):
 
 ```bash
 docker exec ur-postgres psql -U ur -c "CREATE DATABASE ur OWNER ur;"

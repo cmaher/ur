@@ -238,21 +238,39 @@ pub struct ProjectInfo {
 
 #[derive(Serialize)]
 pub struct BackupCreated {
+    pub database: String,
     pub path: String,
+}
+
+#[derive(Serialize)]
+pub struct BackupsCreated {
+    pub backups: Vec<BackupCreated>,
+    /// Databases skipped because they have no backup path configured.
+    pub skipped: Vec<String>,
 }
 
 #[derive(Serialize)]
 pub struct BackupEntry {
     pub name: String,
+    /// Database named in the filename; `None` for legacy unnamed backups.
+    pub database: Option<String>,
     pub timestamp: String,
     pub size_bytes: u64,
 }
 
 #[derive(Serialize)]
 pub struct BackupList {
+    pub database: String,
     pub directory: String,
     pub retain_count: u64,
     pub backups: Vec<BackupEntry>,
+}
+
+#[derive(Serialize)]
+pub struct BackupLists {
+    pub databases: Vec<BackupList>,
+    /// Databases skipped because they have no backup path configured.
+    pub skipped: Vec<String>,
 }
 
 #[derive(Serialize)]

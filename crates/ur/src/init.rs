@@ -174,13 +174,21 @@ fn init_credentials_file(
     Ok(())
 }
 
+/// Default `ur.toml`: both live databases back up into `<config_dir>/backups`.
+/// Filenames carry the database name, so sharing the directory is safe.
 fn default_ur_toml(config_dir: &Path) -> String {
     let backup_dir = config_dir.join("backups");
-    format!(
-        "[backup]\npath = \"{}\"\ninterval_minutes = {}\n",
-        backup_dir.display(),
-        ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-    )
+    ["ticket_db", "workflow_db"]
+        .iter()
+        .map(|section| {
+            format!(
+                "[{section}.backup]\npath = \"{}\"\ninterval_minutes = {}\n",
+                backup_dir.display(),
+                ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn init_dir(path: &Path, output: &OutputManager) -> Result<()> {
@@ -263,10 +271,16 @@ mod tests {
         run_with_dir(tmp.path(), flags(false, false, false)).unwrap();
 
         let content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
-        assert!(content.contains("[backup]"));
+        assert!(content.contains("[ticket_db.backup]"));
+        assert!(content.contains("[workflow_db.backup]"));
         assert!(content.contains("interval_minutes = 30"));
         let expected_path = tmp.path().join("backups");
         assert!(content.contains(&format!("path = \"{}\"", expected_path.display())));
+
+        // The generated config must load, with both databases backing up.
+        let cfg = ur_config::Config::from_toml_str(&content, tmp.path()).unwrap();
+        assert_eq!(cfg.ticket_db.backup.path, Some(expected_path.clone()));
+        assert_eq!(cfg.workflow_db.backup.path, Some(expected_path));
         assert!(
             !content.contains("node_id"),
             "node_id should not be in generated toml"
@@ -331,7 +345,10 @@ mod tests {
         run_with_dir(tmp.path(), flags(true, false, false)).unwrap();
 
         let content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
-        assert!(content.contains("[backup]"), "should be reset to default");
+        assert!(
+            content.contains("[ticket_db.backup]"),
+            "should be reset to default"
+        );
         assert!(
             !content.contains("server_port"),
             "custom config should be gone"
@@ -348,7 +365,7 @@ mod tests {
 
         let toml_content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
         assert!(
-            toml_content.contains("[backup]"),
+            toml_content.contains("[ticket_db.backup]"),
             "ur.toml should be overwritten with default"
         );
         assert!(
