@@ -5,6 +5,7 @@ use ur_config::AgentType;
 
 use super::collect_md_files;
 use crate::paths::WorkerPaths;
+use crate::skill_layout::SkillLayout;
 
 const POTENTIAL_INSTRUCTIONS_DIR: &str = "instructions";
 const SHARED_INSTRUCTIONS_DIR: &str = "shared-instructions";
@@ -15,11 +16,16 @@ const SHARED_INSTRUCTIONS_DIR: &str = "shared-instructions";
 pub struct InitInstructionsManager {
     paths: WorkerPaths,
     agent: AgentType,
+    layout: SkillLayout,
 }
 
 impl InitInstructionsManager {
-    pub fn new(paths: WorkerPaths, agent: AgentType) -> Self {
-        InitInstructionsManager { paths, agent }
+    pub fn new(paths: WorkerPaths, agent: AgentType, layout: SkillLayout) -> Self {
+        InitInstructionsManager {
+            paths,
+            agent,
+            layout,
+        }
     }
 
     /// `PROJECT_<instruction filename>` next to `instructions_dest`.
@@ -77,6 +83,14 @@ impl InitInstructionsManager {
             info!(path = %path.display(), "appended shared instruction fragment");
         }
 
+        // Namespaced-plugin skills coexist with the user's own skills; tell the
+        // model to prefer the ur copy when both exist under the same name.
+        if let Some(namespace) = self.layout.namespace() {
+            content.push_str("\n\n");
+            content.push_str(&skill_precedence_fragment(namespace));
+            info!(namespace, "appended skill precedence fragment");
+        }
+
         // Append forge instructions if UR_WORKER_FORGE is set
         if let Ok(forge) = std::env::var(ur_config::UR_WORKER_FORGE_ENV)
             && let Some(instructions) = forge_instructions(&forge)
@@ -130,6 +144,16 @@ impl InitInstructionsManager {
     }
 }
 
+/// Skill-precedence rule for a namespaced skill plugin (e.g. `ur`).
+fn skill_precedence_fragment(namespace: &str) -> String {
+    format!(
+        "# Skill Precedence\n\n\
+         Worker skills are installed as the `{namespace}` plugin and are invoked as \
+         `{namespace}:<name>` (e.g. `/{namespace}:implement`). When a skill exists as both \
+         `{namespace}:<name>` and `<name>`, ALWAYS use `{namespace}:<name>`.\n"
+    )
+}
+
 fn forge_instructions(forge: &str) -> Option<&'static str> {
     match forge.trim().to_lowercase().as_str() {
         "gitea" => Some(
@@ -173,7 +197,8 @@ mod tests {
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code") };
-        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
+        let mgr =
+            InitInstructionsManager::new(claude(&tmp), AgentType::Claude, SkillLayout::AgentHome);
         mgr.run().await.unwrap();
         unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
 
@@ -199,12 +224,59 @@ mod tests {
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code") };
-        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
+        let mgr =
+            InitInstructionsManager::new(claude(&tmp), AgentType::Claude, SkillLayout::AgentHome);
         mgr.run().await.unwrap();
         unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
 
         let content = std::fs::read_to_string(tmp.path().join("home/.claude/CLAUDE.md")).unwrap();
         assert_eq!(content, "# Code Worker\n\n# Alpha\n\n# Beta");
+    }
+
+    #[tokio::test]
+    async fn plugin_layout_appends_skill_precedence_after_shared_fragments() {
+        let _lock = ENV_LOCK.lock().await;
+        let tmp = TempDir::new().unwrap();
+        setup_strategy_file(&tmp, "code", "# Code Worker");
+        let shared_dir = claude(&tmp).agent_shared.join(SHARED_INSTRUCTIONS_DIR);
+        std::fs::create_dir_all(&shared_dir).unwrap();
+        std::fs::write(shared_dir.join("alpha.md"), "# Alpha").unwrap();
+
+        unsafe { std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code") };
+        InitInstructionsManager::new(claude(&tmp), AgentType::Claude, SkillLayout::ur_plugin())
+            .run()
+            .await
+            .unwrap();
+        unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
+
+        let content = std::fs::read_to_string(tmp.path().join("home/.claude/CLAUDE.md")).unwrap();
+        assert_eq!(
+            content,
+            format!(
+                "# Code Worker\n\n# Alpha\n\n{}",
+                skill_precedence_fragment("ur")
+            )
+        );
+        assert!(content.contains(
+            "When a skill exists as both `ur:<name>` and `<name>`, ALWAYS use `ur:<name>`."
+        ));
+    }
+
+    #[tokio::test]
+    async fn agent_home_layout_has_no_skill_precedence() {
+        let _lock = ENV_LOCK.lock().await;
+        let tmp = TempDir::new().unwrap();
+        setup_strategy_file(&tmp, "code", "# Code Worker");
+
+        unsafe { std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code") };
+        InitInstructionsManager::new(claude(&tmp), AgentType::Claude, SkillLayout::AgentHome)
+            .run()
+            .await
+            .unwrap();
+        unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
+
+        let content = std::fs::read_to_string(tmp.path().join("home/.claude/CLAUDE.md")).unwrap();
+        assert!(!content.contains("# Skill Precedence"));
     }
 
     #[tokio::test]
@@ -215,7 +287,8 @@ mod tests {
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "nonexistent") };
-        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
+        let mgr =
+            InitInstructionsManager::new(claude(&tmp), AgentType::Claude, SkillLayout::AgentHome);
         let result = mgr.run().await;
         unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
 
@@ -232,7 +305,8 @@ mod tests {
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
-        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
+        let mgr =
+            InitInstructionsManager::new(claude(&tmp), AgentType::Claude, SkillLayout::AgentHome);
         let result = mgr.run().await;
 
         assert!(result.is_ok(), "unset env should not cause an error");
@@ -262,7 +336,8 @@ mod tests {
             std::env::set_var(ur_config::UR_HOST_WORKSPACE_ENV, "/host/workspace");
         };
 
-        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
+        let mgr =
+            InitInstructionsManager::new(claude(&tmp), AgentType::Claude, SkillLayout::AgentHome);
         mgr.run().await.unwrap();
 
         unsafe {
@@ -300,7 +375,8 @@ mod tests {
             std::env::remove_var(ur_config::UR_HOST_WORKSPACE_ENV);
         };
 
-        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
+        let mgr =
+            InitInstructionsManager::new(claude(&tmp), AgentType::Claude, SkillLayout::AgentHome);
         mgr.run().await.unwrap();
 
         unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
@@ -340,7 +416,8 @@ mod tests {
             std::env::remove_var(ur_config::UR_HOST_WORKSPACE_ENV);
         };
 
-        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
+        let mgr =
+            InitInstructionsManager::new(claude(&tmp), AgentType::Claude, SkillLayout::AgentHome);
         mgr.run().await.unwrap();
 
         unsafe {
@@ -371,10 +448,14 @@ mod tests {
             std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
             std::env::set_var(ur_config::UR_PROJECT_INSTRUCTION_ENV, &project_path);
         }
-        InitInstructionsManager::new(temp_paths(&tmp, AgentType::Agy), AgentType::Agy)
-            .run()
-            .await
-            .unwrap();
+        InitInstructionsManager::new(
+            temp_paths(&tmp, AgentType::Agy),
+            AgentType::Agy,
+            SkillLayout::AgentHome,
+        )
+        .run()
+        .await
+        .unwrap();
         unsafe {
             std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
             std::env::remove_var(ur_config::UR_PROJECT_INSTRUCTION_ENV);
@@ -401,7 +482,8 @@ mod tests {
             std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
             std::env::set_var(ur_config::UR_WORKER_FORGE_ENV, "gitea");
         }
-        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
+        let mgr =
+            InitInstructionsManager::new(claude(&tmp), AgentType::Claude, SkillLayout::AgentHome);
         mgr.run().await.unwrap();
         unsafe {
             std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
@@ -425,7 +507,8 @@ mod tests {
             std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
             std::env::set_var(ur_config::UR_WORKER_FORGE_ENV, "github");
         }
-        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
+        let mgr =
+            InitInstructionsManager::new(claude(&tmp), AgentType::Claude, SkillLayout::AgentHome);
         mgr.run().await.unwrap();
         unsafe {
             std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
@@ -449,7 +532,8 @@ mod tests {
             std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
             std::env::remove_var(ur_config::UR_WORKER_FORGE_ENV);
         }
-        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
+        let mgr =
+            InitInstructionsManager::new(claude(&tmp), AgentType::Claude, SkillLayout::AgentHome);
         mgr.run().await.unwrap();
         unsafe {
             std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
@@ -469,7 +553,8 @@ mod tests {
             std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
             std::env::set_var(ur_config::UR_WORKER_FORGE_ENV, "   ");
         }
-        let mgr = InitInstructionsManager::new(claude(&tmp), AgentType::Claude);
+        let mgr =
+            InitInstructionsManager::new(claude(&tmp), AgentType::Claude, SkillLayout::AgentHome);
         mgr.run().await.unwrap();
         unsafe {
             std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
@@ -491,10 +576,14 @@ mod tests {
             std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
             std::env::set_var(ur_config::UR_WORKER_FORGE_ENV, "gitea");
         }
-        InitInstructionsManager::new(temp_paths(&tmp, AgentType::Agy), AgentType::Agy)
-            .run()
-            .await
-            .unwrap();
+        InitInstructionsManager::new(
+            temp_paths(&tmp, AgentType::Agy),
+            AgentType::Agy,
+            SkillLayout::AgentHome,
+        )
+        .run()
+        .await
+        .unwrap();
         unsafe {
             std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
             std::env::remove_var(ur_config::UR_WORKER_FORGE_ENV);

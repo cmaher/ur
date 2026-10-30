@@ -1,5 +1,6 @@
 pub mod instructions;
 pub mod settings;
+pub mod skill_render;
 pub mod skills;
 pub mod startup_hooks;
 

@@ -15,8 +15,8 @@ use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonServiceSer
 
 use workerd::{
     ContainerExitSink, ExitWatcherManager, InitGitHooksManager, InitInstructionsManager,
-    InitSettingsManager, InitSkillHooksManager, InitSkillsManager, StartupHooksManager,
-    WorkerDaemonServiceImpl, WorkerIdentity, WorkerPaths,
+    InitSettingsManager, InitSkillHooksManager, InitSkillsManager, SkillLayout,
+    StartupHooksManager, WorkerDaemonServiceImpl, WorkerIdentity, WorkerPaths,
 };
 
 mod logging;
@@ -67,12 +67,12 @@ async fn main() -> Result<()> {
 async fn run_init(agent: ur_config::AgentType, paths: &WorkerPaths) -> Result<()> {
     info!(agent = agent.name(), home = %paths.agent_home.display(), "workerd init starting");
 
-    InitSkillsManager::new(paths.clone())
+    InitSkillsManager::new(paths.clone(), SkillLayout::AgentHome)
         .run()
         .await
         .context("skills initialization failed")?;
 
-    InitInstructionsManager::new(paths.clone(), agent)
+    InitInstructionsManager::new(paths.clone(), agent, SkillLayout::AgentHome)
         .run()
         .await
         .context("instructions initialization failed")?;
@@ -192,7 +192,13 @@ async fn run_daemon_only(agent: ur_config::AgentType) -> Result<()> {
         is_design_worker,
         Duration::from_secs(EXIT_WATCHER_POLL_SECS),
     );
-    let service = WorkerDaemonServiceImpl::new(identity, agent, session, exit_watcher);
+    let service = WorkerDaemonServiceImpl::new(
+        identity,
+        agent,
+        SkillLayout::AgentHome,
+        session,
+        exit_watcher,
+    );
     service.spawn_exit_watcher();
 
     // 4. Spawn healthz HTTP server (port 9119) in background

@@ -13,6 +13,7 @@ pub mod init;
 pub mod init_git_hooks;
 pub mod init_skill_hooks;
 pub mod paths;
+pub mod skill_layout;
 
 #[cfg(test)]
 mod test_support;
@@ -27,3 +28,4 @@ pub use init::{
 pub use init_git_hooks::InitGitHooksManager;
 pub use init_skill_hooks::InitSkillHooksManager;
 pub use paths::WorkerPaths;
+pub use skill_layout::{SkillLayout, UR_PLUGIN_NAME};

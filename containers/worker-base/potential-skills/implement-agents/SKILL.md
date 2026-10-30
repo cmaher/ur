@@ -21,7 +21,7 @@ Do not guess or make assumptions about unclear requirements. This applies to any
 
 All agents must follow this style guide for development — parent and subagent alike.
 
-@/home/worker/.claude/skill-hooks/implement/style-guide.md
+@%UR_SKILL_HOOKS%/implement/style-guide.md
 
 ## Detect Mode — Single Ticket vs Epic
 
@@ -52,7 +52,7 @@ When the ticket has no open descendants:
 
 1. `ur ticket --output json show <id>` — read the ticket (and check for workflow error activities per above)
 2. `ur ticket --output json update <id> --status in_progress` — claim it
-@/home/worker/.claude/skill-hooks/implement/after-ticket-claim.md
+@%UR_SKILL_HOOKS%/implement/after-ticket-claim.md
 3. Read every file listed in the ticket's `Files to read first` section (if present) before editing anything. This loads the patterns and conventions needed for the change.
 4. Implement the work directly in this context, scoped to the ticket's `Files to change` list. Treat `Out of scope` as a hard boundary.
 5. Before committing, run any verifications listed in the **Verification Hooks** section below
@@ -65,7 +65,7 @@ When the ticket has no open descendants:
 
 Do NOT run any verification commands unless specified in this section.
 
-@/home/worker/.claude/skill-hooks/implement/subtask-verifications.md
+@%UR_SKILL_HOOKS%/implement/subtask-verifications.md
 
 If you cannot complete the work, run `ur-workertools status request-human "<reason>"` and stop.
 
@@ -105,7 +105,7 @@ Use when explicitly requested or when tickets have heavy file overlap (check the
 
 Do NOT run any verification commands unless specified in a **Verification Hooks** section.
 
-@/home/worker/.claude/skill-hooks/implement/before-dispatch.md
+@%UR_SKILL_HOOKS%/implement/before-dispatch.md
 
 ### Subagent Prompt Template
 
@@ -141,7 +141,7 @@ VCS:
 --- VERIFICATION HOOKS ---
 Do NOT run any verification commands unless specified in this section.
 
-@/home/worker/.claude/skill-hooks/implement/subtask-verifications.md
+@%UR_SKILL_HOOKS%/implement/subtask-verifications.md
 --- END VERIFICATION HOOKS ---
 
 When done:
@@ -152,7 +152,7 @@ When done:
 
 ### After All Subagents Complete (Epic Only)
 
-@/home/worker/.claude/skill-hooks/implement/final-verifications.md
+@%UR_SKILL_HOOKS%/implement/final-verifications.md
 
 After all dispatchable tickets are done and verification passes:
 

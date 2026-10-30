@@ -11,6 +11,7 @@ use ur_rpc::proto::core::UpdateAgentStatusRequest;
 
 use crate::dispatch::dispatch_commands;
 use crate::exit_watcher::ExitWatcherManager;
+use crate::skill_layout::SkillLayout;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonService;
 use ur_rpc::proto::workerd::{
@@ -70,6 +71,9 @@ pub struct WorkerDaemonServiceImpl {
     /// here — no handler calls `AgentType::from_env()` itself — so dispatch
     /// commands are phrased for the agent actually running in this worker.
     agent: ur_config::AgentType,
+    /// How skills are installed, so dispatch commands name them the way the
+    /// agent will find them (`/implement` vs `/ur:implement`).
+    skill_layout: SkillLayout,
     /// The agent's tmux session; every send-keys / status update targets it.
     session: tmux::Session,
     exit_watcher: ExitWatcherManager,
@@ -87,6 +91,7 @@ impl WorkerDaemonServiceImpl {
     pub fn new(
         identity: WorkerIdentity,
         agent: ur_config::AgentType,
+        skill_layout: SkillLayout,
         session: tmux::Session,
         exit_watcher: ExitWatcherManager,
     ) -> Self {
@@ -100,6 +105,7 @@ impl WorkerDaemonServiceImpl {
             })),
             dispatch_ticket_id: Arc::new(Mutex::new(None)),
             agent,
+            skill_layout,
             session,
             exit_watcher,
         }
@@ -464,7 +470,12 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         buf.lifecycle_step = "implementing".to_string();
         buf.step_complete = false;
         buf.nudge_suppressed_until = None;
-        buf.commands = dispatch_commands(self.agent, "implement", &[ticket_id.as_str()]);
+        buf.commands = dispatch_commands(
+            self.agent,
+            &self.skill_layout,
+            "implement",
+            &[ticket_id.as_str()],
+        );
 
         // Pop the first command and send it immediately
         let first_command = buf.commands.pop_front().expect("commands is non-empty");
@@ -489,7 +500,12 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         buf.lifecycle_step = "designing".to_string();
         buf.step_complete = false;
         buf.nudge_suppressed_until = None;
-        buf.commands = dispatch_commands(self.agent, "design", &[ticket_id.as_str()]);
+        buf.commands = dispatch_commands(
+            self.agent,
+            &self.skill_layout,
+            "design",
+            &[ticket_id.as_str()],
+        );
 
         // Pop the first command and send it immediately
         let first_command = buf.commands.pop_front().expect("commands is non-empty");
@@ -521,6 +537,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         buf.nudge_suppressed_until = None;
         buf.commands = dispatch_commands(
             self.agent,
+            &self.skill_layout,
             "address-feedback",
             &[inner.ticket_id.as_str(), pr_number.as_str()],
         );

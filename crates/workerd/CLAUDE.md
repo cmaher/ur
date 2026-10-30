@@ -20,7 +20,13 @@ reuse; the binary only resolves container defaults from the environment and wire
   once, then returns. It never exits the process itself.
 - `container_exit::ContainerExitSink` is the container's sink: `WorkerStop` RPC then wait for the
   server to kill the container, falling back to `process::exit(0)` if the RPC fails.
-- `grpc_service::WorkerDaemonServiceImpl::new(WorkerIdentity, AgentType, tmux::Session,
+- `skill_layout::SkillLayout` — `AgentHome` (containers: skills in `skills_dest/<name>/`,
+  invoked bare) or `NamespacedPlugin { name }` (`SkillLayout::ur_plugin()`, local workers:
+  `skills_dest/.claude-plugin/plugin.json` + `skills_dest/skills/<name>/`, invoked `ur:<name>`).
+  Injected into `InitSkillsManager::new(paths, layout)`,
+  `InitInstructionsManager::new(paths, agent, layout)` and `WorkerDaemonServiceImpl::new`; the
+  container binary always passes `AgentHome`. See `docs/codeflows/skill-loading.md#skill-layouts-skilllayout`.
+- `grpc_service::WorkerDaemonServiceImpl::new(WorkerIdentity, AgentType, SkillLayout, tmux::Session,
   ExitWatcherManager)` — the tmux session is injected (no handler calls `Session::agent()`);
   `spawn_exit_watcher()` starts the watcher and returns its `JoinHandle` so a host can abort it.
 - `dispatch::dispatch_commands` builds the dispatch buffer for server-driven dispatches.
@@ -74,14 +80,16 @@ server rather than from a hook, so their errors can propagate back to the caller
 `WorkerDaemonServiceImpl.agent: AgentType` is resolved once in `main` and
 injected into the gRPC service — no handler calls `AgentType::from_env()` itself. The
 `Implement` / `Design` / `AddressFeedbackTickets` handlers build their tmux commands via the
-shared `dispatch_commands(agent, skill, args)` helper in `dispatch.rs`, which is just
-`[agent.clear_command(), agent.skill_invocation(skill, args)]` — for Claude that's
+shared `dispatch_commands(agent, &skill_layout, skill, args)` helper in `dispatch.rs`, which is just
+`[agent.clear_command(), agent.skill_invocation(&layout.qualify(skill), args)]` (plugin layout
+yields `/ur:implement ur-x`) — for Claude that's
 `["/clear", "/implement ur-x"]`; for Codex, which has no custom slash commands, it's
 `["/new", "Run the \`implement\` skill. Arguments: ur-x"]`; AGY uses Claude-shaped phrasing,
 including `/clear`. No slash-command literal lives in `grpc_service.rs` itself.
 
 Init phase (`crates/workerd/src/init/{skills,instructions,settings}.rs`, split by concern). `main` resolves the agent (`AgentType::from_env()`) and `WorkerPaths::container(agent)` **once** and injects them into every manager's constructor — no init manager reads `UR_AGENT_TYPE` or `$HOME` itself, so the whole phase cannot disagree about which agent it is setting up:
-- `InitSkillsManager` wipes `skills_dest` and copies skills from `<agent_shared>/potential-skills/` (baked, agent-agnostic) based on `$UR_WORKER_SKILLS` (container: `~/.claude/skills/` or `~/.gemini/config/skills/`)
+- `InitSkillsManager` wipes `skills_dest` and copies skills from `<agent_shared>/potential-skills/` (baked, agent-agnostic) based on `$UR_WORKER_SKILLS` (container: `~/.claude/skills/` or `~/.gemini/config/skills/`), then renders each UTF-8 file (`init/skill_render.rs`): `%UR_SKILL_HOOKS%` → `paths.skill_hooks` always; for `NamespacedPlugin`, references to other installed skills are rewritten to `ur:<name>` first and `plugin.json` is written. Skill sources MUST use `@%UR_SKILL_HOOKS%/…`, never a literal hooks path.
+- `InitInstructionsManager` appends a `# Skill Precedence` fragment (prefer `ur:<name>` over `<name>`) only for `NamespacedPlugin`.
 - `InitInstructionsManager` copies the strategy-specific instruction file from `<agent_shared>/instructions/` based on `$UR_WORKER_INSTRUCTION_STRATEGY` env var, appends `<agent_shared>/shared-instructions/*.md` fragments, and writes the result to `instructions_dest` (project instructions go to `PROJECT_<filename>` beside it). AGY cannot read a workspace `CLAUDE.md`, so its project instructions are folded directly into `~/.gemini/config/AGENTS.md`.
 - `InitSettingsManager` copies `settings_template` (container: `~/{agent.home_subdir()}/potential-settings.json`, baked into the agent image) to `settings_dest` verbatim; both are `None` for agents without a settings file. The `model` key is intentionally NOT injected here — see step 4 of the daemon startup sequence above for why.
 - `InitGitHooksManager` copies git hooks from `<workspace>/ur-hooks/git/` (in-repo), then `<host_hooks>/git/` (host overlay, wins on conflict), into `<workspace>/.git/hooks/`

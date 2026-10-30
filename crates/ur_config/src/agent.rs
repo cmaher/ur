@@ -271,7 +271,10 @@ impl AgentType {
                 invocation
             }
             Self::Codex => {
-                let design_skill_prohibition = if skill == "implement" {
+                // Compare the unqualified name so `ur:implement` is treated
+                // the same as `implement`.
+                let base_skill = skill.rsplit(':').next().unwrap_or(skill);
+                let design_skill_prohibition = if base_skill == "implement" {
                     " DO NOT USE DESIGN SKILL."
                 } else {
                     ""
@@ -616,6 +619,18 @@ mod tests {
         assert_eq!(
             AgentType::Agy.skill_invocation("implement", &["ur-x"]),
             "/implement ur-x"
+        );
+    }
+
+    #[test]
+    fn skill_invocation_namespaced_implement_keeps_design_prohibition() {
+        assert_eq!(
+            AgentType::Codex.skill_invocation("ur:implement", &["ur-x"]),
+            "Run the `ur:implement` skill. DO NOT USE DESIGN SKILL. Arguments: ur-x"
+        );
+        assert_eq!(
+            AgentType::Claude.skill_invocation("ur:implement", &["ur-x"]),
+            "/ur:implement ur-x"
         );
     }
 
