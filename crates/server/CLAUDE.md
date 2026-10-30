@@ -1,6 +1,6 @@
 # ur-server (Server)
 
-Long-running server process. Auto-spawned by `ur` on first use (not a launchd service). Listens on TCP via tonic gRPC, serves both host CLI (`ur`) and in-container workers (`workertools` and `workerd` binaries). Depends on the `ur-postgres` container for database access — reads `DATABASE_URL` env var or falls back to `config.db.database_url()` (default: `postgres://ur:ur@ur-postgres:5432/ur`).
+Long-running server process. Auto-spawned by `ur` on first use (not a launchd service). Listens on TCP via tonic gRPC, serves both host CLI (`ur`) and in-container workers (`ur-workertools` and `workerd` binaries). Depends on the `ur-postgres` container for database access — reads `DATABASE_URL` env var or falls back to `config.db.database_url()` (default: `postgres://ur:ur@ur-postgres:5432/ur`).
 
 - Two gRPC servers: host server on `127.0.0.1:$server_port` (Core + Ticket, no auth) and worker server on `0.0.0.0:$worker_port` (HostExec + Ticket, auth interceptor validates worker-id/secret via WorkerManager)
 - `CoreServiceHandler` is `Clone` — keep it stateless or use `Arc` for shared state

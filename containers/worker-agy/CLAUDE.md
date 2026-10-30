@@ -15,7 +15,7 @@ AGY-specific layer on `ur-worker-base:latest`, tagged `ur-worker-agy:latest`.
 - `/home/worker/.gemini`, `.gemini/antigravity-cli/cache`, and `.gemini/config` are created
   and owned by `worker` before any credential mount is attached.
 - The global hook lives at `~/.gemini/config/hooks.json`. Its format is named-hook keyed;
-  `Stop` contains a flat handler list and runs `workertools notify-idle --json`. AGY runs the
+  `Stop` contains a flat handler list and runs `ur-workertools notify-idle --json`. AGY runs the
   hook synchronously from the directory containing `hooks.json`.
 - Repo-local `.agents/hooks.json` hooks can execute arbitrary commands when AGY loads them.
   A same-named repo hook does not replace the ur hook; configurations merge and both run.

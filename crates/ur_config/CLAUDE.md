@@ -196,4 +196,5 @@ concern.
 
 - Proxy constants: `DEFAULT_PROXY_HOSTNAME` ("ur-squid"), `SQUID_PORT` (3128); `hostname` replaces the old `port` field
 - `Config::squid_dir()` returns `$UR_CONFIG/squid/` — where SquidManager writes config files
-- Worker binaries (`workertools`, `workerd`) depend on this crate for env var constant names only
+- Worker binaries (`ur-workertools`, `workerd`) depend on this crate for env var constant names only
+- `UR_WORKERD_ADDR_ENV` (`UR_WORKERD_ADDR`) overrides the workerd address `ur-workertools` dials; unset → `http://127.0.0.1:WORKERD_GRPC_PORT` (the in-container daemon)

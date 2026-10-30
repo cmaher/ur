@@ -65,7 +65,7 @@ Use the parent ticket's priority value recorded in step 1.
 After creating each ticket, link every source comment in the group:
 
 ```
-workertools repo comments link --pr <pr_number> --comment <comment_id> --ticket <ticket_id>
+ur-workertools repo comments link --pr <pr_number> --comment <comment_id> --ticket <ticket_id>
 ```
 
 One call per source comment. The server uses these links to post automatic "Tracking in `ur-xyz`" replies.
@@ -82,7 +82,7 @@ For top-level PR comments (from the issues endpoint), omit the `File:` and line 
 For each reply-only comment, post an in-thread reply:
 
 ```
-workertools repo comments reply --pr <pr_number> <comment_id> "<message>"
+ur-workertools repo comments reply --pr <pr_number> <comment_id> "<message>"
 ```
 
 Exercise judgment:
@@ -95,8 +95,8 @@ Tone: terse, technical. No performative agreement ("Great point!", "You're absol
 
 ## 6. Done
 
-**REQUIRED: Signal completion by running `workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
+**REQUIRED: Signal completion by running `ur-workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
 
-If you cannot complete the task, run `workertools status request-human "<reason>"` and stop.
+If you cannot complete the task, run `ur-workertools status request-human "<reason>"` and stop.
 
 $ARGUMENTS

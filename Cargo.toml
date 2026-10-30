@@ -19,7 +19,7 @@ members = [
     "crates/server",
     "crates/tmux",
     "crates/workerd",
-    "crates/workertools",
+    "crates/ur-workertools",
     "tools/tk-import",
     "tools/tk-verify",
     "tools/sqlite-to-pg",
@@ -37,7 +37,7 @@ default-members = [
     "crates/urui",
     "crates/server",
     "crates/workerd",
-    "crates/workertools",
+    "crates/ur-workertools",
 ]
 
 [workspace.package]

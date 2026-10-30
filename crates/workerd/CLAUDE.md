@@ -27,7 +27,7 @@ Project-specific background processes are expressed as generic startup hooks. Th
 
 ## Sending commands to the agent (`NotifyIdle`)
 
-`NotifyIdle` is driven by Claude Code's `Stop` hook (`workertools notify-idle`), which Claude
+`NotifyIdle` is driven by Claude Code's `Stop` hook (`ur-workertools notify-idle`), which Claude
 Code runs **synchronously and waits for**. So despite the name, the agent is *not yet idle*
 while this RPC is being served, and text typed at that point lands in Claude Code's
 queued-message buffer instead of executing — a queued `/clear` or `/implement` never runs as
@@ -63,4 +63,4 @@ Init phase (`crates/workerd/src/init/{skills,instructions,settings}.rs`, split b
 - Copies git hooks from `/workspace/ur-hooks/git/` (in-repo), then `/var/ur/host-hooks/git/` (host overlay, wins on conflict), into `/workspace/.git/hooks/`
 - `InitSkillHooksManager` copies skill hooks from `/workspace/ur-hooks/skills/` (in-repo), then `/var/ur/host-hooks/skills/` (host overlay, wins on conflict), under `agent.customization_root()` (e.g. `~/.claude/skill-hooks/` or `~/.gemini/config/skill-hooks/`)
 - Calls `ListHostExecCommands` RPC on ur-server (retries with backoff)
-- Generates shims in `~/.local/bin/` that call `workertools host-exec <command> "$@"`
+- Generates shims in `~/.local/bin/` that call `ur-workertools host-exec <command> "$@"`

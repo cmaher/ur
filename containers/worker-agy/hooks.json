@@ -1,1 +1,1 @@
-{"ur-notify-idle":{"Stop":[{"type":"command","command":"workertools notify-idle --json"}]}}
+{"ur-notify-idle":{"Stop":[{"type":"command","command":"ur-workertools notify-idle --json"}]}}

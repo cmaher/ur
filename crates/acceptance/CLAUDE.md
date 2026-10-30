@@ -5,7 +5,7 @@ End-to-end acceptance tests that exercise the full stack: server, builderd, and 
 - Gated behind the `acceptance` cargo feature: `cargo test -p acceptance --features acceptance`
 - Excluded from workspace default-members so `cargo test` does not run them
 - Tests require Docker — they will not pass in bare CI
-- Tests use pre-built binaries from `target/` (`ur`) and the worker binaries (`workertools`, `workerd`) baked into the container images
+- Tests use pre-built binaries from `target/` (`ur`) and the worker binaries (`ur-workertools`, `workerd`) baked into the container images
 - All scenarios share a single `ur start` / `ur stop` cycle via `e2e_all` to avoid port collisions and reduce total runtime
 
 ## Scope: container-only paths
@@ -98,7 +98,7 @@ that one file and AGY waits for interactive Google sign-in.
 CI cannot complete interactive OAuth, so `scenario_agy_manual_worker` is never dispatched
 (on a dispatched worker, notify-idle can push `/clear` + `/implement`); workerd unit tests pin
 the exact `/clear` then `/implement` phrasing. The scenario verifies the baked global hook
-command and invokes `workertools notify-idle --json` in the running container, proving the
+command and invokes `ur-workertools notify-idle --json` in the running container, proving the
 command reaches NotifyIdle and returns AGY's required `{}` stdout. The spike covers a
 credentialed real-model Stop event.
 

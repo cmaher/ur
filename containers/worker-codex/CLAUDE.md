@@ -61,7 +61,7 @@ managed layer stops working, and record why here if you do.
 event names in `[hooks]` against a known set — typo `SesionStart` or `Stopp` and the config
 still loads cleanly, the event key just never matches anything and the hook never fires. There
 is no config-time signal that a hook is wired wrong. If you add or rename a hook here, verify it
-by actually triggering the event (launch a worker and confirm `workertools notify-idle` ran —
+by actually triggering the event (launch a worker and confirm `ur-workertools notify-idle` ran —
 e.g. check that the worker reports `idle` via `ur worker list`, or check server/worker logs for
 the `NotifyIdle` RPC) rather than trusting `codex` to complain about a bad event name.
 
@@ -81,7 +81,7 @@ the `NotifyIdle` RPC) rather than trusting `codex` to complain about a bad event
 - `[tui] vim_mode_default = true` starts each Codex worker composer in Vim normal mode; users can
   still toggle the mode for the current session with `/vim`
 - Entrypoint runs `exec workerd`, making workerd PID 1 — same as `worker-claude`
-- Worker command binaries (`workertools`, `workerd`) are staged into `bin/` by
+- Worker command binaries (`ur-workertools`, `workerd`) are staged into `bin/` by
   `stage-workercmd.sh`, then copied into the image at `/usr/local/bin/`
 - `workerd` handles initialization (skills, git hooks, hostexec shims), creates the tmux
   session, launches codex, and serves gRPC — reads agent-agnostic content from

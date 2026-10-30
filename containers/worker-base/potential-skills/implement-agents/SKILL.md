@@ -9,7 +9,7 @@ Implement one or more tickets. An **epic** is any ticket with open descendants �
 
 > If you want everything done in a single context without subagents, use the **implement** skill instead.
 
-**Run `workertools status request-human "<reason>"` and stop when:**
+**Run `ur-workertools status request-human "<reason>"` and stop when:**
 - Ticket acceptance criteria are ambiguous or contradictory
 - Work appears to require changes beyond `Files to change` that are not obvious small consequences (import sites, adjacent types are fine)
 - Error recovery activities contain contradictory or incomplete guidance
@@ -67,11 +67,11 @@ Do NOT run any verification commands unless specified in this section.
 
 @/home/worker/.claude/skill-hooks/implement/subtask-verifications.md
 
-If you cannot complete the work, run `workertools status request-human "<reason>"` and stop.
+If you cannot complete the work, run `ur-workertools status request-human "<reason>"` and stop.
 
 Do NOT push, create PRs, or advance lifecycle status — that happens automatically after you stop.
 
-**REQUIRED: Signal completion by running `workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
+**REQUIRED: Signal completion by running `ur-workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
 
 No subagents needed for a single ticket. Just do the work.
 
@@ -127,7 +127,7 @@ Claim: `ur ticket --output json update <id> --status in_progress`
 Scope discipline:
 - Treat `Files to change` as the intended scope and `Out of scope` as a hard boundary
 - Small consequential edits beyond `Files to change` (e.g. fixing an import site, adjacent type) are fine
-- If the work appears to require genuine scope expansion, run `workertools status request-human "<what's missing>"` and stop
+- If the work appears to require genuine scope expansion, run `ur-workertools status request-human "<what's missing>"` and stop
 
 Parallel work:
 - Other agents may be working on sibling tickets at the same time
@@ -161,11 +161,11 @@ After all dispatchable tickets are done and verification passes:
    ur ticket set-meta <epic-id> pr_summary "Summary of all changes across subagents" --output json
    ```
 
-If you cannot complete all work, run `workertools status request-human "<reason>"` and stop.
+If you cannot complete all work, run `ur-workertools status request-human "<reason>"` and stop.
 
 Do NOT push, create PRs, or advance lifecycle status — that happens automatically after you stop.
 
-**REQUIRED: Signal completion by running `workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
+**REQUIRED: Signal completion by running `ur-workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
 
 ### Common Mistakes
 

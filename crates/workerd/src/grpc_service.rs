@@ -8,6 +8,9 @@ use tonic::{Request, Response, Status};
 use tracing::{error, info, warn};
 
 use ur_rpc::proto::core::UpdateAgentStatusRequest;
+
+use crate::dispatch::dispatch_commands;
+use crate::exit_watcher::ExitWatcherManager;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonService;
 use ur_rpc::proto::workerd::{
@@ -36,17 +39,40 @@ pub struct DispatchBuffer {
     pub nudge_suppressed_until: Option<Instant>,
 }
 
-#[derive(Clone)]
-pub struct WorkerDaemonServiceImpl {
+/// Who this worker is and where its ur-server lives. Attached to every
+/// server-bound RPC as auth metadata.
+#[derive(Clone, Debug)]
+pub struct WorkerIdentity {
     pub server_addr: String,
     pub worker_id: String,
     pub worker_secret: String,
-    pub dispatch_buffer: Arc<Mutex<DispatchBuffer>>,
-    pub dispatch_ticket_id: Arc<Mutex<Option<String>>>,
-    /// Which agent this worker runs. Resolved once in `main` and injected here —
-    /// no handler calls `AgentType::from_env()` itself — so dispatch commands are
-    /// phrased for the agent actually running in this container.
-    pub agent: ur_config::AgentType,
+}
+
+impl WorkerIdentity {
+    /// Inject worker auth headers into gRPC request metadata.
+    pub fn inject_auth_headers(&self, metadata: &mut tonic::metadata::MetadataMap) {
+        inject_auth_headers(metadata, &self.worker_id, &self.worker_secret);
+    }
+}
+
+/// gRPC `WorkerDaemonService` for one worker.
+///
+/// Does not own process lifetime: the agent's tmux session and the exit
+/// watcher (with its [`AgentExitSink`](crate::exit_watcher::AgentExitSink))
+/// are injected, so the same service runs as a container's PID 1 or as one of
+/// many in-process daemons on the host.
+#[derive(Clone)]
+pub struct WorkerDaemonServiceImpl {
+    identity: WorkerIdentity,
+    dispatch_buffer: Arc<Mutex<DispatchBuffer>>,
+    dispatch_ticket_id: Arc<Mutex<Option<String>>>,
+    /// Which agent this worker runs. Resolved once by the caller and injected
+    /// here — no handler calls `AgentType::from_env()` itself — so dispatch
+    /// commands are phrased for the agent actually running in this worker.
+    agent: ur_config::AgentType,
+    /// The agent's tmux session; every send-keys / status update targets it.
+    session: tmux::Session,
+    exit_watcher: ExitWatcherManager,
 }
 
 /// How long to wait before typing into the agent session from a hook-driven RPC.
@@ -58,6 +84,34 @@ pub struct WorkerDaemonServiceImpl {
 const HOOK_RETURN_GRACE: Duration = Duration::from_millis(750);
 
 impl WorkerDaemonServiceImpl {
+    pub fn new(
+        identity: WorkerIdentity,
+        agent: ur_config::AgentType,
+        session: tmux::Session,
+        exit_watcher: ExitWatcherManager,
+    ) -> Self {
+        WorkerDaemonServiceImpl {
+            identity,
+            dispatch_buffer: Arc::new(Mutex::new(DispatchBuffer {
+                commands: VecDeque::new(),
+                step_complete: false,
+                lifecycle_step: String::new(),
+                nudge_suppressed_until: None,
+            })),
+            dispatch_ticket_id: Arc::new(Mutex::new(None)),
+            agent,
+            session,
+            exit_watcher,
+        }
+    }
+
+    /// Start the injected exit watcher in the background. Abort the returned
+    /// handle to stop watching (e.g. when the host tears this worker down).
+    pub fn spawn_exit_watcher(&self) -> tokio::task::JoinHandle<()> {
+        let watcher = self.exit_watcher.clone();
+        tokio::spawn(async move { watcher.run().await })
+    }
+
     /// Fire-and-forget: type text into the agent session once the hook that
     /// triggered this RPC has returned.
     ///
@@ -72,10 +126,10 @@ impl WorkerDaemonServiceImpl {
     /// completes, Claude Code returns to its prompt, and only then is the text
     /// typed in.
     fn spawn_deferred_send(&self, text: String, kind: &'static str) {
+        let session = self.session.clone();
         tokio::spawn(async move {
             tokio::time::sleep(HOOK_RETURN_GRACE).await;
 
-            let session = tmux::Session::agent();
             match session.send_keys(&text).await {
                 Ok(()) => info!(kind, text = text.as_str(), "sent text to agent session"),
                 Err(e) => {
@@ -87,9 +141,9 @@ impl WorkerDaemonServiceImpl {
 
     /// Fire-and-forget: forward idle status to the ur-server.
     fn forward_idle_to_server(&self) {
-        let addr = format!("http://{}", self.server_addr);
-        let worker_id = self.worker_id.clone();
-        let worker_secret = self.worker_secret.clone();
+        let addr = format!("http://{}", self.identity.server_addr);
+        let worker_id = self.identity.worker_id.clone();
+        let worker_secret = self.identity.worker_secret.clone();
 
         tokio::spawn(async move {
             let channel = match tonic::transport::Endpoint::try_from(addr.clone())
@@ -121,9 +175,9 @@ impl WorkerDaemonServiceImpl {
 
     /// Send CreateWorkflow + WorkerLaunch RPCs to the server for a dispatched ticket.
     async fn dispatch_ticket_to_server(&self, ticket_id: &str) -> Result<(), String> {
-        let addr = format!("http://{}", self.server_addr);
-        let worker_id = self.worker_id.clone();
-        let worker_secret = self.worker_secret.clone();
+        let addr = format!("http://{}", self.identity.server_addr);
+        let worker_id = self.identity.worker_id.clone();
+        let worker_secret = self.identity.worker_secret.clone();
         let ticket_id = ticket_id.to_owned();
 
         // 1. CreateWorkflow
@@ -179,9 +233,9 @@ impl WorkerDaemonServiceImpl {
     /// Returns `true` if the worker is stalled. Returns `false` on any RPC failure (conservative:
     /// a missed nudge is harmless; nudging a stalled worker is not).
     async fn is_stalled(&self) -> bool {
-        let addr = format!("http://{}", self.server_addr);
-        let worker_id = self.worker_id.clone();
-        let worker_secret = self.worker_secret.clone();
+        let addr = format!("http://{}", self.identity.server_addr);
+        let worker_id = self.identity.worker_id.clone();
+        let worker_secret = self.identity.worker_secret.clone();
 
         let channel = match tonic::transport::Endpoint::try_from(addr).map(|ep| ep.connect_lazy()) {
             Ok(ch) => ch,
@@ -217,9 +271,9 @@ impl WorkerDaemonServiceImpl {
 
     /// Fire-and-forget: send WorkflowStepComplete RPC to the ur-server.
     fn send_workflow_step_complete(&self) {
-        let addr = format!("http://{}", self.server_addr);
-        let worker_id = self.worker_id.clone();
-        let worker_secret = self.worker_secret.clone();
+        let addr = format!("http://{}", self.identity.server_addr);
+        let worker_id = self.identity.worker_id.clone();
+        let worker_secret = self.identity.worker_secret.clone();
 
         tokio::spawn(async move {
             let channel = match tonic::transport::Endpoint::try_from(addr.clone())
@@ -249,18 +303,6 @@ impl WorkerDaemonServiceImpl {
     }
 }
 
-/// Build the two-command dispatch buffer (context reset + skill invocation) for
-/// a server-driven dispatch (`Implement` / `Design` / `AddressFeedbackTickets`).
-///
-/// Pulled out of the handlers so the exact commands sent to the agent are
-/// unit-testable without a tmux session.
-fn dispatch_commands(agent: ur_config::AgentType, skill: &str, args: &[&str]) -> VecDeque<String> {
-    VecDeque::from(vec![
-        agent.clear_command().to_string(),
-        agent.skill_invocation(skill, args),
-    ])
-}
-
 /// Inject worker auth headers into gRPC request metadata.
 fn inject_auth_headers(
     metadata: &mut tonic::metadata::MetadataMap,
@@ -288,7 +330,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         let submit = req.submit.unwrap_or(true);
         info!(message, submit, "SendMessage received");
 
-        let session = tmux::Session::agent();
+        let session = &self.session;
         let result = if submit {
             session.send_keys(message).await
         } else {
@@ -374,9 +416,9 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
 
             let nudge_message = format!(
                 "Your '{step}' step is still in progress. Next steps:\n\
-                 - Run `workertools status step-complete` to signal completion\n\
-                 - Run `workertools status pause-nudge` if you are waiting on a background job or agent\n\
-                 - Run `workertools status request-human \"<reason>\"` if you need help"
+                 - Run `ur-workertools status step-complete` to signal completion\n\
+                 - Run `ur-workertools status pause-nudge` if you are waiting on a background job or agent\n\
+                 - Run `ur-workertools status request-human \"<reason>\"` if you need help"
             );
             self.spawn_deferred_send(nudge_message, "nudge message");
             return Ok(Response::new(NotifyIdleResponse {}));
@@ -428,7 +470,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         let first_command = buf.commands.pop_front().expect("commands is non-empty");
         drop(buf);
 
-        let session = tmux::Session::agent();
+        let session = &self.session;
         if let Err(e) = session.send_keys(&first_command).await {
             error!(error = %e, "tmux send-keys failed for first buffered command");
         }
@@ -453,7 +495,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         let first_command = buf.commands.pop_front().expect("commands is non-empty");
         drop(buf);
 
-        let session = tmux::Session::agent();
+        let session = &self.session;
         if let Err(e) = session.send_keys(&first_command).await {
             error!(error = %e, "tmux send-keys failed for first buffered command");
         }
@@ -487,7 +529,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         let first_command = buf.commands.pop_front().expect("commands is non-empty");
         drop(buf);
 
-        let session = tmux::Session::agent();
+        let session = &self.session;
         if let Err(e) = session.send_keys(&first_command).await {
             error!(error = %e, "tmux send-keys failed for first buffered command");
         }
@@ -519,7 +561,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
             "SetStatusLeft received"
         );
 
-        let session = tmux::Session::agent();
+        let session = &self.session;
 
         if req.status_left_length != 0 {
             let set_len_result = session
@@ -564,7 +606,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         let Some(ticket_id) = ticket_id else {
             info!("DispatchTicket called with no ticket set");
             return Ok(Response::new(DispatchTicketResponse {
-                error: "No ticket set. Use `workertools set-ticket <id>` first.".to_string(),
+                error: "No ticket set. Use `ur-workertools set-ticket <id>` first.".to_string(),
             }));
         };
 
@@ -579,118 +621,5 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
                 Ok(Response::new(DispatchTicketResponse { error: e }))
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn implement_commands_claude() {
-        let commands = dispatch_commands(ur_config::AgentType::Claude, "implement", &["ur-x"]);
-        assert_eq!(
-            Vec::from(commands),
-            vec!["/clear".to_string(), "/implement ur-x".to_string()]
-        );
-    }
-
-    #[test]
-    fn implement_commands_codex() {
-        let commands = dispatch_commands(ur_config::AgentType::Codex, "implement", &["ur-x"]);
-        assert_eq!(
-            Vec::from(commands),
-            vec![
-                "/new".to_string(),
-                "Run the `implement` skill. DO NOT USE DESIGN SKILL. Arguments: ur-x".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn design_commands_claude() {
-        let commands = dispatch_commands(ur_config::AgentType::Claude, "design", &["ur-x"]);
-        assert_eq!(
-            Vec::from(commands),
-            vec!["/clear".to_string(), "/design ur-x".to_string()]
-        );
-    }
-
-    #[test]
-    fn design_commands_codex() {
-        let commands = dispatch_commands(ur_config::AgentType::Codex, "design", &["ur-x"]);
-        assert_eq!(
-            Vec::from(commands),
-            vec![
-                "/new".to_string(),
-                "Run the `design` skill. Arguments: ur-x".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn address_feedback_commands_claude() {
-        let commands = dispatch_commands(
-            ur_config::AgentType::Claude,
-            "address-feedback",
-            &["ur-x", "123"],
-        );
-        assert_eq!(
-            Vec::from(commands),
-            vec![
-                "/clear".to_string(),
-                "/address-feedback ur-x 123".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn address_feedback_commands_codex() {
-        let commands = dispatch_commands(
-            ur_config::AgentType::Codex,
-            "address-feedback",
-            &["ur-x", "123"],
-        );
-        assert_eq!(
-            Vec::from(commands),
-            vec![
-                "/new".to_string(),
-                "Run the `address-feedback` skill. Arguments: ur-x, 123".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn implement_commands_agy() {
-        let commands = dispatch_commands(ur_config::AgentType::Agy, "implement", &["ur-x"]);
-        assert_eq!(
-            Vec::from(commands),
-            vec!["/clear".to_string(), "/implement ur-x".to_string()]
-        );
-    }
-
-    #[test]
-    fn design_commands_agy() {
-        let commands = dispatch_commands(ur_config::AgentType::Agy, "design", &["ur-x"]);
-        assert_eq!(
-            Vec::from(commands),
-            vec!["/clear".to_string(), "/design ur-x".to_string()]
-        );
-    }
-
-    #[test]
-    fn address_feedback_commands_agy() {
-        let commands = dispatch_commands(
-            ur_config::AgentType::Agy,
-            "address-feedback",
-            &["ur-x", "123"],
-        );
-        assert_eq!(
-            Vec::from(commands),
-            vec![
-                "/clear".to_string(),
-                "/address-feedback ur-x 123".to_string()
-            ]
-        );
     }
 }

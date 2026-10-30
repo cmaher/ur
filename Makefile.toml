@@ -83,7 +83,7 @@ script_runner = "@shell"
 script = ["scripts/build/image.sh"]
 
 [tasks.install]
-description = "Build ur CLI + builderd, install to UR_INSTALL_DIR (default ~/.local/bin), and build all container images"
+description = "Build ur CLI + builderd + ur-workertools, install to UR_INSTALL_DIR (default ~/.local/bin), and build all container images"
 dependencies = ["image"]
 script_runner = "@shell"
 script = ["scripts/build/install.sh"]

@@ -169,7 +169,9 @@ Source: `crates/server/src/grpc.rs` (`WorkerCoreServiceHandler`)
 
 ### Workerd RPCs (in worker container)
 
-Served by the `workerd` daemon inside each worker container on port 9120.
+Served by the `workerd` daemon inside each worker container on port 9120. `ur-workertools` dials
+it at `$UR_WORKERD_ADDR` (`ur_config::UR_WORKERD_ADDR_ENV`), defaulting to `http://127.0.0.1:9120`
+when unset, and sends the `ur-worker-id`/`ur-worker-secret` headers on every workerd call.
 
 **`Implement(ticket_id)`** -- Server dispatches implementation work.
 - Populates `DispatchBuffer` via `dispatch_commands(agent, "implement", &[ticket_id])`:
@@ -180,7 +182,7 @@ Served by the `workerd` daemon inside each worker container on port 9120.
 - Sets `lifecycle_step = "implementing"`
 - Pops and sends the first command (context reset) to tmux immediately
 
-**`NotifyIdle()`** -- Called by the agent's own `Stop` hook (`workertools notify-idle`) as its
+**`NotifyIdle()`** -- Called by the agent's own `Stop` hook (`ur-workertools notify-idle`) as its
 turn ends. For Claude
 the hook is user-config (`~/.claude/settings.json`, `permissions`/`hooks` baked at build time).
 For Codex it is declared in `/etc/codex/managed_config.toml` (`allow_managed_hooks_only = true`)
@@ -192,7 +194,7 @@ dispatch is active yet at session start), which is how a freshly-launched codex 
 `idle` for the first time without ever having run a `Stop` hook. See
 `containers/worker-codex/CLAUDE.md` for the full managed-hooks rationale.
 For AGY, the trusted global hook is the named-hook entry in `~/.gemini/config/hooks.json` and
-runs `workertools notify-idle --json`, because AGY requires a JSON object on stdout. Repo-local
+runs `ur-workertools notify-idle --json`, because AGY requires a JSON object on stdout. Repo-local
 `.agents/hooks.json` hooks can also execute: a same-named repo hook merges rather than replacing
 the ur hook, but repo hooks remain arbitrary code in the worker container. Treat inconsistent
 workspace-hook loading in AGY 1.2.0 as a bug, not a security boundary. See
@@ -211,7 +213,7 @@ workspace-hook loading in AGY 1.2.0 as a bug, not a security boundary. See
   agents rather than special-casing it away. AGY hooks are also synchronous, so deferral is
   required there.
 
-**`StepComplete()`** -- Called by `workertools status step-complete` when agent finishes work.
+**`StepComplete()`** -- Called by `ur-workertools status step-complete` when agent finishes work.
 - Sets `step_complete = true` on the `DispatchBuffer`
 - Next idle signal will trigger case 2 above
 
