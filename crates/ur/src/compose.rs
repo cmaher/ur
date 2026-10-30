@@ -607,8 +607,8 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
     }
 
     // Forward UR_IMAGE_TAG if set so CI-tagged images are used by compose
-    if let Ok(val) = std::env::var("UR_IMAGE_TAG") {
-        env_vars.push(("UR_IMAGE_TAG".to_string(), val));
+    if let Ok(val) = std::env::var(ur_config::UR_IMAGE_TAG_ENV) {
+        env_vars.push((ur_config::UR_IMAGE_TAG_ENV.to_string(), val));
     }
 
     env_vars.push((
