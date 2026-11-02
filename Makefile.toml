@@ -148,6 +148,11 @@ description = "Build content-hash-tagged CI images (skipped when already built) 
 script_runner = "@shell"
 script = ["scripts/acceptance-ci.sh"]
 
+[tasks.test-ci-scripts]
+description = "Test the CI shell layer (image hash, acceptance-ci lock/pruning, stage, housekeeping, pre-push) in a stubbed sandbox"
+command = "bash"
+args = ["scripts/build/test-ci-scripts.sh"]
+
 [tasks.housekeeping]
 description = "Prune stale target/ artifacts (cargo-sweep) and cap Docker's build cache"
 script_runner = "@shell"
@@ -203,7 +208,7 @@ echo "ci-postgres removed"
 
 [tasks.ci]
 description = "Run all CI checks"
-dependencies = ["fmt", "clippy", "build", "test"]
+dependencies = ["fmt", "test-ci-scripts", "clippy", "build", "test"]
 
 [tasks.fmt-fix-silent]
 description = "Fix code formatting (no output)"

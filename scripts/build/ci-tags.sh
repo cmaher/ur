@@ -36,7 +36,8 @@ record_ci_tag_use() {
 # then the most recently used others by the log. (The caller records the
 # current hash before pruning, so it is also the log's newest entry.)
 # The limit is applied inside awk, which reads all its input: a `head` would
-# exit early and SIGPIPE the pipeline, failing the caller under pipefail.
+# exit early and SIGPIPE the pipeline, failing the caller under pipefail. An
+# unreadable log yields just the current hash rather than failing the caller.
 ci_hashes_to_keep() {
     local log cur="${TAG#ci-}"
     log=$(ci_tag_log)
@@ -44,7 +45,8 @@ ci_hashes_to_keep() {
     if [ -f "$log" ]; then
         LC_ALL=C sort -k1,1nr "$log" 2>/dev/null \
             | awk -v cur="$cur" -v keep="${KEEP_CI_TAGS:-3}" \
-                '$2 != cur && !seen[$2]++ && ++n < keep { print $2 }'
+                '$2 != cur && !seen[$2]++ && ++n < keep { print $2 }' \
+            || true
     fi
 }
 

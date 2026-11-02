@@ -4,6 +4,8 @@ set -euo pipefail
 
 source "$(dirname "$0")/build/agent-images.sh"
 source "$(dirname "$0")/build/ci-tags.sh"
+# Mutex: only one acceptance-ci / pre-push runs image builds at a time.
+source "$(dirname "$0")/build/ci-lock.sh"
 
 # Run acceptance tests against CI images tagged by a content hash of their
 # inputs (scripts/build/image-hash.sh). If every image already exists at that
@@ -19,74 +21,6 @@ for entry in "${AGENT_IMAGES[@]}"; do
     IMAGES+=("$image_tag")
 done
 
-# --- Mutex: only one acceptance-ci / pre-push runs image builds at a time ---
-LOCK_DIR="${UR_CONFIG:-$HOME/.ur}/locks/pre-push"
-PID_FILE="$LOCK_DIR/pid"
-# A lock dir with no pid file is mid-creation; older than this many minutes, its
-# creator died before writing the pid.
-LOCK_NO_PID_STALE_MIN=1
-
-# Only remove the lock if we still own it: after a stale takeover, a slow
-# previous holder must not delete the new holder's lock on exit.
-release_lock() {
-    if [ "$(cat "$PID_FILE" 2>/dev/null || true)" = "$$" ]; then
-        rm -rf "$LOCK_DIR"
-    fi
-}
-
-# Take over a stale lock. `mv` is atomic, so when several waiters see the same
-# stale lock only one moves it; the others fail the mv and keep waiting. $1 is
-# the pid the caller judged dead ("" for a lock with no pid file). If the lock
-# was replaced between that check and the mv, we moved a LIVE lock: put it back.
-take_over_stale_lock() {
-    local expected="$1" moved="$LOCK_DIR.stale.$$" found
-    mv "$LOCK_DIR" "$moved" 2>/dev/null || return 0
-    found=$(cat "$moved/pid" 2>/dev/null || true)
-    if [ "$found" != "$expected" ]; then
-        if [ ! -e "$LOCK_DIR" ] && mv "$moved" "$LOCK_DIR" 2>/dev/null; then
-            return 0
-        fi
-        echo "acceptance-ci: lock held by PID ${found:-?} was displaced during stale-lock takeover" >&2
-    fi
-    rm -rf "$moved"
-}
-
-acquire_lock() {
-    local err holder lock_branch
-    while true; do
-        # A failed mkdir with no lock dir is not contention: either the holder
-        # released it in between (the retry wins) or mkdir cannot work at all
-        # (permissions, read-only fs), which waiting would never fix.
-        if err=$(mkdir "$LOCK_DIR" 2>&1) \
-            || { [ ! -d "$LOCK_DIR" ] && err=$(mkdir "$LOCK_DIR" 2>&1); }; then
-            echo $$ > "$PID_FILE"
-            if [ -n "${UR_PUSH_BRANCH:-}" ]; then
-                echo "$UR_PUSH_BRANCH" > "$LOCK_DIR/branch"
-            fi
-            return 0
-        fi
-        if [ ! -d "$LOCK_DIR" ]; then
-            echo "acceptance-ci: cannot create lock $LOCK_DIR: $err" >&2
-            exit 1
-        fi
-
-        if [ -f "$PID_FILE" ]; then
-            holder=$(cat "$PID_FILE" 2>/dev/null || true)
-            if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-                take_over_stale_lock "$holder"
-                continue
-            fi
-        elif [ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin +"$LOCK_NO_PID_STALE_MIN" 2>/dev/null)" ]; then
-            take_over_stale_lock ""
-            continue
-        fi
-
-        lock_branch=$(cat "$LOCK_DIR/branch" 2>/dev/null || echo '?')
-        echo "acceptance-ci: waiting for lock (PID $(cat "$PID_FILE" 2>/dev/null || echo '?'), branch $lock_branch)..."
-        sleep 10
-    done
-}
-
 images_present() {
     local img
     for img in "${IMAGES[@]}"; do
@@ -97,7 +31,7 @@ images_present() {
 # Fail fast rather than hashing, locking and building against a dead daemon.
 docker info >/dev/null 2>&1 || { echo "acceptance-ci: docker unreachable" >&2; exit 1; }
 
-mkdir -p "$(dirname "$LOCK_DIR")"
+mkdir -p "$(dirname "$LOCK")"
 acquire_lock
 trap release_lock EXIT
 
