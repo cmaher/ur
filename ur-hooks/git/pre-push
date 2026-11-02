@@ -7,6 +7,21 @@ set -euo pipefail
 # Output is captured to a stable log file. The log is removed on success
 # and preserved on failure so you can read the full output.
 
+# Git exports repo-local variables (GIT_DIR, GIT_INDEX_FILE, ...) to hooks; from
+# a linked worktree GIT_DIR points at .git/worktrees/<name>. Tests that run git
+# in temp repos (builderd pool_handler) would inherit it and operate on this
+# repo instead, so clear them before running anything.
+# shellcheck disable=SC2046
+unset $(git rev-parse --local-env-vars)
+
+# Prune target/ and Docker build cache on every exit, pass or fail: a full disk
+# is usually what made the push fail in the first place. The hook is shared by
+# every checkout of the repo, so tolerate one without the script, and never let
+# housekeeping change the push's exit status. Installed before anything that
+# can fail (mkdir/mktemp) so housekeeping runs on every exit.
+# shellcheck disable=SC2154 # rc is assigned inside the trap string
+trap 'rc=$?; if [ -x scripts/build/housekeeping.sh ]; then scripts/build/housekeeping.sh || true; fi; exit $rc' EXIT
+
 mkdir -p tmp
 LOGFILE=$(mktemp tmp/ur-pre-push.XXXXXX)
 
@@ -27,16 +42,10 @@ run_step() {
     fi
 }
 
-run_step "Cargo.lock check" cargo check --locked --quiet
+# Fail fast on a stale Cargo.lock: nothing else in `ci` builds with --locked
+# (clippy does, but only after fmt and the script tests).
+run_step "Cargo.lock check" cargo metadata --locked --format-version 1
 run_step "CI (fmt + clippy + build + test)" cargo make ci
 run_step "image build + acceptance" cargo make acceptance-ci
 
 rm -f "$LOGFILE"
-
-# Housekeeping: cargo never evicts stale artifacts, so target/ grows without
-# bound. Drop anything not used in the last 7 days. Never blocks the push.
-if command -v cargo-sweep >/dev/null 2>&1; then
-    cargo sweep --time 7 >/dev/null 2>&1 || echo "pre-push: cargo sweep failed (push continues)" >&2
-else
-    echo "pre-push: cargo-sweep not installed; run 'cargo install cargo-sweep' to prune target/" >&2
-fi

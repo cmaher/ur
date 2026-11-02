@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -19,6 +19,7 @@ use ur_rpc::proto::core::command_output::Payload;
 
 use ur_config::{WORKSPACE_TEMPLATE, resolve_workspace_content};
 
+use crate::overlay::{LocalOverlayManager, OVERLAY_BRACKETED_COMMANDS, OverlayLease};
 use crate::registry::{OutputSink, ProcessKey, ProcessRegistry, RegisteredProcess};
 
 type CommandOutputStream =
@@ -28,6 +29,8 @@ type CommandOutputStream =
 pub struct BuilderDaemonHandler {
     pub workspace: Option<PathBuf>,
     pub registry: ProcessRegistry,
+    /// Conceals pool-slot local overlays around git commands so git never sees them.
+    pub overlays: LocalOverlayManager,
 }
 
 impl BuilderDaemonHandler {
@@ -53,8 +56,11 @@ impl BuilderDaemonHandler {
     /// can be fed from the caller's forwarded stdin. When the caller's stream
     /// ends, the sender is dropped, which closes the child's stdin and yields
     /// EOF — the same thing a non-bidi caller previously got from `Stdio::null`.
-    #[allow(clippy::result_large_err)]
-    fn spawn_command(
+    ///
+    /// Git commands run inside a pool slot are bracketed by the overlay manager: local
+    /// overlays are concealed before the child spawns and revealed before its exit code
+    /// is forwarded, so the caller sees its overlays again as soon as the command returns.
+    async fn spawn_command(
         &self,
         req: &BuilderExecRequest,
     ) -> Result<(Response<CommandOutputStream>, mpsc::Sender<Vec<u8>>), Status> {
@@ -82,28 +88,109 @@ impl BuilderDaemonHandler {
         for (k, v) in &req.env {
             cmd.env(k, v);
         }
-        let mut child = cmd.spawn().map_err(|e| {
-            error!(
-                command = %resolved_command,
-                working_dir = %resolved_dir,
-                error = %e,
-                "failed to spawn process"
-            );
-            Status::internal(format!("failed to spawn {resolved_command}: {e}"))
-        })?;
+        let lease = self.conceal_overlays(req, &resolved_dir).await?;
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                error!(
+                    command = %resolved_command,
+                    working_dir = %resolved_dir,
+                    error = %e,
+                    "failed to spawn process"
+                );
+                let mut message = format!("failed to spawn {resolved_command}: {e}");
+                if let Some(lease) = lease
+                    && let Err(reveal_err) = self.overlays.reveal_after(lease).await
+                {
+                    message.push_str(&format!("; restoring local overlays failed: {reveal_err}"));
+                }
+                return Err(Status::internal(message));
+            }
+        };
 
         let child_stdin = child.stdin.take().expect("stdin piped for short-lived");
         let (stdin_tx, stdin_rx) = mpsc::channel::<Vec<u8>>(32);
         tokio::spawn(Self::forward_stdin(child_stdin, stdin_rx));
 
         let (tx, rx) = mpsc::channel(32);
-        ur_rpc::stream::spawn_child_output_stream(child, tx);
+        match lease {
+            None => ur_rpc::stream::spawn_child_output_stream(child, tx),
+            Some(lease) => {
+                let (child_tx, child_rx) = mpsc::channel(32);
+                ur_rpc::stream::spawn_child_output_stream(child, child_tx);
+                tokio::spawn(Self::forward_then_reveal(
+                    child_rx,
+                    tx,
+                    self.overlays.clone(),
+                    lease,
+                ));
+            }
+        }
 
         let stream = ReceiverStream::new(rx);
         Ok((
             Response::new(Box::pin(stream) as CommandOutputStream),
             stdin_tx,
         ))
+    }
+
+    /// Conceal the local overlays of the pool slot `resolved_dir` lies in, when `req`
+    /// runs a command that drives git. Returns `None` for other commands and for
+    /// directories outside an overlaid slot.
+    async fn conceal_overlays(
+        &self,
+        req: &BuilderExecRequest,
+        resolved_dir: &str,
+    ) -> Result<Option<OverlayLease>, Status> {
+        if !OVERLAY_BRACKETED_COMMANDS.contains(&req.command.as_str()) {
+            return Ok(None);
+        }
+        self.overlays
+            .conceal_for(Path::new(resolved_dir))
+            .await
+            .map_err(|e| {
+                error!(working_dir = %resolved_dir, error = %e, "failed to conceal local overlays");
+                Status::failed_precondition(format!(
+                    "failed to hide local overlay files from git: {e}"
+                ))
+            })
+    }
+
+    /// Forward a bracketed child's output to the caller, revealing the slot's overlays
+    /// before the final exit-code frame. Keeps draining after the caller disconnects so
+    /// the overlays come back only once the child has actually exited.
+    async fn forward_then_reveal(
+        mut child_rx: mpsc::Receiver<Result<CommandOutput, Status>>,
+        tx: mpsc::Sender<Result<CommandOutput, Status>>,
+        overlays: LocalOverlayManager,
+        lease: OverlayLease,
+    ) {
+        let mut exit_frame = None;
+        while let Some(msg) = child_rx.recv().await {
+            if matches!(
+                &msg,
+                Ok(CommandOutput {
+                    payload: Some(Payload::ExitCode(_))
+                })
+            ) {
+                exit_frame = Some(msg);
+                break;
+            }
+            let _ = tx.send(msg).await;
+        }
+
+        let final_frame = match overlays.reveal_after(lease).await {
+            Ok(()) => exit_frame,
+            Err(e) => {
+                error!(error = %e, "failed to restore local overlays after git command");
+                Some(Err(Status::internal(format!(
+                    "command finished but restoring local overlay files failed: {e}"
+                ))))
+            }
+        };
+        if let Some(frame) = final_frame {
+            let _ = tx.send(frame).await;
+        }
     }
 
     /// Forward stdin frames from an inbound exec stream to a child's stdin.
@@ -329,7 +416,7 @@ impl BuilderDaemonService for BuilderDaemonHandler {
         let (resp, stdin_tx) = if req.long_lived {
             self.spawn_long_lived(&req)?
         } else {
-            self.spawn_command(&req)?
+            self.spawn_command(&req).await?
         };
 
         Self::spawn_stdin_forwarder(in_stream, stdin_tx);
@@ -377,6 +464,11 @@ mod tests {
         BuilderDaemonHandler {
             workspace: workspace.map(PathBuf::from),
             registry: ProcessRegistry::new(),
+            overlays: LocalOverlayManager {
+                workspace: PathBuf::from("/nonexistent-pool-workspace"),
+                config_dir: PathBuf::from("/nonexistent-config"),
+                active: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            },
         }
     }
 
@@ -433,11 +525,57 @@ mod tests {
             long_lived: false,
         };
 
-        let (resp, _stdin_tx) = handler.spawn_command(&req).unwrap();
+        let (resp, _stdin_tx) = handler.spawn_command(&req).await.unwrap();
         let (stdout_data, exit_code) = collect_stream(resp.into_inner()).await;
 
         assert_eq!(String::from_utf8_lossy(&stdout_data).trim(), "hello");
         assert_eq!(exit_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_exec_git_in_overlaid_slot_hides_overlays() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut handler = handler_with_workspace(None);
+        handler.overlays = LocalOverlayManager {
+            workspace: tmp.path().join("workspace"),
+            config_dir: tmp.path().join("config"),
+            active: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        };
+        let slot = handler.overlays.workspace.join("pool/proj/0");
+        std::fs::create_dir_all(&slot).unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "--initial-branch=master"])
+            .current_dir(&slot)
+            .output()
+            .unwrap()
+            .status;
+        assert!(status.success());
+        let local = handler.overlays.config_dir.join("projects/proj/local");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(local.join("overlay.txt"), "local").unwrap();
+        handler.overlays.apply("proj", &slot).await.unwrap();
+
+        let req = BuilderExecRequest {
+            command: "git".into(),
+            args: vec!["status".into(), "--porcelain".into()],
+            working_dir: slot.display().to_string(),
+            env: std::collections::HashMap::new(),
+            long_lived: false,
+        };
+        let (resp, _stdin_tx) = handler.spawn_command(&req).await.unwrap();
+        let (stdout_data, exit_code) = collect_stream(resp.into_inner()).await;
+
+        assert_eq!(exit_code, Some(0));
+        assert!(
+            String::from_utf8_lossy(&stdout_data).trim().is_empty(),
+            "overlay visible to git: {}",
+            String::from_utf8_lossy(&stdout_data)
+        );
+        assert_eq!(
+            std::fs::read_to_string(slot.join("overlay.txt")).unwrap(),
+            "local",
+            "overlay restored by the time the exit code arrives"
+        );
     }
 
     #[tokio::test]
@@ -451,7 +589,7 @@ mod tests {
             long_lived: false,
         };
 
-        let (resp, stdin_tx) = handler.spawn_command(&req).unwrap();
+        let (resp, stdin_tx) = handler.spawn_command(&req).await.unwrap();
         stdin_tx.send(b"piped payload".to_vec()).await.unwrap();
         // Dropping the sender closes the child's stdin so `cat` sees EOF.
         drop(stdin_tx);
@@ -475,7 +613,7 @@ mod tests {
 
         // A non-bidi caller sends no stdin frames at all; the child must still
         // see EOF rather than hanging on an open pipe.
-        let (resp, stdin_tx) = handler.spawn_command(&req).unwrap();
+        let (resp, stdin_tx) = handler.spawn_command(&req).await.unwrap();
         drop(stdin_tx);
 
         let (stdout_data, exit_code) = collect_stream(resp.into_inner()).await;
@@ -495,7 +633,7 @@ mod tests {
             long_lived: false,
         };
 
-        let result = handler.spawn_command(&req);
+        let result = handler.spawn_command(&req).await;
         assert!(result.is_err());
     }
 

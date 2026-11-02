@@ -1,68 +1,76 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 
-source "$(dirname "$0")/build/agent-images.sh"
+# Everything below uses repo-relative paths: run from the repo root wherever we
+# are invoked from.
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "$SCRIPT_DIR/.."
 
-# Run acceptance tests with isolated CI-tagged images.
-# Builds every image with a unique ci-<label> tag, runs acceptance tests,
-# then cleans up the tagged images (even on failure).
+source "$SCRIPT_DIR/build/agent-images.sh"
+source "$SCRIPT_DIR/build/ci-tags.sh"
+# Mutex: only one acceptance-ci / pre-push runs image builds at a time.
+source "$SCRIPT_DIR/build/ci-lock.sh"
 
-LABEL=$(od -An -tx1 -N5 /dev/urandom | tr -d ' \n' | cut -c1-5)
-TAG="ci-${LABEL}"
+# Run acceptance tests against CI images tagged by a content hash of their
+# inputs (scripts/build/image-hash.sh). If every image already exists at that
+# tag, the release build and `docker build` are skipped entirely; otherwise the
+# binaries are staged and the images built. The ci-* tags of the few most
+# recently used hashes are kept (scripts/build/ci-tags.sh) so alternating
+# between branches does not rebuild every push.
+
+KEEP_CI_TAGS="${UR_KEEP_CI_TAGS:-3}"
 IMAGES=(ur-worker-base ur-server ur-squid)
 for entry in "${AGENT_IMAGES[@]}"; do
     IFS=':' read -r _dir image_tag _agent _cachebust _stage_binaries <<< "$entry"
     IMAGES+=("$image_tag")
 done
 
-# --- Mutex: only one acceptance-ci / pre-push runs image builds at a time ---
-LOCK_DIR="${UR_CONFIG:-$HOME/.ur}/locks/pre-push"
-PID_FILE="$LOCK_DIR/pid"
-
-release_lock() {
-    rm -rf "$LOCK_DIR"
-}
-
-acquire_lock() {
-    while true; do
-        if mkdir "$LOCK_DIR" 2>/dev/null; then
-            echo $$ > "$PID_FILE"
-            if [ -n "${UR_PUSH_BRANCH:-}" ]; then
-                echo "$UR_PUSH_BRANCH" > "$LOCK_DIR/branch"
-            fi
-            return 0
-        fi
-
-        if [ -f "$PID_FILE" ]; then
-            local stale_pid
-            stale_pid=$(cat "$PID_FILE" 2>/dev/null || true)
-            if [ -n "$stale_pid" ] && ! kill -0 "$stale_pid" 2>/dev/null; then
-                rm -rf "$LOCK_DIR"
-                continue
-            fi
-        fi
-
-        local lock_branch
-        lock_branch=$(cat "$LOCK_DIR/branch" 2>/dev/null || echo '?')
-        echo "acceptance-ci: waiting for lock (PID $(cat "$PID_FILE" 2>/dev/null || echo '?'), branch $lock_branch)..."
-        sleep 10
-    done
-}
-
-cleanup() {
-    echo "Cleaning up ci-tagged images (tag=$TAG)..."
+images_present() {
+    local img
     for img in "${IMAGES[@]}"; do
-        docker rmi "${img}:${TAG}" 2>/dev/null || true
+        docker image inspect "${img}:${TAG}" >/dev/null 2>&1 || return 1
     done
-    release_lock
 }
 
-mkdir -p "$(dirname "$LOCK_DIR")"
-acquire_lock
-trap cleanup EXIT
+# Fail fast rather than hashing, locking and building against a dead daemon.
+docker info >/dev/null 2>&1 || { echo "acceptance-ci: docker unreachable" >&2; exit 1; }
 
-echo "=== Building images with tag=$TAG ==="
-UR_IMAGE_TAG="$TAG" scripts/build/image.sh
+mkdir -p "$LOCKS_DIR"
+acquire_lock
+trap release_lock EXIT
+# From here on fd 9 holds the lock (scripts/build/ci-lock.sh). Every child that
+# can outlive this script (builds, the acceptance suite and anything it starts)
+# runs with `9>&-`, so a leftover process never keeps the lock held.
+
+# Hash under the lock, so the tag names the sources this run actually builds.
+TAG="ci-$(scripts/build/image-hash.sh 9>&-)"
+# Log the hash before building: a concurrent pruner sharing this log then sees
+# it as the newest entry and keeps it, instead of deleting a build in progress.
+record_ci_tag_use "${TAG#ci-}"
+
+# An agent update or forced base rebuild must actually rebuild.
+if [ -z "${UR_UPDATE_AGENT:-}" ] && [ "${UR_FORCE_REBUILD_BASE:-}" != "1" ] && images_present; then
+    echo "=== Images for tag=$TAG already built; skipping build ==="
+else
+    echo "=== Building images with tag=$TAG ==="
+    scripts/build/stage.sh 9>&-
+    UR_IMAGE_TAG="$TAG" scripts/build/image.sh 9>&-
+    # A source edit during the build would leave images tagged with a hash
+    # they do not match; a later push with those sources would then skip the
+    # build and test stale images. Drop them and fail instead.
+    rebuilt_tag="ci-$(scripts/build/image-hash.sh 9>&-)" || {
+        remove_ci_tag "${TAG#ci-}"
+        echo "acceptance-ci: could not re-hash sources after the build; dropped unverified $TAG images" >&2
+        exit 1
+    }
+    if [ "$rebuilt_tag" != "$TAG" ]; then
+        remove_ci_tag "${TAG#ci-}"
+        echo "acceptance-ci: sources changed during build ($TAG -> $rebuilt_tag); re-run push" >&2
+        exit 1
+    fi
+fi
+prune_old_ci_tags
 
 echo "=== Running acceptance tests with tag=$TAG ==="
-UR_IMAGE_TAG="$TAG" cargo test -p acceptance --features acceptance
+UR_IMAGE_TAG="$TAG" cargo test -p acceptance --features acceptance 9>&-

@@ -3627,6 +3627,24 @@ mod tests {
     }
 
     #[test]
+    fn test_git_help_does_not_claim_branch_lock_for_manual_worker() {
+        // Manual workers manage their own branches, so the rejection help must
+        // not tell them checkout/switch are blocked.
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = manual_worker_ctx();
+        let args: Vec<String> = vec!["worktree".into(), "add".into(), "foo".into()];
+        let msg = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("runs on the HOST"));
+        assert!(msg.contains("You manage your own branches"));
+        assert!(!msg.contains("branch switching"));
+        assert!(!msg.contains("push may only target your own worker branch"));
+    }
+
+    #[test]
     fn test_git_commit_prefixes_for_manual_worker() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/git.lua");
