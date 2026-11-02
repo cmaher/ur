@@ -7,6 +7,13 @@ set -euo pipefail
 # Output is captured to a stable log file. The log is removed on success
 # and preserved on failure so you can read the full output.
 
+# Git exports repo-local variables (GIT_DIR, GIT_INDEX_FILE, ...) to hooks; from
+# a linked worktree GIT_DIR points at .git/worktrees/<name>. Tests that run git
+# in temp repos (builderd pool_handler) would inherit it and operate on this
+# repo instead, so clear them before running anything.
+# shellcheck disable=SC2046
+unset $(git rev-parse --local-env-vars)
+
 mkdir -p tmp
 LOGFILE=$(mktemp tmp/ur-pre-push.XXXXXX)
 
