@@ -114,6 +114,13 @@ pass `--db tickets` or `--db workflow` to select one. `restore` infers the
 database from the filename and requires the file to be in that database's
 backup directory.
 
+Each `path` is a host directory, bind-mounted at `/backup/<db_name>` into both
+`ur-postgres` (where `pg_dump` writes) and `ur-server` (which applies
+`retain_count`). `ur start` fails if a configured `path` does not exist, is not
+a directory, or is not writable — create it first (`ur init` creates
+`~/.ur/backups`). The server likewise refuses to start if the mount is missing,
+rather than silently disabling backups.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `path` | path | — | Directory to write backup files. Unset disables backups (periodic and manual). |
@@ -443,7 +450,12 @@ container_command = "docker"
 stale_worker_ttl_days = 7
 max_implement_cycles = 6
 
-[backup]
+[ticket_db.backup]
+path = "/Users/me/.ur/backups"
+interval_minutes = 30
+retain_count = 3
+
+[workflow_db.backup]
 path = "/Users/me/.ur/backups"
 interval_minutes = 30
 retain_count = 3

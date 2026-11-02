@@ -5,54 +5,55 @@ use crate::snapshot::SnapshotManager;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 use ur_config::BackupConfig;
-use ur_config::backup::{BACKUP_TIMESTAMP_FORMAT, automatic_backup_filename, clean_old_backups};
+use ur_config::backup::{
+    BACKUP_TIMESTAMP_FORMAT, automatic_backup_filename, clean_old_backups, validate_backup_dir,
+};
 
 /// Manages periodic database backups as a background tokio task.
 ///
-/// Reads backup configuration from `ur.toml`, validates the backup path at
-/// startup, and spawns a background task that periodically calls pg_dump
-/// via [`SnapshotManager`]. The task gracefully stops when the
-/// shutdown signal is received, performing a final backup before exit.
+/// Reads backup configuration from `ur.toml` and spawns a background task
+/// that periodically calls pg_dump via [`SnapshotManager`]. The task
+/// gracefully stops when the shutdown signal is received, performing a final
+/// backup before exit.
+///
+/// `[<db>.backup] path` is a *host* path: it is bind-mounted at
+/// `<backup_root>/<db_name>` (`/backup/<db_name>`) into both `ur-postgres`
+/// (where pg_dump writes) and `ur-server` (where this manager validates the
+/// directory and applies retention). The server never touches the host path
+/// directly — it is not visible inside the server container.
 #[derive(Clone)]
 pub struct BackupTaskManager {
     snapshot_manager: SnapshotManager,
     config: BackupConfig,
+    backup_root: PathBuf,
 }
 
 impl BackupTaskManager {
-    pub fn new(snapshot_manager: SnapshotManager, config: BackupConfig) -> Self {
+    /// `backup_root` is the server-side directory under which each database's
+    /// backup dir is mounted — [`ur_config::BACKUP_CONTAINER_PATH`] in production.
+    pub fn new(
+        snapshot_manager: SnapshotManager,
+        config: BackupConfig,
+        backup_root: PathBuf,
+    ) -> Self {
         Self {
             snapshot_manager,
             config,
+            backup_root,
         }
     }
 
-    /// Validate that the backup path exists and is writable.
-    ///
-    /// Returns an error if the path does not exist, is not a directory, or
-    /// is not writable. Call this at startup before spawning the background task.
-    pub fn validate_backup_path(path: &Path) -> Result<(), String> {
-        if !path.exists() {
-            return Err(format!("backup path does not exist: {}", path.display()));
-        }
-        if !path.is_dir() {
-            return Err(format!(
-                "backup path is not a directory: {}",
-                path.display()
-            ));
-        }
-        // Check writability by attempting to create and remove a temp file
-        let probe = path.join(".ur-backup-probe");
-        std::fs::write(&probe, b"probe")
-            .map_err(|e| format!("backup path is not writable: {} ({})", path.display(), e))?;
-        std::fs::remove_file(&probe).ok();
-        Ok(())
+    /// Server-side directory holding this database's backups.
+    fn backup_dir(&self) -> PathBuf {
+        self.backup_root.join(self.snapshot_manager.db_name())
     }
 
     /// Spawn the periodic backup task.
     ///
     /// Returns `None` if backup is disabled (no path configured, or `enabled = false`).
-    /// Returns an error if the backup path is invalid.
+    /// Returns an error if the mounted backup directory is missing, not a
+    /// directory, or not writable — a misconfigured backup must stop startup,
+    /// not silently disable backups.
     ///
     /// The returned [`tokio::task::JoinHandle`] represents the background task.
     /// Send `true` on the `shutdown_tx` channel to stop it gracefully (triggers
@@ -62,15 +63,12 @@ impl BackupTaskManager {
         shutdown_rx: watch::Receiver<bool>,
     ) -> Result<Option<tokio::task::JoinHandle<()>>, String> {
         let db = self.snapshot_manager.db_name();
-        let backup_path = match &self.config.path {
-            Some(p) => p.clone(),
-            None => {
-                info!(
-                    db,
-                    "backup disabled (no backup path configured for this database)"
-                );
-                return Ok(None);
-            }
+        let Some(host_path) = &self.config.path else {
+            info!(
+                db,
+                "backup disabled (no backup path configured for this database)"
+            );
+            return Ok(None);
         };
 
         if !self.config.enabled {
@@ -81,10 +79,13 @@ impl BackupTaskManager {
             return Ok(None);
         }
 
-        if let Err(e) = Self::validate_backup_path(&backup_path) {
-            warn!(db, "backup disabled: {e}");
-            return Ok(None);
-        }
+        let backup_dir = self.backup_dir();
+        validate_backup_dir(&backup_dir).map_err(|e| {
+            format!(
+                "{e} (mount of host backup path {} into the server container)",
+                host_path.display()
+            )
+        })?;
 
         let interval = Duration::from_secs(self.config.interval_minutes * 60);
         let manager = self.snapshot_manager.clone();
@@ -92,7 +93,8 @@ impl BackupTaskManager {
 
         info!(
             db,
-            path = %backup_path.display(),
+            host_path = %host_path.display(),
+            path = %backup_dir.display(),
             interval_minutes = self.config.interval_minutes,
             retain_count = retain_count,
             "periodic backup task starting"
@@ -100,7 +102,7 @@ impl BackupTaskManager {
 
         let handle = tokio::spawn(backup_loop(
             manager,
-            backup_path,
+            backup_dir,
             interval,
             retain_count,
             shutdown_rx,
@@ -186,28 +188,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_backup_path_rejects_nonexistent() {
-        let err = BackupTaskManager::validate_backup_path(Path::new("/nonexistent/path/abc123"))
-            .expect_err("should fail");
-        assert!(err.contains("does not exist"), "{err}");
-    }
-
-    #[test]
-    fn validate_backup_path_rejects_file() {
-        let tmp = TempDir::new().unwrap();
-        let file = tmp.path().join("not-a-dir");
-        std::fs::write(&file, "data").unwrap();
-        let err = BackupTaskManager::validate_backup_path(&file).expect_err("should fail for file");
-        assert!(err.contains("not a directory"), "{err}");
-    }
-
-    #[test]
-    fn validate_backup_path_accepts_writable_dir() {
-        let tmp = TempDir::new().unwrap();
-        BackupTaskManager::validate_backup_path(tmp.path()).expect("should succeed");
-    }
-
-    #[test]
     fn spawn_returns_none_when_no_path() {
         let sm = test_snapshot_manager();
         let config = BackupConfig {
@@ -216,7 +196,7 @@ mod tests {
             enabled: true,
             retain_count: 3,
         };
-        let mgr = BackupTaskManager::new(sm, config);
+        let mgr = BackupTaskManager::new(sm, config, PathBuf::from("/nonexistent/backup/root"));
         let (_tx, rx) = watch::channel(false);
         let result = mgr.spawn(rx).expect("should not error");
         assert!(result.is_none());
@@ -232,26 +212,58 @@ mod tests {
             enabled: false,
             retain_count: 3,
         };
-        let mgr = BackupTaskManager::new(sm, config);
+        let mgr = BackupTaskManager::new(sm, config, PathBuf::from("/nonexistent/backup/root"));
         let (_tx, rx) = watch::channel(false);
         let result = mgr.spawn(rx).expect("should not error");
         assert!(result.is_none());
     }
 
-    #[test]
-    fn spawn_returns_none_on_invalid_path() {
-        let sm = test_snapshot_manager();
-        let config = BackupConfig {
-            path: Some(PathBuf::from("/nonexistent/backup/path")),
+    fn enabled_config(host_path: &Path) -> BackupConfig {
+        BackupConfig {
+            path: Some(host_path.to_path_buf()),
             interval_minutes: 30,
             enabled: true,
             retain_count: 3,
-        };
-        let mgr = BackupTaskManager::new(sm, config);
+        }
+    }
+
+    #[test]
+    fn spawn_errors_when_container_dir_missing_even_if_host_path_exists() {
+        // The host path is visible here but the server-side mount is not:
+        // the old code validated the host path and would have passed (or, in
+        // the real container, silently disabled backups).
+        let host = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let mgr = BackupTaskManager::new(
+            test_snapshot_manager(),
+            enabled_config(host.path()),
+            root.path().to_path_buf(),
+        );
         let (_tx, rx) = watch::channel(false);
-        // Invalid paths are gracefully handled — spawn returns Ok(None) with a warning
-        let result = mgr.spawn(rx).expect("should not error");
-        assert!(result.is_none(), "invalid path should disable backup");
+        let err = mgr.spawn(rx).expect_err("missing mount must be an error");
+        assert!(err.contains("does not exist"), "{err}");
+        assert!(
+            err.contains(&root.path().join("ur").display().to_string()),
+            "{err}"
+        );
+        assert!(err.contains(&host.path().display().to_string()), "{err}");
+    }
+
+    #[tokio::test]
+    async fn spawn_validates_container_dir_not_host_path() {
+        let root = TempDir::new().unwrap();
+        std::fs::create_dir(root.path().join("ur")).unwrap();
+        let mgr = BackupTaskManager::new(
+            test_snapshot_manager(),
+            enabled_config(Path::new("/host/only/path/not/visible/here")),
+            root.path().to_path_buf(),
+        );
+        let (_tx, rx) = watch::channel(false);
+        let handle = mgr
+            .spawn(rx)
+            .expect("mounted dir is valid")
+            .expect("backup task should start");
+        handle.abort();
     }
 
     #[test]

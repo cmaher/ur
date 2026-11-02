@@ -214,7 +214,7 @@ struct ComposeParams {
     infra_network_name: String,
     worker_network_name: String,
     /// One bind mount per database with a configured backup path, each at that
-    /// database's own container directory in the postgres container.
+    /// database's own container directory, in both the postgres and server containers.
     backup_mounts: Vec<BackupMount>,
     /// Postgres user for env vars and healthcheck.
     db_user: String,
@@ -242,7 +242,7 @@ struct ComposeParams {
     workflow_db_name: String,
 }
 
-/// A host backup directory mounted into the postgres container for one database.
+/// A host backup directory mounted into the postgres and server containers for one database.
 struct BackupMount {
     /// Host-side backup directory from `[<db>.backup] path`.
     host_path: PathBuf,
@@ -250,7 +250,7 @@ struct BackupMount {
     container_dir: String,
 }
 
-/// Collect the postgres backup mounts for both databases.
+/// Collect the backup mounts for both databases.
 ///
 /// A database gets a mount whenever its backup `path` is set — even with
 /// `enabled = false`, so manual `ur db backup` still has somewhere to write.
@@ -413,15 +413,7 @@ fn write_postgres_service(out: &mut String, params: &ComposeParams) {
         params.postgres_init_dir.display(),
     )
     .unwrap();
-    for mount in &params.backup_mounts {
-        writeln!(
-            out,
-            "      - {}:{}",
-            mount.host_path.display(),
-            mount.container_dir,
-        )
-        .unwrap();
-    }
+    write_backup_mounts(out, params);
 
     // Environment
     writeln!(out, "    environment:").unwrap();
@@ -465,6 +457,18 @@ fn write_postgres_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "      - infra").unwrap();
 }
 
+fn write_backup_mounts(out: &mut String, params: &ComposeParams) {
+    for mount in &params.backup_mounts {
+        writeln!(
+            out,
+            "      - {}:{}",
+            mount.host_path.display(),
+            mount.container_dir,
+        )
+        .unwrap();
+    }
+}
+
 fn write_server_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "  ur-server:").unwrap();
     writeln!(out, "    image: ur-server:${{UR_IMAGE_TAG:-latest}}").unwrap();
@@ -483,6 +487,9 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "      - ${{UR_CONFIG:-~/.ur}}:/config").unwrap();
     writeln!(out, "      - ${{UR_WORKSPACE:-~/.ur/workspace}}:/workspace").unwrap();
     writeln!(out, "      - ${{UR_LOGS_DIR:-~/.ur/logs}}:/logs").unwrap();
+    // Same /backup/<db_name> paths as ur-postgres: pg_dump writes there, and the
+    // server validates the directory and prunes old dumps there.
+    write_backup_mounts(out, params);
 
     // Environment
     writeln!(out, "    environment:").unwrap();
@@ -521,14 +528,6 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
         params.workflow_db_url
     )
     .unwrap();
-    if !params.backup_mounts.is_empty() {
-        writeln!(
-            out,
-            "      - UR_BACKUP_PATH={}",
-            ur_config::BACKUP_CONTAINER_PATH,
-        )
-        .unwrap();
-    }
     writeln!(
         out,
         "      - UR_BUILDERD_ADDR=http://host.docker.internal:${{UR_BUILDERD_PORT:-12323}}"
@@ -895,8 +894,7 @@ mod tests {
         assert!(generated.contains("networks:"));
         assert!(generated.contains("driver: bridge"));
 
-        // Verify server does NOT mount backup volume
-        // (backup is on postgres container, not server)
+        // No backup path configured → no backup mounts or env on the server
         let server_section = generated
             .split("  ur-server:")
             .nth(1)
@@ -905,6 +903,7 @@ mod tests {
             .next()
             .unwrap();
         assert!(!server_section.contains("/backup"));
+        assert!(!server_section.contains("UR_BACKUP_PATH"));
     }
 
     #[test]
@@ -989,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn generate_compose_backup_on_postgres_not_server() {
+    fn generate_compose_backup_mounted_on_postgres_and_server() {
         let generated = generate_with_backups(
             backup_config(Some("/home/user/.ur/backup"), true),
             backup_config(None, true),
@@ -999,9 +998,10 @@ mod tests {
         let postgres_section = service_section(&generated, "ur-postgres");
         assert!(postgres_section.contains("/home/user/.ur/backup:/backup/ur_tickets"));
 
-        // Backup volume mount should NOT be on server container
+        // The server needs the same mount to validate the dir and apply retention
         let server_section = service_section(&generated, "ur-server");
-        assert!(!server_section.contains("/home/user/.ur/backup:/backup"));
+        assert!(server_section.contains("/home/user/.ur/backup:/backup/ur_tickets"));
+        assert!(!server_section.contains("UR_BACKUP_PATH"));
 
         // Postgres should only be on infra network
         assert!(postgres_section.contains("- infra"));
@@ -1017,6 +1017,9 @@ mod tests {
         let postgres_section = service_section(&generated, "ur-postgres");
         assert!(postgres_section.contains("/backups/tickets:/backup/ur_tickets"));
         assert!(postgres_section.contains("/backups/workflow:/backup/ur_workflow"));
+        let server_section = service_section(&generated, "ur-server");
+        assert!(server_section.contains("/backups/tickets:/backup/ur_tickets"));
+        assert!(server_section.contains("/backups/workflow:/backup/ur_workflow"));
     }
 
     #[test]
@@ -1045,6 +1048,8 @@ mod tests {
         let generated = generate_with_backups(backup_config(None, true), backup_config(None, true));
         let postgres_section = service_section(&generated, "ur-postgres");
         assert!(!postgres_section.contains(":/backup"));
+        let server_section = service_section(&generated, "ur-server");
+        assert!(!server_section.contains(":/backup"));
     }
 
     #[test]

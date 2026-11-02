@@ -144,7 +144,11 @@ fn spawn_backup(
         db_name.to_owned(),
     );
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let backup_task_manager = BackupTaskManager::new(snapshot_manager, backup_config);
+    let backup_task_manager = BackupTaskManager::new(
+        snapshot_manager,
+        backup_config,
+        std::path::PathBuf::from(ur_config::BACKUP_CONTAINER_PATH),
+    );
     let handle = backup_task_manager
         .spawn(shutdown_rx)
         .map_err(|e| anyhow::anyhow!("backup configuration error for {db_name}: {e}"))?;
