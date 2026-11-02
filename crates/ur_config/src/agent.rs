@@ -417,12 +417,18 @@ impl AgentType {
     }
 
     /// Domains this agent needs through the forward proxy.
+    ///
+    /// A leading `.` is Squid `dstdomain` syntax for "this domain and every
+    /// subdomain". Claude's `.frame.claudeusercontent.com` covers the
+    /// per-artifact content hosts (`<artifact-uuid>.frame.claudeusercontent.com`)
+    /// that the Artifact tool reads before publishing an update.
     pub fn proxy_domains(&self) -> &'static [&'static str] {
         match self {
             Self::Claude => &[
                 "api.anthropic.com",
                 "platform.claude.com",
                 "downloads.claude.ai",
+                ".frame.claudeusercontent.com",
             ],
             Self::Codex => &["chatgpt.com", "api.openai.com", "auth.openai.com"],
             Self::Agy => &[
@@ -849,7 +855,8 @@ mod tests {
             &[
                 "api.anthropic.com",
                 "platform.claude.com",
-                "downloads.claude.ai"
+                "downloads.claude.ai",
+                ".frame.claudeusercontent.com"
             ]
         );
         assert_eq!(
