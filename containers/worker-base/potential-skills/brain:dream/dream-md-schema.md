@@ -1,41 +1,81 @@
 # DREAM.md format
 
-`<brain>/DREAM.md` holds everything project-specific that `brain:dream` needs. The skill itself knows
-nothing about any project; if a fact about repos, ticket systems, or "done" is not in this file, the
-skill does not know it.
+`<brain>/DREAM.md` holds everything project-specific that `brain:dream` needs: prose for the agent,
+and one ```` ```toml ```` config block that `ur dream` reads. The skill and `ur dream` know nothing
+about any project; if a fact about repos, ticket systems, or "done" is not in this file, they don't
+know it.
 
 Every value below is a placeholder. Real values are written by `brain:dream-init` into the brain,
 never into a skill.
 
+`ur dream config` validates the block (unknown keys, bad regexes, templates a pattern can't fill)
+and prints it. Run it after every edit.
+
 ````markdown
 # Dream config
 
-## Folders
+## Config
 
-| Path | Role | Promote to |
-|---|---|---|
-| `evergreen/` | durable | — |
-| `working/` | scratch | `evergreen/` |
-| `investigation/` | episodic | — |
-| `procedures/` | procedure | — |
+```toml
+off_limits = ["reference/generated/**"]      # globs; dream never proposes edits here
 
-Roles: `durable` (reference facts, kept current), `scratch` (in-progress streams, one folder each),
-`episodic` (dated, immutable records), `procedure` (step-by-step instructions), `orientation`
-(short read-start-to-finish overviews). Dream never invents a folder that is not in this table.
+[[folders]]
+path = "reference"
+role = "durable"          # durable | scratch | episodic | procedure | orientation
 
-## Ref kinds
+[[folders]]
+path = "working"
+role = "scratch"
+promote_to = "reference"
 
-| Kind | Pattern | Check command | Done when | Not done when |
-|---|---|---|---|---|
-| `ticket` | `EXAMPLE-\d+` | `example-tracker show {id}` | output contains `status: closed` | output contains `status: open` or `status: in_progress` |
-| `pr` | `example-org/[\w-]+#\d+` | `example-forge pr-state {id}` | output is `MERGED` | output is `OPEN` |
-| `branch` | `example-repo:feature/[\w-]+` | — | — | — |
+[[folders]]
+path = "investigation"
+role = "episodic"
 
-`{id}` is replaced with the ref's id. A check command must be read-only; it may be an absolute
-path. Any result matching neither column, a check of `—`, or a command not available in the current
-environment → the ref is `unknown` (so a closed-unmerged PR above is `unknown`, for a human to
-judge). Keeping an uncheckable kind still lets its refs be recorded. Keep patterns narrow: a broad
-pattern like `\w+:\w+` matches ordinary prose.
+[[ref_kinds]]
+kind = "ticket"
+id = "{key}"                                   # canonical id, from pattern groups
+patterns = ['\b(?P<key>EXAMPLE-\d+)\b']
+check = ["example-tracker", "show", "{key}"]   # read-only argv; {group} placeholders
+state = '^status: (\w+)$'                      # regex over stdout; group 1 is the state
+done = ["closed"]
+not_done = ["open", "in_progress"]
+
+[[ref_kinds]]
+kind = "pr"
+id = "{repo}#{n}"
+check = ["example-forge", "pr-state", "example-org/{repo}#{n}"]
+done = ["MERGED"]                              # no `state`: the first line of stdout
+not_done = ["OPEN"]
+
+[[ref_kinds.patterns]]
+regex = '\bexample-org/(?P<repo>[\w-]+)#(?P<n>\d+)'
+
+[[ref_kinds.patterns]]
+regex = '\bPR #(?P<n>\d+)'                     # bare "PR #N" means the main repo
+set = { repo = "example-repo" }
+
+[[ref_kinds]]
+kind = "branch"
+patterns = ['\bexample-repo:feature/[\w-]+']   # no check: recorded, always `unknown`
+
+[unclassified]
+pattern = '\b[A-Z][A-Z0-9]{1,9}-\d+\b'         # ref-shaped strings no kind claims
+ignore = ["ISO", "RFC"]
+
+[discovery]
+allowed = true
+max_calls = 20
+
+[thresholds]
+quiet_days = 14
+
+[review]
+per_run = 1          # durable docs reviewed per dream run
+initial_days = 30
+min_days = 7
+max_days = 180
+```
 
 ## Repos
 
@@ -43,21 +83,29 @@ pattern like `\w+:\w+` matches ordinary prose.
 |---|---|---|
 | `example-repo` | `example-org/example-repo` | `/workspace` |
 
-## Discovery
+## Discovery sources
 
-- allowed: yes
-- sources: text scan, commit-message search in listed repos
-- max calls per run: 20
-
-## Thresholds
-
-- quiet days: 14
-- stale verify days: 90
-
-## Off limits
-
-- `evergreen/generated/**`
+Text scan, and commit-message search in repos with a local path.
 ````
+
+## Ref kinds
+
+- Patterns use Rust `regex` syntax: no lookaround or backreferences. Named groups are
+  `(?P<name>...)`.
+- Patterns are tried in config order; a match overlapping an earlier match is skipped, so list
+  specific patterns (a full URL) before looser ones (a bare `PR #N`). Keep patterns narrow: a broad
+  pattern like `\w+:\w+` matches ordinary prose.
+- `id` and every `check` placeholder must be filled by each pattern's named groups or its `set`.
+- `check` is an argv, run without a shell. Don't put `{group}` inside an `sh -c` string: group
+  values come from brain text. If a shell is needed, pass values as positional arguments
+  (`["sh", "-c", "tool \"$1\"", "_", "{key}"]`).
+- In `state`, `{group}` is replaced by the escaped group value, e.g. `'^{key}\s+\S+\s+(.+)$'` for
+  output that starts with the id. Other braces (`\d{4}`) are left alone.
+- The result is done only if the state is listed in `done`, not done only if in `not_done`.
+  Anything else — another state, a non-zero exit, a timeout, a missing command, no check — is
+  unknown (`done: null`; `state` says why, e.g. `uncheckable`, `exit-1`) and stays for a human to
+  judge. A kind with no check still gets its refs recorded.
+- Check commands run on the host: from a worker, `ur dream` runs through hostexec.
 
 ## Stream frontmatter
 
@@ -75,6 +123,7 @@ canonical-for: [example-topic]   # optional
 ---
 ```
 
+Recorded ref values are parsed with the kind's patterns, so any form a pattern matches works.
 Durable docs may carry `last-verified` and `canonical-for`.
 
 ## `<brain>/.dream/` layout
@@ -84,8 +133,14 @@ checkpoint.
 
 ```
 <brain>/.dream/
-  state.json              { "refs": { "<kind>:<id>": { "state": "...", "done": bool,
-                                                       "checked_at": "YYYY-MM-DD" } },
-                            "last_run": "YYYY-MM-DD" }
+  state.json              written by `ur dream check --write` and `ur dream reviewed`:
+                            refs:    { "<kind>:<id>": { state, done, checked_at } }
+                            reviews: { "<path>": { last_reviewed, interval_days,
+                                                   history: [{ date, outcome, note }] } }
+                            last_run
   reports/YYYY-MM-DD.md   proposed change sets, plus an "Applied" section once applied
 ```
+
+`reviews` is the durable-doc review log. An `unchanged` review doubles the doc's interval and a
+`changed` one halves it, within `[min_days, max_days]`: docs that keep matching reality are
+reviewed less often, and `changed_reviews` in `ur dream review` shows which ones drift.

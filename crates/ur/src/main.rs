@@ -5,6 +5,7 @@ pub(crate) mod connection;
 mod credential;
 mod db;
 mod describe;
+mod dream;
 mod flow;
 mod init;
 mod input;
@@ -63,6 +64,11 @@ enum Commands {
     Db {
         #[command(subcommand)]
         command: DbCommands,
+    },
+    /// Brain consolidation helpers for the brain:dream skill
+    Dream {
+        #[command(subcommand)]
+        command: dream::DreamCommands,
     },
     /// Bootstrap the ~/.ur/ config directory
     Init {
@@ -1684,6 +1690,7 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
                 db::restore(&config, &path, db, output).await?
             }
         },
+        Commands::Dream { command } => dream::handle(command, &config, output)?,
         Commands::Init { .. } => unreachable!(),
         Commands::Project { command } => handle_project(command, &config, output).await?,
         Commands::Proxy { command } => handle_proxy(command, &config, output)?,

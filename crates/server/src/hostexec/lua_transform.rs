@@ -2953,6 +2953,56 @@ mod tests {
     }
 
     #[test]
+    fn test_ur_dream_is_pinned_to_worker_project() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/ur.lua");
+        let ctx = WorkerContext {
+            worker_id: "w-1".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "proj".into(),
+            slot_path: "/pool/proj/0".into(),
+            branch: String::new(),
+            allow_no_verify: false,
+        };
+        let args: Vec<String> = vec!["dream".into(), "check".into(), "--write".into()];
+        let result = mgr
+            .run_transform(script, "ur", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, args);
+        assert_eq!(
+            result.env.get("UR_PROJECT").map(String::as_str),
+            Some("proj")
+        );
+
+        for flag in [
+            ["-p", "other"],
+            ["-pother", "x"],
+            ["--project", "other"],
+            ["--project=other", "x"],
+        ] {
+            let args: Vec<String> = ["dream", "lint", flag[0], flag[1]].map(String::from).into();
+            let err = mgr
+                .run_transform(script, "ur", &args, "/workspace", Some(&ctx))
+                .unwrap_err();
+            assert!(err.to_string().contains("not allowed"), "{flag:?}: {err}");
+        }
+
+        let no_project = WorkerContext {
+            project_key: String::new(),
+            ..ctx
+        };
+        let args: Vec<String> = vec!["dream".into(), "lint".into()];
+        assert!(
+            mgr.run_transform(script, "ur", &args, "/workspace", Some(&no_project))
+                .is_err()
+        );
+        assert!(
+            mgr.run_transform(script, "ur", &args, "/workspace", None)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn test_ur_ticket_no_project_env_without_worker_context() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/ur.lua");
