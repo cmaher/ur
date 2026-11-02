@@ -20,7 +20,7 @@ The implement skill references hooks at these points:
 
 At runtime, the implement SKILL.md contains lines like:
 ```
-@/home/worker/.claude/skill-hooks/implement/subtask-verifications.md
+@%UR_SKILL_HOOKS%/implement/subtask-verifications.md
 ```
 Claude Code expands these inline, injecting the snippet's content into the skill prompt.
 

@@ -11,15 +11,15 @@ allowlist checks.
 ## Command Flow (PATH-based)
 
 1. Worker calls `git status` (or any configured command)
-2. Bash shim at `/home/worker/.local/bin/git` runs `workertools host-exec git status`
-3. `workertools` captures CWD, sends `HostExecRequest` to ur-server (per-worker gRPC)
+2. Bash shim at `/home/worker/.local/bin/git` runs `ur-workertools host-exec git status`
+3. `ur-workertools` captures CWD, sends `HostExecRequest` to ur-server (per-worker gRPC)
 4. ur-server `HostExecServiceHandler`:
    a. Checks command against the built-in defaults plus commands granted by the project
    b. Maps CWD: `/workspace/...` -> `%WORKSPACE%/...` (template prefix, not a resolved host path)
    c. Runs Lua transform if configured (validates/modifies args)
    d. Forwards `BuilderDaemonExecRequest` to builderd
 5. builderd resolves `%WORKSPACE%` to its local workspace path (from env var or CLI flag), spawns the actual process
-6. Output streams back: builderd -> ur-server -> workertools -> stdout/stderr
+6. Output streams back: builderd -> ur-server -> ur-workertools -> stdout/stderr
 
 ## Script Flow (path-based, no Lua, no allowlist)
 
@@ -34,7 +34,7 @@ $ ./needs-to-run-on-host.sh foo
 /workspace/needs-to-run-on-host.sh  (shim, bind-mounted; original
                                      project script untouched on host)
   ▼
-exec workertools host-exec
+exec ur-workertools host-exec
   --script /workspace/needs-to-run-on-host.sh foo
   ▼ HostExecMessage::Start{ script_path, args, working_dir }
                                    ▼
@@ -77,7 +77,7 @@ The shim content:
 
 ```sh
 #!/bin/sh
-exec workertools host-exec --script "$(readlink -f "$0")" "$@"
+exec ur-workertools host-exec --script "$(readlink -f "$0")" "$@"
 ```
 
 The file is overwritten idempotently if content differs.  `readlink -f` requires
@@ -218,4 +218,4 @@ operator to delete the section after placing transforms at
 - Config: crates/server/src/hostexec/
 - Run opts builder: crates/server/src/run_opts_builder.rs
 - Builder daemon: crates/builderd/
-- Worker tools: crates/workertools/, crates/workerd/
+- Worker tools: crates/ur-workertools/, crates/workerd/

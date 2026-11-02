@@ -1329,7 +1329,7 @@ fn git_push_no_verify(runtime: &str, container: &str) -> std::process::Output {
 /// No GitHub credentials are needed: the transform rejects before `gh` is ever
 /// spawned on the host, so a block is observable as an "is not allowed" message.
 fn assert_gh_hostexec(runtime: &str, container: &str) {
-    // The shim must carry --bidi, otherwise workertools never forwards stdin
+    // The shim must carry --bidi, otherwise ur-workertools never forwards stdin
     // and `gh api --input -` silently receives nothing.
     let shim = exec_in_container(runtime, container, &["cat", "/home/worker/.local/bin/gh"]);
     assert_exec_success(&shim, "reading the gh shim should work");
@@ -2051,7 +2051,7 @@ fn flow_list_contains(list_json: &serde_json::Value, ticket_id: &str) -> bool {
 /// Invoke a declared hostexec script from inside a container and verify the
 /// end-to-end dispatch flow.
 ///
-/// - Runs `host-only.sh <tag> <marker_path>` via `workertools host-exec --script`.
+/// - Runs `host-only.sh <tag> <marker_path>` via `ur-workertools host-exec --script`.
 /// - Asserts the exec exits 0 and stdout contains the expected "wrote tag" line.
 /// - Asserts the marker file exists on the host and contains exactly `tag`.
 fn assert_hostexec_script_works(
@@ -2065,7 +2065,7 @@ fn assert_hostexec_script_works(
         runtime,
         container,
         &[
-            "workertools",
+            "ur-workertools",
             "host-exec",
             "--script",
             "/workspace/host-only.sh",
@@ -2075,7 +2075,7 @@ fn assert_hostexec_script_works(
     );
     assert_exec_success(
         &script_output,
-        &format!("workertools host-exec --script /workspace/host-only.sh {tag} should exit 0"),
+        &format!("ur-workertools host-exec --script /workspace/host-only.sh {tag} should exit 0"),
     );
 
     let stdout = String::from_utf8_lossy(&script_output.stdout);
@@ -2109,7 +2109,7 @@ fn assert_hostexec_script_denied(runtime: &str, container: &str) {
         runtime,
         container,
         &[
-            "workertools",
+            "ur-workertools",
             "host-exec",
             "--script",
             "/workspace/other-undeclared.sh",
@@ -2722,7 +2722,7 @@ fn scenario_codex_manual_worker(env: &TestEnv) {
 ///   (`~/.gemini/antigravity-cli`) layout;
 /// - credentials: launch creates the host token file and mounts exactly that one
 ///   file — regular, writable by the worker, never the wider `.gemini` tree;
-/// - the baked global Stop hook points at `workertools notify-idle --json`, which
+/// - the baked global Stop hook points at `ur-workertools notify-idle --json`, which
 ///   reaches NotifyIdle and prints AGY's required `{}`.
 ///
 /// Not dispatched: on a dispatched worker, notify-idle can push `/clear` +
@@ -2787,11 +2787,13 @@ fn scenario_agy_manual_worker(env: &TestEnv) {
             &["cat", "/home/worker/.gemini/config/hooks.json"],
         );
         assert_exec_success(&hooks, "AGY global hooks file should exist");
-        assert!(String::from_utf8_lossy(&hooks.stdout).contains("workertools notify-idle --json"));
+        assert!(
+            String::from_utf8_lossy(&hooks.stdout).contains("ur-workertools notify-idle --json")
+        );
         let notify = exec_in_container(
             &env.runtime,
             &container,
-            &["workertools", "notify-idle", "--json"],
+            &["ur-workertools", "notify-idle", "--json"],
         );
         assert_exec_success(&notify, "AGY Stop hook command should reach NotifyIdle");
         assert_eq!(String::from_utf8_lossy(&notify.stdout), "{}\n");

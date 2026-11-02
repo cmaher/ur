@@ -156,7 +156,7 @@ containers/worker-claude/Dockerfile (ur-worker-claude:latest)
 ├── FROM ur-worker-base:latest
 ├── USER worker → install-claude.sh (binary at /home/worker/.local/bin/claude)
 ├── USER root → cleanup
-├── COPY entrypoint.sh, worker binaries (workertools, workerd)
+├── COPY entrypoint.sh, worker binaries (ur-workertools, workerd)
 ├── COPY claude.json → /home/worker/.claude.json (skip onboarding/login prompts)
 ├── COPY claude-settings.json → /home/worker/.claude/potential-settings.json
 │   └── permissions.defaultMode: "auto"

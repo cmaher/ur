@@ -36,7 +36,7 @@ ENV BROWSER=/usr/local/bin/xdg-open
 # Worker binaries change on nearly every commit, so they are the last layer:
 # everything above (agent CLI install/update, config) stays cached across
 # Rust-only changes. --chmod avoids a second full copy from `RUN chmod`.
-COPY --chmod=755 bin/workertools /usr/local/bin/workertools
+COPY --chmod=755 bin/ur-workertools /usr/local/bin/ur-workertools
 COPY --chmod=755 bin/workerd /usr/local/bin/workerd
 
 USER worker

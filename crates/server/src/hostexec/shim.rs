@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 ///
 /// Each declared hostexec script is bind-mounted over its container path with
 /// this shim as the content. When the worker executes the script, the shim
-/// invokes `workertools host-exec --script <resolved-host-path> "$@"`, which
+/// invokes `ur-workertools host-exec --script <resolved-host-path> "$@"`, which
 /// routes the call back to the server over gRPC.
 pub const SHIM_CONTENT: &str =
-    "#!/bin/sh\nexec workertools host-exec --script \"$(readlink -f \"$0\")\" \"$@\"\n";
+    "#!/bin/sh\nexec ur-workertools host-exec --script \"$(readlink -f \"$0\")\" \"$@\"\n";
 
 /// Materializes the hostexec script shim at `$URCONFIG/hostexec/script-shim.sh`.
 ///

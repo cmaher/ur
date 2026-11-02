@@ -6,7 +6,8 @@ use anyhow::{Context, Result, bail};
 use tokio::process::Command;
 use tracing::info;
 
-const IN_REPO_HOOKS_DIR: &str = "ur-hooks";
+use crate::paths::WorkerPaths;
+
 const SYNC_HOOKS_DIR: &str = "startup";
 const BACKGROUND_HOOKS_DIR: &str = "startup-bg";
 
@@ -31,30 +32,25 @@ pub struct SpawnedHook {
     pub pid: u32,
 }
 
-/// Resolves and runs project startup hooks from the repository and host overlay.
+/// Resolves and runs project startup hooks from the repository
+/// (`<workspace>/ur-hooks/`) and host overlay (`<host_hooks>/`).
+/// Hooks run with `workspace` as their working directory.
 #[derive(Clone)]
 pub struct StartupHooksManager {
-    workspace: PathBuf,
-    host_overlay: PathBuf,
+    paths: WorkerPaths,
 }
 
 impl StartupHooksManager {
-    pub fn new(workspace: PathBuf, host_overlay: PathBuf) -> Self {
-        Self {
-            workspace,
-            host_overlay,
-        }
+    pub fn new(paths: WorkerPaths) -> Self {
+        Self { paths }
     }
 
     /// Resolve executable hooks by filename, with the host overlay winning conflicts.
     pub fn resolve(&self, kind: HookKind) -> Result<Vec<PathBuf>> {
         let directory = kind.directory();
         let mut hooks = BTreeMap::new();
-        self.collect_layer(
-            &self.workspace.join(IN_REPO_HOOKS_DIR).join(directory),
-            &mut hooks,
-        )?;
-        self.collect_layer(&self.host_overlay.join(directory), &mut hooks)?;
+        self.collect_layer(&self.paths.in_repo_hooks().join(directory), &mut hooks)?;
+        self.collect_layer(&self.paths.host_hooks.join(directory), &mut hooks)?;
         Ok(hooks.into_values().collect())
     }
 
@@ -97,7 +93,7 @@ impl StartupHooksManager {
         let name = hook_name(hook);
         info!(hook = %name, path = %hook.display(), "running startup hook");
         let output = Command::new(hook)
-            .current_dir(&self.workspace)
+            .current_dir(&self.paths.workspace)
             .output()
             .await
             .with_context(|| format!("running startup hook {name}"))?;
@@ -114,7 +110,7 @@ impl StartupHooksManager {
     fn spawn_background_hook(&self, hook: &Path) -> Result<SpawnedHook> {
         let name = hook_name(hook);
         let child = Command::new(hook)
-            .current_dir(&self.workspace)
+            .current_dir(&self.paths.workspace)
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -148,10 +144,12 @@ fn is_executable(_path: &Path) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::temp_paths;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use tempfile::TempDir;
+    use ur_config::AgentType;
 
     fn write_hook(root: &Path, kind: &str, name: &str, body: &str, executable: bool) {
         let path = root.join(kind).join(name);
@@ -162,7 +160,7 @@ mod tests {
     }
 
     fn manager(tmp: &TempDir) -> StartupHooksManager {
-        StartupHooksManager::new(tmp.path().join("workspace"), tmp.path().join("host"))
+        StartupHooksManager::new(temp_paths(tmp, AgentType::Claude))
     }
 
     async fn wait_for_file(path: &Path) -> bool {
@@ -179,7 +177,7 @@ mod tests {
     fn resolve_overlays_by_filename_in_lexical_order() {
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path().join("workspace/ur-hooks");
-        let host = tmp.path().join("host");
+        let host = tmp.path().join("host-hooks");
         write_hook(&workspace, "startup", "20-shared", "repo", true);
         write_hook(&workspace, "startup", "30-repo", "repo", true);
         write_hook(&host, "startup", "10-host", "host", true);

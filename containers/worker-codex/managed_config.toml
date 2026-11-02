@@ -11,5 +11,5 @@
 allow_managed_hooks_only = true
 
 [hooks]
-SessionStart = [{ hooks = [{ type = "command", command = "workertools notify-idle" }] }]
-Stop         = [{ hooks = [{ type = "command", command = "workertools notify-idle" }] }]
+SessionStart = [{ hooks = [{ type = "command", command = "ur-workertools notify-idle" }] }]
+Stop         = [{ hooks = [{ type = "command", command = "ur-workertools notify-idle" }] }]

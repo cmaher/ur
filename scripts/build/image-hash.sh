@@ -2,8 +2,9 @@
 set -euo pipefail
 
 # Print a short content hash of everything that goes into the container images:
-# the Rust crates the image binaries depend on, Cargo.toml/Cargo.lock, every
-# container build context, the build scripts, and the toolchain/arch.
+# the Rust crates the image binaries depend on, proto/ (compiled by ur_rpc's
+# build.rs), Cargo.toml/Cargo.lock, every container build context, the build
+# scripts, and the toolchain/arch.
 #
 # Two checkouts with the same inputs produce the same hash, so acceptance-ci can
 # tag images `ci-<hash>` and skip both the release build and `docker build` when
@@ -30,7 +31,7 @@ while IFS= read -r dir; do
     crate_dirs+=("$dir")
 done < <(
     cargo tree --locked -e normal,build --prefix none --format '{p}' --target all \
-        -p ur-server -p workerd -p workertools 2>/dev/null \
+        -p ur-server -p workerd -p ur-workertools 2>/dev/null \
         | sed -n "s#.*(${cargo_root}/\([^)]*\)).*#\1#p" \
         | sort -u
 )
@@ -50,7 +51,7 @@ while IFS= read -r path; do
 done < <(
     git ls-files -co --exclude-standard -- \
         Cargo.toml Cargo.lock rust-toolchain rust-toolchain.toml \
-        scripts/build containers "${crate_dirs[@]}" \
+        proto scripts/build containers "${crate_dirs[@]}" \
         | sort -u
 )
 

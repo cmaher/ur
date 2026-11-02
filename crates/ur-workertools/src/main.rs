@@ -1,6 +1,7 @@
 mod agent;
 mod repo;
 mod status;
+mod workerd_client;
 mod workflow;
 
 use std::io::Write;
@@ -15,7 +16,6 @@ use ur_rpc::proto::hostexec::host_exec_message::Payload as HostExecPayload;
 use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
 use ur_rpc::proto::hostexec::{HostExecMessage, HostExecRequest};
 use ur_rpc::proto::workerd::NotifyIdleRequest;
-use ur_rpc::proto::workerd::worker_daemon_service_client::WorkerDaemonServiceClient;
 
 /// Inject worker auth headers (worker ID and secret) into a tonic request from environment variables.
 pub(crate) fn inject_auth<T>(request: &mut tonic::Request<T>) {
@@ -37,7 +37,7 @@ pub(crate) fn inject_auth<T>(request: &mut tonic::Request<T>) {
 }
 
 #[derive(Parser)]
-#[command(name = "workertools", about = "Ur worker toolkit")]
+#[command(name = "ur-workertools", about = "Ur worker toolkit")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -257,31 +257,27 @@ async fn exec_host_request(display_name: &str, req: HostExecRequest, bidi: bool)
     exit_code
 }
 
-const WORKERD_PORT: u16 = 9120;
-
 fn notify_idle_success_output(json: bool) -> &'static str {
     if json { "{}\n" } else { "" }
 }
 
 async fn run_notify_idle(json: bool) -> i32 {
-    eprintln!("[workertools] notify-idle: sending idle notification to workerd");
-    let addr = format!("http://127.0.0.1:{WORKERD_PORT}");
-    let channel = match Endpoint::try_from(addr).unwrap().connect().await {
-        Ok(ch) => ch,
-        Err(e) => {
-            eprintln!("[workertools] notify-idle: failed to connect to workerd: {e}");
-            return 1;
-        }
+    eprintln!("[ur-workertools] notify-idle: sending idle notification to workerd");
+    let mut client = match workerd_client::connect_workerd("notify-idle").await {
+        Ok(c) => c,
+        Err(code) => return code,
     };
-    let mut client = WorkerDaemonServiceClient::new(channel);
-    match client.notify_idle(NotifyIdleRequest {}).await {
+    match client
+        .notify_idle(workerd_client::workerd_request(NotifyIdleRequest {}))
+        .await
+    {
         Ok(_) => {
-            eprintln!("[workertools] notify-idle: success");
+            eprintln!("[ur-workertools] notify-idle: success");
             print!("{}", notify_idle_success_output(json));
             0
         }
         Err(e) => {
-            eprintln!("[workertools] notify-idle: RPC failed: {e}");
+            eprintln!("[ur-workertools] notify-idle: RPC failed: {e}");
             1
         }
     }

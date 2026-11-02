@@ -132,17 +132,25 @@ entrypoint.sh
     ▼
 workerd init                          [crates/workerd/src/init/{skills,instructions,settings}.rs]
     │   let agent = AgentType::from_env();   // reads UR_AGENT_TYPE, defaults to claude
+    │   let paths = WorkerPaths::container(agent);
+    │   let inputs = WorkerInitInputs::from_env(agent);  // UR_WORKER_SKILLS, UR_WORKER_INSTRUCTION_STRATEGY,
+    │                                                    // UR_WORKER_FORGE, UR_PROJECT_INSTRUCTION, UR_HOST_WORKSPACE
     │
-    ├─ InitSkillsManager::run()            [init/skills.rs]
+    ├─ InitSkillsManager::run(&inputs.skills)            [init/skills.rs]
     │     1. Wipe ~/{agent.customization_root()}/{agent.skill_subdir()}/ (remove + recreate)
-    │     2. Read UR_WORKER_SKILLS env var
-    │     3. For each comma-separated skill name:
+    │     2. inputs.skills = UR_WORKER_SKILLS split on ',' (trimmed, blanks dropped)
+    │     3. For each skill name:
     │        - src: ~/.agent-shared/potential-skills/<name>/
     │        - dst: ~/{agent.customization_root()}/{agent.skill_subdir()}/<name>/
     │        - Recursive directory copy (preserves subdirs)
+    │        - Render every UTF-8 file: `%UR_SKILL_HOOKS%` → WorkerPaths.skill_hooks
+    │          (container: /home/worker/{agent.customization_root()}/skill-hooks, e.g.
+    │          /home/worker/.claude/skill-hooks, /home/worker/.codex/skill-hooks,
+    │          /home/worker/.gemini/config/skill-hooks — where InitSkillHooksManager
+    │          copies the hooks). Binary files are copied untouched.
     │        - Missing skills log a warning, don't fail
     │
-    ├─ InitInstructionsManager::run()      [init/instructions.rs]
+    ├─ InitInstructionsManager::run(&inputs.instructions)  [init/instructions.rs]
     │     (compose strategy instruction file + shared fragments — see below)
     │
     ├─ InitSettingsManager::run()          [init/settings.rs]
@@ -160,7 +168,24 @@ workerd init                          [crates/workerd/src/init/{skills,instructi
 Claude Code reads ~/.claude/skills/ and ~/.claude/settings.json at session start
 ```
 
-`crates/workerd/src/init/mod.rs` holds the shared `copy_dir_recursive`/`collect_md_files` helpers used by the skills and instructions managers. Source paths under `.agent-shared/` are plain literals (agent-agnostic, baked by the base image); destinations are agent-derived via `AgentType`.
+### Skill layouts (`SkillLayout`)
+
+`InitSkillsManager`, `InitInstructionsManager` and `WorkerDaemonServiceImpl` all take a `SkillLayout` (`crates/workerd/src/skill_layout.rs`) via their constructors, so install layout, instructions and dispatch commands always agree:
+
+| Layout | Used by | On disk (under `WorkerPaths.skills_dest`) | Invoked as | Cross-skill refs | Instructions |
+|---|---|---|---|---|---|
+| `AgentHome` | containers (`workerd` binary) | `<name>/SKILL.md` | `/implement ur-x` | untouched | unchanged |
+| `NamespacedPlugin { name: "ur" }` (`SkillLayout::ur_plugin()`) | host-side local workers (`--plugin-dir`) | `.claude-plugin/plugin.json` (`{"name":"ur","version":<crate version>,"description":"ur worker skills"}`) + `skills/<name>/SKILL.md` | `/ur:implement ur-x` | rewritten to `ur:<name>` | skill-precedence fragment appended |
+
+A plugin is used for local workers because the user's own `~/.claude/skills` shadow same-named `--add-dir` skills, while `--plugin-dir` skills invoked as `/ur:<name>` always run the plugin copy. Preference for `ur:` is enforced three ways:
+
+1. **Dispatch** — `dispatch_commands(agent, layout, skill, args)` qualifies the skill via `layout.qualify(skill)` (Claude/AGY `/ur:implement ur-x`, Codex `` Run the `ur:implement` skill. … ``). `AgentType::skill_invocation` compares the unqualified name, so Codex's implement-only design prohibition still applies.
+2. **Cross-skill rewrite** (`init/skill_render.rs`) — inside installed skills, references to *other installed* skills become `ur:<name>`: slash references (`/code-review` → `/ur:code-review`, at a word boundary, not followed by `/`) and backtick prose (`` the `implement` skill `` → `` the `ur:implement` skill ``). References to skills not in the installed set, built-ins like `/clear`, and paths are left alone. A name that the same file also uses as a directory (`/brain/…`) is treated as a path throughout that file, so the `/brain` mount is not rewritten while `/brain:init` is. The rewrite runs before placeholder rendering so the rendered hooks path is never rewritten, and it is idempotent.
+3. **Instructions** — `InitInstructionsManager` appends a `# Skill Precedence` fragment after the shared fragments: "When a skill exists as both `ur:<name>` and `<name>`, ALWAYS use `ur:<name>`." The fragment is embedded in `init/instructions.rs`, not in `shared-instructions/`, because shared fragments go to every (container) worker.
+
+`crates/workerd/src/init/mod.rs` holds the shared `copy_dir_recursive`/`collect_md_files` helpers used by the skills and instructions managers. No manager hardcodes a path: sources come from `WorkerPaths.agent_shared` (`potential-skills/`, `instructions/`, `shared-instructions/`; container: `~/.agent-shared`, agent-agnostic, baked by the base image) and destinations from `WorkerPaths.skills_dest` / `WorkerPaths.instructions_dest` / `WorkerPaths.skill_hooks`. `WorkerPaths::container(agent)` is the only place the container values are derived from `AgentType`.
+
+What to install comes from `WorkerInitInputs` (`init/inputs.rs`), passed to the managers' `run()` rather than read from the environment, so a host-side runtime can run them per worker: `InitSkillsManager::run(&inputs.skills)` and `InitInstructionsManager::run(&inputs.instructions)` (`InstructionInputs { strategy, forge, project: Option<ProjectInstruction { path, host_workspace, mode }> }`). The container binary builds them once with `WorkerInitInputs::from_env(agent)`.
 
 ## Per-Strategy Instruction File Delivery
 
@@ -179,16 +204,21 @@ COPY shared-instructions/ /home/worker/.agent-shared/shared-instructions/
 ### Runtime (workerd init)
 
 ```
-InitInstructionsManager::run()
-    1. Read UR_WORKER_INSTRUCTION_STRATEGY env var (set by server from WorkerStrategy)
-    2. Read ~/.agent-shared/instructions/{value}.md as strategy content
-    3. Append all ~/.agent-shared/shared-instructions/*.md files (sorted alphabetically)
-    4. If UR_PROJECT_INSTRUCTION names a readable file, resolve %WORKSPACE% in it,
-       write it to ~/{agent.home_subdir()}/PROJECT_{agent.instruction_filename()},
-       and append an `@<path>` reference to the composed output
-    5. Write composed result to ~/{agent.home_subdir()}/{agent.instruction_filename()}
-       (e.g. ~/.claude/CLAUDE.md for Claude)
-    6. Missing strategy file → warning (non-fatal); empty/unset env var → skip entirely
+InitInstructionsManager::run(&InstructionInputs)
+    1. inputs.strategy (container: UR_WORKER_INSTRUCTION_STRATEGY, set by server from WorkerStrategy)
+    2. Read <agent_shared>/instructions/{strategy}.md as strategy content
+    3. Append all <agent_shared>/shared-instructions/*.md files (sorted alphabetically),
+       then the skill-precedence fragment (plugin layout only) and forge instructions
+    4. If inputs.project is set (container: UR_PROJECT_INSTRUCTION), read it (a read error
+       fails init), resolve %WORKSPACE% against host_workspace (UR_HOST_WORKSPACE), and
+       include it per ProjectInstructionMode:
+         Import → write PROJECT_{filename} beside instructions_dest and append `@<path>`
+         Inline → append the content directly
+       The container picks ProjectInstructionMode::for_agent(agent): Inline for AGY (no
+       workspace CLAUDE.md, no `@` import), Import otherwise.
+    5. Write composed result to WorkerPaths.instructions_dest
+       (container: ~/{agent.customization_root()}/{agent.instruction_filename()}, e.g. ~/.claude/CLAUDE.md)
+    6. Missing strategy file → warning (non-fatal); no strategy → skip entirely
 ```
 
 ## Host Skills (Runtime Injection via ur.toml)
@@ -266,7 +296,9 @@ Prefer `%URCONFIG%/...` paths stored under `~/.ur/` (or wherever `$UR_CONFIG` po
 | `containers/worker-base/shared-instructions/` | Instruction-file fragments shared across all strategies |
 | `containers/worker-base/vendor/superpowers/skills/` | Upstream/third-party skills |
 | `containers/worker-claude/entrypoint.sh` | Calls `workerd init` at container start |
-| `crates/workerd/src/init/skills.rs` | Copies skills into the agent's own skill directory |
+| `crates/workerd/src/init/skills.rs` | Installs skills per `SkillLayout` (agent home or `ur` plugin + `plugin.json`) |
+| `crates/workerd/src/init/skill_render.rs` | `%UR_SKILL_HOOKS%` rendering and `ur:` cross-skill rewrite |
+| `crates/workerd/src/skill_layout.rs` | `SkillLayout` (`AgentHome` / `NamespacedPlugin`), `qualify()`, `skills_root()` |
 | `crates/workerd/src/init/instructions.rs` | Composes the strategy instruction file + shared fragments + project reference |
 | `crates/workerd/src/init/settings.rs` | Verbatim-copies the baked settings file (no model merge) |
 | `crates/ur_config/src/agent.rs` | `AgentType`/`AgentAuth` — per-agent home subdir, skill subdir, instruction filename, default models |
@@ -276,6 +308,8 @@ Prefer `%URCONFIG%/...` paths stored under `~/.ur/` (or wherever `$UR_CONFIG` po
 ## Skill Hook Integration
 
 Some skills support project-specific customization via skill hooks. These hooks are Markdown files that skills reference via `@` directives — Claude Code expands them inline at session start. The hook files are delivered via the two-layer overlay described in [project-file-mounting.md](project-file-mounting.md#skill-hooks).
+
+Skill sources never hard-code the hooks directory: they reference `@%UR_SKILL_HOOKS%/<skill>/<hook>.md`, and `InitSkillsManager` renders the placeholder from `WorkerPaths.skill_hooks` at install time (container: `~/{agent.customization_root()}/skill-hooks`, i.e. `/home/worker/.claude/skill-hooks` for Claude; local workers: their drive's `.ur/skill-hooks`). No `%UR_SKILL_HOOKS%` survives rendering. New skills that use hooks MUST use the placeholder, not a literal path.
 
 ### Skills with Hook Support
 

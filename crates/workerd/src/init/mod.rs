@@ -1,23 +1,17 @@
+pub mod inputs;
 pub mod instructions;
 pub mod settings;
+pub mod skill_render;
 pub mod skills;
 pub mod startup_hooks;
 
+pub use inputs::{InstructionInputs, ProjectInstruction, ProjectInstructionMode, WorkerInitInputs};
 pub use instructions::InitInstructionsManager;
 pub use settings::InitSettingsManager;
 pub use skills::InitSkillsManager;
 pub use startup_hooks::StartupHooksManager;
 
 use std::path::{Path, PathBuf};
-
-/// Resolve the worker's home directory from `$HOME`, falling back to the
-/// container's known home. Resolved once in `run_init` and injected into each
-/// init manager rather than re-read per manager.
-pub fn worker_home() -> PathBuf {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(ur_config::WORKER_HOME))
-}
 
 /// Recursively copy `src` into `dst`, creating directories as needed.
 pub(crate) async fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), std::io::Error> {

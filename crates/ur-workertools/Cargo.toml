@@ -1,10 +1,10 @@
 [package]
-name = "workertools"
+name = "ur-workertools"
 edition.workspace = true
 version.workspace = true
 
 [[bin]]
-name = "workertools"
+name = "ur-workertools"
 path = "src/main.rs"
 
 [dependencies]

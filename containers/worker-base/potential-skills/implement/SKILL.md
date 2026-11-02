@@ -11,7 +11,7 @@ Design is already complete. Implement the ticket's existing design and acceptanc
 
 ## Optional Hook Files
 
-The `@/home/worker/.claude/skill-hooks/...` references below are optional project hooks. Read and follow each hook if its file exists. If a hook file is absent, skip it and continue the workflow; its absence is not a blocker and does not require clarification or `request-human`. Do not create missing hooks or invent replacement requirements. If verification hooks are absent, continue without hook-specified verification commands.
+The `@%UR_SKILL_HOOKS%/...` references below are optional project hooks. Read and follow each hook if its file exists. If a hook file is absent, skip it and continue the workflow; its absence is not a blocker and does not require clarification or `request-human`. Do not create missing hooks or invent replacement requirements. If verification hooks are absent, continue without hook-specified verification commands.
 
 ## NEVER Pause — There Are Exactly Two Ways To Stop
 
@@ -21,8 +21,8 @@ There are exactly two legal ways to stop working:
 
 | Situation | Required action |
 |-----------|-----------------|
-| All work is done | `workertools status step-complete` |
-| You are blocked and cannot finish | `workertools status request-human "<reason>"` |
+| All work is done | `ur-workertools status step-complete` |
+| You are blocked and cannot finish | `ur-workertools status request-human "<reason>"` |
 
 **Every other form of stopping is forbidden.** In particular, NEVER:
 
@@ -36,9 +36,9 @@ There are exactly two legal ways to stop working:
 
 If any part of you is inclined to pause, that inclination is a `request-human` call. Make the call with a concrete reason, then stop. Uncertainty is never a reason to go quiet — it is a reason to call `request-human`.
 
-`workertools status pause-nudge` is NOT a way to pause work. It only suppresses nudge messages for 5 minutes while you keep working. It does not notify anyone and it does not end your turn.
+`ur-workertools status pause-nudge` is NOT a way to pause work. It only suppresses nudge messages for 5 minutes while you keep working. It does not notify anyone and it does not end your turn.
 
-**Run `workertools status request-human "<reason>"` and stop when:**
+**Run `ur-workertools status request-human "<reason>"` and stop when:**
 - Ticket acceptance criteria are ambiguous or contradictory
 - Work appears to require changes beyond `Files to change` that are not obvious small consequences (import sites, adjacent types are fine)
 - Error recovery activities contain contradictory or incomplete guidance
@@ -51,7 +51,7 @@ Do not guess or make assumptions about unclear requirements.
 
 Follow this style guide for all development.
 
-@/home/worker/.claude/skill-hooks/implement/style-guide.md
+@%UR_SKILL_HOOKS%/implement/style-guide.md
 
 ## Detect Mode — Single Ticket vs Epic
 
@@ -82,7 +82,7 @@ When the ticket has no open descendants:
 
 1. `ur ticket --output json show <id>` — read the ticket (and check for workflow error activities per above)
 2. `ur ticket --output json update <id> --status in_progress` — claim it
-@/home/worker/.claude/skill-hooks/implement/after-ticket-claim.md
+@%UR_SKILL_HOOKS%/implement/after-ticket-claim.md
 3. Read every file listed in the ticket's `Files to read first` section (if present) before editing anything. This loads the patterns and conventions needed for the change.
 4. Implement the work, scoped to the ticket's `Files to change` list. Treat `Out of scope` as a hard boundary.
 5. Before committing, run any verifications listed in the **Verification Hooks** section below
@@ -95,13 +95,13 @@ When the ticket has no open descendants:
 
 Do NOT run any verification commands unless specified in this section.
 
-@/home/worker/.claude/skill-hooks/implement/subtask-verifications.md
+@%UR_SKILL_HOOKS%/implement/subtask-verifications.md
 
-If you cannot complete the work, run `workertools status request-human "<reason>"` and stop. Never stop without either this or `step-complete`.
+If you cannot complete the work, run `ur-workertools status request-human "<reason>"` and stop. Never stop without either this or `step-complete`.
 
 Do NOT push, create PRs, or advance lifecycle status — that happens automatically after you stop.
 
-**REQUIRED: Signal completion by running `workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
+**REQUIRED: Signal completion by running `ur-workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
 
 ## Epic (Ticket with Open Descendants)
 
@@ -122,11 +122,11 @@ Commit after each ticket so progress is durable.
 
 Do NOT run any verification commands unless specified in a **Verification Hooks** section.
 
-@/home/worker/.claude/skill-hooks/implement/subtask-verifications.md
+@%UR_SKILL_HOOKS%/implement/subtask-verifications.md
 
 ### After All Descendants Complete (Epic Only)
 
-@/home/worker/.claude/skill-hooks/implement/final-verifications.md
+@%UR_SKILL_HOOKS%/implement/final-verifications.md
 
 After all dispatchable tickets are done and verification passes:
 
@@ -135,18 +135,18 @@ After all dispatchable tickets are done and verification passes:
    ur ticket set-meta <epic-id> pr_summary "Summary of all changes" --output json
    ```
 
-If you cannot complete all work, run `workertools status request-human "<reason>"` and stop. Never stop without either this or `step-complete`.
+If you cannot complete all work, run `ur-workertools status request-human "<reason>"` and stop. Never stop without either this or `step-complete`.
 
 Do NOT push, create PRs, or advance lifecycle status — that happens automatically after you stop.
 
-**REQUIRED: Signal completion by running `workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
+**REQUIRED: Signal completion by running `ur-workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
 
 ### Common Mistakes
 
 | Mistake | Fix |
 |---------|-----|
 | Pausing / waiting / stopping without a signal | **Never.** Stop only via `step-complete` (done) or `request-human "<reason>"` (blocked) |
-| Asking a question in your response text and stopping | Nobody reads it. Ask via `workertools status request-human "<question>"` |
+| Asking a question in your response text and stopping | Nobody reads it. Ask via `ur-workertools status request-human "<question>"` |
 | Using `pause-nudge` to pause work | It only mutes nudges for 5 min. It notifies nobody and does not end your turn |
 | Switching branches mid-work | **Never.** All commits go on the working branch |
 | Re-query skipped after completion | Always `ur ticket --output json dispatchable <epic>` again — deps may have unblocked |

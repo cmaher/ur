@@ -5,8 +5,8 @@ source "$(dirname "$0")/agent-images.sh"
 
 # Build every Linux binary baked into the container images and stage each into
 # its Docker build context:
-#   ur-server              -> containers/server/
-#   workerd, workertools   -> containers/<agent>/bin/
+#   ur-server               -> containers/server/
+#   workerd, ur-workertools -> containers/<agent>/bin/
 #
 # All packages build in ONE cargo invocation. Separate invocations resolve
 # features independently, so shared dependencies (tokio, tonic, sqlx, ...) would
@@ -20,7 +20,7 @@ source "$(dirname "$0")/agent-images.sh"
 # and can exceed macOS's default soft limit (256).
 ulimit -n 65536 2>/dev/null || true
 
-PACKAGES=(-p ur-server -p workerd -p workertools)
+PACKAGES=(-p ur-server -p workerd -p ur-workertools)
 
 if [ "${UR_NATIVE_BUILD:-}" = "1" ]; then
     echo "Building image binaries natively"
@@ -48,7 +48,7 @@ for entry in "${AGENT_IMAGES[@]}"; do
     [ "$stage_binaries" = "true" ] || continue
     DEST="containers/$dir/bin"
     mkdir -p "$DEST"
-    cp "$OUT/workertools" "$DEST/workertools"
+    cp "$OUT/ur-workertools" "$DEST/ur-workertools"
     cp "$OUT/workerd" "$DEST/workerd"
     echo "Staged worker binaries in $DEST/"
 done
