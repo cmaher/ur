@@ -3,28 +3,44 @@
 
 -- Help block appended to every rejection so the caller sees what is restricted
 -- and what still works, instead of a bare "blocked" with no context. git runs
--- on the HOST via host-exec against your worker's slot.
-local HELP = [[
-
---- git via ur host-exec ---
-git runs on the HOST against your worker's slot, so a few things are locked:
-  * Blocked flags: --git-dir, --work-tree, --no-verify (and -c core.worktree=...)
-    (`git push --no-verify` is allowed only when the project sets
-    [projects.<key>.git] allow_no_verify = true)
-  * Blocked subcommands: worktree (always); checkout / switch (branch switching
-    is locked — use `git restore <file>` or `git checkout -- <file>` for files)
-  * git push may only target your own worker branch
-  * Commit messages are auto-prefixed with your ticket id
-Everything else works normally: status, add, commit, diff, log, show, restore,
-fetch, pull, rebase, merge, stash, and push to your own branch.]]
-
--- Raise a rejection with the standard help block appended. Level 0 keeps the
--- message clean (no "input:N:" position prefix).
-local function fail(msg)
-    error(msg .. "\n" .. HELP, 0)
+-- on the HOST via host-exec against your worker's slot. The branch rules depend
+-- on the worker: pool workers (non-empty branch) are locked to their worker
+-- branch; manual/workspace workers (empty branch) manage their own branches.
+local function help(worker_context)
+    local branch_locked = worker_context == nil or worker_context.branch ~= ""
+    local lines = {
+        "",
+        "--- git via ur host-exec ---",
+        "git runs on the HOST against your worker's slot, so a few things are locked:",
+        "  * Blocked flags: --git-dir, --work-tree, --no-verify (and -c core.worktree=...)",
+        "    (`git push --no-verify` is allowed only when the project sets",
+        "    [projects.<key>.git] allow_no_verify = true)",
+    }
+    if branch_locked then
+        lines[#lines + 1] = "  * Blocked subcommands: worktree (always); checkout / switch (branch switching"
+        lines[#lines + 1] = "    is locked — use `git restore <file>` or `git checkout -- <file>` for files)"
+        lines[#lines + 1] = "  * git push may only target your own worker branch"
+    else
+        lines[#lines + 1] = "  * Blocked subcommands: worktree"
+        lines[#lines + 1] = "  * You manage your own branches: checkout, switch, and push to any branch work"
+    end
+    lines[#lines + 1] = "  * Commit messages are auto-prefixed with your ticket id"
+    lines[#lines + 1] = "Everything else works normally: status, add, commit, diff, log, show, restore,"
+    if branch_locked then
+        lines[#lines + 1] = "fetch, pull, rebase, merge, stash, and push to your own branch."
+    else
+        lines[#lines + 1] = "fetch, pull, rebase, merge, stash, checkout, switch, and push."
+    end
+    return table.concat(lines, "\n")
 end
 
 function transform(command, args, working_dir, worker_context)
+    -- Raise a rejection with the context-appropriate help block appended.
+    -- Level 0 keeps the message clean (no "input:N:" position prefix).
+    local function fail(msg)
+        error(msg .. "\n" .. help(worker_context), 0)
+    end
+
     local blocked_exact = {
         ["--git-dir"] = true,
         ["--work-tree"] = true,
