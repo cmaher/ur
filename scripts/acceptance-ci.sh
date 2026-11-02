@@ -2,10 +2,15 @@
 # shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 
-source "$(dirname "$0")/build/agent-images.sh"
-source "$(dirname "$0")/build/ci-tags.sh"
+# Everything below uses repo-relative paths: run from the repo root wherever we
+# are invoked from.
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "$SCRIPT_DIR/.."
+
+source "$SCRIPT_DIR/build/agent-images.sh"
+source "$SCRIPT_DIR/build/ci-tags.sh"
 # Mutex: only one acceptance-ci / pre-push runs image builds at a time.
-source "$(dirname "$0")/build/ci-lock.sh"
+source "$SCRIPT_DIR/build/ci-lock.sh"
 
 # Run acceptance tests against CI images tagged by a content hash of their
 # inputs (scripts/build/image-hash.sh). If every image already exists at that

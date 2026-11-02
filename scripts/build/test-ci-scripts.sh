@@ -2,7 +2,12 @@
 # Tests for the CI shell layer: image-hash.sh, acceptance-ci.sh (+ ci-tags.sh,
 # ci-lock.sh), stage.sh, housekeeping.sh and the pre-push hook.
 #
-#   scripts/build/test-ci-scripts.sh [TEST_NAME_REGEX]
+#   scripts/build/test-ci-scripts.sh [--if-changed] [TEST_NAME_REGEX]
+#
+# --if-changed (how `cargo make ci` runs it): skip, with a one-line notice,
+# unless scripts/acceptance-ci.sh, scripts/build/, ur-hooks/git/ or Makefile.toml
+# differ from the merge base with origin/master (committed, uncommitted or
+# untracked). Runs when origin/master is unknown; UR_CI_TEST_FORCE=1 forces it.
 #
 # Every test runs the real scripts in a throwaway git repo under a mktemp dir,
 # with docker, cargo and rustc stubbed, HOME, UR_CONFIG and UR_CI_STATE_DIR
@@ -22,14 +27,28 @@
 # shellcheck disable=SC2016
 set -u
 
-SRC="${UR_CI_TEST_SRC:-$(cd "$(dirname "$0")/../.." && pwd -P)}"
-ONLY="${1:-.}"
+SELF_ROOT=$(cd "$(dirname "$0")/../.." && pwd -P)
+SRC="${UR_CI_TEST_SRC:-$SELF_ROOT}"
 STEP_TIMEOUT="${UR_CI_TEST_STEP_TIMEOUT:-120}"
 
 # Hooks export repo-local git variables (GIT_DIR, ...); they must not leak into
 # the sandbox repos.
 # shellcheck disable=SC2046
 unset $(git rev-parse --local-env-vars 2>/dev/null)
+
+CI_PATHS='^(scripts/acceptance-ci\.sh|scripts/build/|ur-hooks/git/|Makefile\.toml$)'
+if [ "${1:-}" = --if-changed ]; then
+    shift
+    if [ -z "${UR_CI_TEST_FORCE:-}" ] \
+        && base=$(git -C "$SELF_ROOT" merge-base HEAD origin/master 2>/dev/null) \
+        && changed=$(git -C "$SELF_ROOT" diff --name-only "$base" \
+                     && git -C "$SELF_ROOT" ls-files -o --exclude-standard) \
+        && ! grep -qE "$CI_PATHS" <<< "$changed"; then
+        echo "test-ci-scripts: skipped (no CI script changes since origin/master; UR_CI_TEST_FORCE=1 runs it)"
+        exit 0
+    fi
+fi
+ONLY="${1:-.}"
 
 if [ -x /usr/bin/git ]; then REAL_GIT=/usr/bin/git; else REAL_GIT=$(command -v git); fi
 if command -v timeout >/dev/null 2>&1; then
@@ -86,7 +105,10 @@ cat > "$STUBS/cargo" <<'EOF'
 echo "cargo $* TAG=${UR_IMAGE_TAG:-} GIT_DIR=${GIT_DIR:-}" >> "$DSTATE/cargo-calls"
 case "$1" in
   -V) echo "cargo 1.90.0 (stub)" ;;
-  metadata) echo "{\"packages\":[],\"workspace_root\":\"$PWD\",\"version\":1}" ;;
+  metadata) if [ -n "${CARGO_LOCK_STALE:-}" ] && [[ " $* " == *" --locked "* ]]; then
+              echo "error: the lock file needs to be updated but --locked was passed" >&2; exit 101
+            fi
+            echo "{\"packages\":[],\"workspace_root\":\"$PWD\",\"version\":1}" ;;
   tree) # Like the real one: prints the closure of each -p only, and refuses
         # edge kinds / targets other than the ones image-hash.sh must pass.
         [ -n "${CARGO_TREE_FAIL:-}" ] && exit 101
@@ -134,6 +156,9 @@ case "$1" in
   sweep) exit 0 ;;
 esac
 EOF
+# cargo-sweep: present so housekeeping's `command -v cargo-sweep` finds it; the
+# sweep itself goes through `cargo sweep`, logged by the cargo stub.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUBS/cargo-sweep"
 cat > "$STUBS/cargo-zigbuild" <<'EOF'
 #!/usr/bin/env bash
 [ "${1:-}" = --version ] || { echo "stub cargo-zigbuild: only --version is supported" >&2; exit 2; }
@@ -189,7 +214,7 @@ make_template() {
         echo "FROM x" > "containers/$f/Dockerfile"
     done
     cp "$SRC/scripts/acceptance-ci.sh" scripts/
-    for f in agent-images ci-tags ci-lock image-hash stage image housekeeping; do
+    for f in agent-images ci-tags ci-lock image-hash stage image housekeeping install-hooks test-ci-scripts; do
         cp "$SRC/scripts/build/$f.sh" scripts/build/
     done
     cp "$SRC/ur-hooks/git/pre-push" ur-hooks/git/
@@ -219,7 +244,7 @@ done
 case "$S" in "$HOME"/.ur|"$HOME"/.ur/*) echo "test-ci-scripts: sandbox is inside ~/.ur" >&2; exit 1 ;; esac
 reset_state() {
     chmod -R u+w "$R" "$CFG" "$STATE" 2>/dev/null
-    rm -rf "$R" "$S/repo2" "$S/ch" "$DSTATE" "$CFG" "$S/urcfgB" "$STATE" "$SANDBOX_HOME"
+    rm -rf "$R" "$S/repo2" "$S/ch" "$S/wt" "$DSTATE" "$CFG" "$S/urcfgB" "$STATE" "$SANDBOX_HOME"
     cp -R "$S/template" "$R" && mkdir -p "$DSTATE" "$CFG" "$STATE" "$SANDBOX_HOME" \
         && touch "$DSTATE/images" "$DSTATE/inuse"
 }
@@ -552,6 +577,31 @@ t_prune_log_unreadable() { prune_setup; chmod 000 "$TAGLOG"; acc; local r=$?; ch
                            [ $r -eq 0 ] && has_all h1; }
 
 # ------------------------------------------------- stage / housekeeping --
+t_install_hooks_from_worktree() { # .git is a file in a linked worktree
+    local wt="$S/wt" h
+    (cd "$R" && G worktree add -q "$wt" >/dev/null 2>&1) || return 1
+    (cd "$wt" && sandbox_env bash scripts/build/install-hooks.sh >/dev/null 2>&1) || return 1
+    h=$(cd "$R" && G rev-parse --git-path hooks)
+    [ -f "$R/$h/pre-push" ] || [ -f "$h/pre-push" ]
+}
+t_acc_from_other_cwd() { warm; (cd "$R/crates" && "${TO[@]}" env -i "${SANDBOX_VARS[@]}" "${GIT_ENV[@]}" \
+        bash ../scripts/acceptance-ci.sh >"$S/acc.out" 2>&1) && grep -q "^cargo test" "$DSTATE/cargo-calls"; }
+# --if-changed, run from the fake repo against a fake origin/master. The inner
+# run selects no tests (^t_none$), so "0/0 passed" means it ran.
+if_changed() { (cd "$R" && sandbox_env "$@" bash scripts/build/test-ci-scripts.sh --if-changed '^t_none$' 2>&1); }
+t_if_changed() {
+    (cd "$R" && G update-ref refs/remotes/origin/master HEAD) || return 1
+    if_changed | grep -q "skipped (no CI script changes" || return 1
+    echo y >> "$R/docs/a.md"
+    if_changed | grep -q "skipped" || return 1
+    if_changed UR_CI_TEST_FORCE=1 | grep -q "0/0 passed" || return 1
+    echo "# x" >> "$R/scripts/build/image.sh"
+    if_changed | grep -q "0/0 passed" || return 1
+    (cd "$R" && G checkout -q scripts/build/image.sh) && echo new > "$R/scripts/build/new.sh"
+    if_changed | grep -q "0/0 passed" || return 1
+    rm "$R/scripts/build/new.sh"; (cd "$R" && G update-ref -d refs/remotes/origin/master)
+    if_changed | grep -q "0/0 passed"
+}
 t_stage_once() { # one cross-compile for all three binaries
     (cd "$R" && sandbox_env bash scripts/build/stage.sh >/dev/null 2>&1) || return 1
     [ "$(grep -c '^cargo zigbuild --release' "$DSTATE/cargo-calls")" = 1 ] \
@@ -574,12 +624,35 @@ t_stage_native() { # UR_NATIVE_BUILD: ur-server still via zigbuild (image glibc)
     grep -q '^cargo zigbuild --release --target [a-z0-9_]*-unknown-linux-gnu -p ur-server TAG' "$DSTATE/cargo-calls" \
         && grep -q '^cargo build --release -p workerd -p ur-workertools TAG' "$DSTATE/cargo-calls"
 }
-t_housekeeping_warns_never_fails() {
-    (cd "$R" && sandbox_env DOCKER_PRUNE_RC=1 bash scripts/build/housekeeping.sh >/dev/null 2>"$S/hk.err") \
-        && grep -q "docker builder prune failed" "$S/hk.err"
+# A process holding a cargo build lock the way cargo does (flock on .cargo-lock).
+hold_cargo_lock() {
+    mkdir -p "$(dirname "$1")"; : > "$1"
+    bash -c 'exec 8<"$1"; perl -MFcntl=:flock -e "open(my \$f, q(<&=), 8) or die; flock(\$f, LOCK_EX) or die"
+             : > "$1.held"; while :; do sleep 0.2 8<&-; done' _ "$1" &
+    BGPIDS+=("$!"); wait_file "$1.held"
 }
+housekeeping() { (cd "$R" && sandbox_env "$@" bash scripts/build/housekeeping.sh >/dev/null 2>"$S/hk.err"); }
+t_housekeeping_sweeps_a_week() { housekeeping && grep -q "^cargo sweep --time 7 " "$DSTATE/cargo-calls"; }
+t_housekeeping_skips_sweep_during_build() {
+    local l
+    for l in target/debug/.cargo-lock target/aarch64-unknown-linux-gnu/release/.cargo-lock; do
+        : > "$DSTATE/cargo-calls"; rm -rf "$R/target"
+        hold_cargo_lock "$R/$l" || return 1
+        housekeeping || return 1
+        grep -q "^cargo sweep" "$DSTATE/cargo-calls" && return 1
+        grep -q "skipping cargo sweep" "$S/hk.err" || return 1
+        kill_bg; BGPIDS=()
+    done
+    # idle lock files (no build running) do not block the sweep
+    sleep 0.5; housekeeping && grep -q "^cargo sweep" "$DSTATE/cargo-calls"
+}
+t_housekeeping_warns_never_fails() { housekeeping DOCKER_PRUNE_RC=1 && grep -q "docker builder prune failed" "$S/hk.err"; }
 
 # ---------------------------------------------------------------- pre-push --
+t_hook_stale_cargo_lock() { # rejected before any `cargo make` step runs
+    hook CARGO_LOCK_STALE=1 && return 1
+    [ ! -s "$DSTATE/make-calls" ] && grep -q "Cargo.lock check" "$S/hook.out"
+}
 t_hook_ok()       { hook || return 1; [ -z "$(ls "$R/tmp" 2>/dev/null)" ] && grep -q "make ci" "$DSTATE/make-calls" \
                         && grep -q "make acceptance-ci" "$DSTATE/make-calls"; }
 t_hook_ci_fail()  { hook MAKE_CI_RC=1 && return 1; ! grep -q "make acceptance-ci" "$DSTATE/make-calls" && [ -n "$(ls "$R/tmp")" ]; }

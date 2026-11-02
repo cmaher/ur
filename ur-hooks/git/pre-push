@@ -42,7 +42,9 @@ run_step() {
     fi
 }
 
-# clippy runs with --locked, which also verifies Cargo.lock is up to date.
+# Fail fast on a stale Cargo.lock: nothing else in `ci` builds with --locked
+# (clippy does, but only after fmt and the script tests).
+run_step "Cargo.lock check" cargo metadata --locked --format-version 1
 run_step "CI (fmt + clippy + build + test)" cargo make ci
 run_step "image build + acceptance" cargo make acceptance-ci
 

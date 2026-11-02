@@ -153,6 +153,13 @@ description = "Test the CI shell layer (image hash, acceptance-ci lock/pruning, 
 command = "bash"
 args = ["scripts/build/test-ci-scripts.sh"]
 
+# Part of `ci`: runs only when the CI scripts differ from origin/master
+# (UR_CI_TEST_FORCE=1 forces it). `cargo make test-ci-scripts` always runs.
+[tasks.test-ci-scripts-if-changed]
+description = "Run test-ci-scripts if scripts/acceptance-ci.sh, scripts/build/, ur-hooks/git/ or Makefile.toml changed since origin/master"
+command = "bash"
+args = ["scripts/build/test-ci-scripts.sh", "--if-changed"]
+
 [tasks.housekeeping]
 description = "Prune stale target/ artifacts (cargo-sweep) and cap Docker's build cache"
 script_runner = "@shell"
@@ -161,7 +168,7 @@ script = ["scripts/build/housekeeping.sh"]
 [tasks.install-hooks]
 description = "Install git hooks (pre-commit formats, pre-push runs CI + acceptance)"
 script_runner = "@shell"
-script = ["cp ur-hooks/git/* .git/hooks/"]
+script = ["scripts/build/install-hooks.sh"]
 
 [tasks."test:init"]
 description = "Start ci-postgres container for tests (port 5433) if not already up"
@@ -208,7 +215,7 @@ echo "ci-postgres removed"
 
 [tasks.ci]
 description = "Run all CI checks"
-dependencies = ["fmt", "test-ci-scripts", "clippy", "build", "test"]
+dependencies = ["fmt", "test-ci-scripts-if-changed", "clippy", "build", "test"]
 
 [tasks.fmt-fix-silent]
 description = "Fix code formatting (no output)"
