@@ -130,13 +130,20 @@ build_settings() {
     if command -v protoc >/dev/null 2>&1; then
         protoc --version
     fi
-    if [ "${UR_NATIVE_BUILD:-}" != "1" ] && command -v zig >/dev/null 2>&1; then
+    # zigbuild builds ur-server in both modes (stage.sh), and everything by default.
+    if command -v zig >/dev/null 2>&1; then
         echo "zig $(zig version)"
     fi
-    local cfg
-    for cfg in mise.toml .cargo/config.toml; do
+    # (`cargo zigbuild` has no --version; the binary cargo dispatches to does.)
+    if command -v cargo-zigbuild >/dev/null 2>&1; then
+        cargo-zigbuild --version
+    fi
+    # Cargo config: the repo's, plus the user-level one cargo also reads.
+    local cfg cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+    for cfg in mise.toml .cargo/config.toml "$cargo_home/config.toml" "$cargo_home/config"; do
         if [ -f "$cfg" ]; then
-            "${SHA[@]}" "$cfg"
+            echo "config ${cfg#"$cargo_home"/}"
+            "${SHA[@]}" < "$cfg"
         fi
     done
     env \

@@ -13,8 +13,9 @@
 # fd 9 and a one-shot perl takes the flock on that inherited fd. A flock belongs
 # to the open file description, which the shell keeps after perl exits, so the
 # lock is held until the shell exits, and the kernel releases it if the shell
-# dies (even on SIGKILL). There is no stale-lock detection or takeover to get
-# wrong. Any child that also inherits fd 9 keeps the lock alive while it runs,
+# dies (even on SIGKILL). The primary lock therefore needs no stale-lock
+# detection or takeover; only the legacy compat block below has any (for the
+# old scripts' directory lock, which has no kernel backing). Any child that also inherits fd 9 keeps the lock alive while it runs,
 # so long-lived children must be started with `9>&-`.
 #
 # Optional: UR_LOCK_POLL_SECS (default 10) between attempts while waiting.
@@ -72,6 +73,11 @@ release_lock() {
 # directory (where old scripts look for it), so old and new scripts exclude each
 # other. Only old scripts can contend for it here (new ones are serialized by
 # the flock), and they see our live pid and wait.
+#
+# A directory we create carries a `flock-owner` marker. Since we hold the flock,
+# no live new-style run can own a marked directory: it was left by a dead one
+# (whose pid may since have been reused), so it is removed without a pid check.
+# Only an unmarked directory (an old script's) gets the `kill -0` wait.
 LEGACY_LOCK="${UR_CONFIG:-$HOME/.ur}/locks/pre-push"
 
 acquire_legacy_lock() {
@@ -82,6 +88,10 @@ acquire_legacy_lock() {
             echo "acceptance-ci: cannot create legacy lock $LEGACY_LOCK" >&2
             exit 1
         fi
+        if [ -e "$LEGACY_LOCK/flock-owner" ]; then
+            rm -rf "$LEGACY_LOCK"
+            continue
+        fi
         pid=$(cat "$LEGACY_LOCK/pid" 2>/dev/null || true)
         if [ -z "$pid" ]; then
             # An old script writes its pid right after mkdir: give it a moment.
@@ -89,12 +99,14 @@ acquire_legacy_lock() {
             pid=$(cat "$LEGACY_LOCK/pid" 2>/dev/null || true)
         fi
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            echo "acceptance-ci: waiting for lock held by an older acceptance-ci (PID $pid)..."
+            echo "acceptance-ci: waiting for lock held by an older acceptance-ci (PID $pid); if no such run exists, remove $LEGACY_LOCK"
             sleep "${UR_LOCK_POLL_SECS:-10}" 9>&-
             continue
         fi
         rm -rf "$LEGACY_LOCK"
     done
+    # Marker before pid: an old script that sees no pid yet just waits.
+    : > "$LEGACY_LOCK/flock-owner"
     echo $$ > "$LEGACY_LOCK/pid"
     if [ -n "${UR_PUSH_BRANCH:-}" ]; then
         echo "$UR_PUSH_BRANCH" > "$LEGACY_LOCK/branch"

@@ -10,8 +10,8 @@
 # images: the current one plus the most recently used others by that log.
 #
 # Only hashes that appear in the log are ever pruned. A ci-* tag absent from the
-# log belongs to someone else (a push with a different UR_CONFIG, so a different
-# log) or predates the log; it is never touched.
+# log belongs to someone else (a push with a different UR_CI_STATE_DIR, so a
+# different log) or predates the log; it is never touched.
 #
 # Everything here is best effort: a failure warns and never fails the caller.
 #

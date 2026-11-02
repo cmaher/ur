@@ -9,37 +9,45 @@ source "$(dirname "$0")/agent-images.sh"
 #   ur-server               -> containers/server/
 #   workerd, ur-workertools -> containers/<agent>/bin/
 #
-# All packages build in ONE cargo invocation. Separate invocations resolve
-# features independently, so shared dependencies (tokio, tonic, sqlx, ...) would
-# be compiled once per invocation.
+# Default: ONE cargo-zigbuild invocation (requires zig + cargo-zigbuild) for all
+# three, targeting linux-gnu for the host arch so the binaries link against an
+# old enough glibc for the debian bookworm images. One invocation matters:
+# separate invocations resolve features independently, so shared dependencies
+# (tokio, tonic, sqlx, ...) would be compiled once per invocation.
 #
-# Default: cross-compile with cargo-zigbuild (requires zig + cargo-zigbuild),
-# targeting linux-gnu for the host arch to match the debian bookworm images.
-# UR_NATIVE_BUILD=1: plain `cargo build` for the host target (Linux hosts only).
+# UR_NATIVE_BUILD=1 (Linux hosts): ur-server is still built with zigbuild for
+# the linux-gnu target -- a plain host build would link against the host's
+# glibc, which can be newer than the image's -- and workerd + ur-workertools
+# with a plain `cargo build` for the host target.
 
 # Raise fd limit — the zig linker opens hundreds of .rlib files simultaneously
 # and can exceed macOS's default soft limit (256).
 ulimit -n 65536 2>/dev/null || true
 
-PACKAGES=(-p ur-server -p workerd -p ur-workertools)
+ARCH=$(uname -m)
+case "$ARCH" in
+    arm64|aarch64) TARGET="aarch64-unknown-linux-gnu" ;;
+    x86_64)        TARGET="x86_64-unknown-linux-gnu" ;;
+    *)             echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
 
 if [ "${UR_NATIVE_BUILD:-}" = "1" ]; then
-    echo "Building image binaries natively"
-    cargo build --release "${PACKAGES[@]}"
-    OUT=target/release
+    echo "Building ur-server for $TARGET and worker binaries natively"
+    if command -v rustup >/dev/null 2>&1; then
+        rustup target add "$TARGET" >/dev/null 2>&1 || true
+    fi
+    cargo zigbuild --release --target "$TARGET" -p ur-server
+    cargo build --release -p workerd -p ur-workertools
+    SERVER_OUT="target/$TARGET/release"
+    WORKER_OUT=target/release
 else
-    ARCH=$(uname -m)
-    case "$ARCH" in
-        arm64|aarch64) TARGET="aarch64-unknown-linux-gnu" ;;
-        x86_64)        TARGET="x86_64-unknown-linux-gnu" ;;
-        *)             echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
-    esac
     echo "Cross-compiling image binaries for $TARGET"
-    cargo zigbuild --release --target "$TARGET" "${PACKAGES[@]}"
-    OUT="target/$TARGET/release"
+    cargo zigbuild --release --target "$TARGET" -p ur-server -p workerd -p ur-workertools
+    SERVER_OUT="target/$TARGET/release"
+    WORKER_OUT="$SERVER_OUT"
 fi
 
-cp "$OUT/ur-server" containers/server/ur-server
+cp "$SERVER_OUT/ur-server" containers/server/ur-server
 echo "Staged ur-server in containers/server/"
 
 # Every agent's image build context needs its own copy of the worker binaries
@@ -49,7 +57,7 @@ for entry in "${AGENT_IMAGES[@]}"; do
     [ "$stage_binaries" = "true" ] || continue
     DEST="containers/$dir/bin"
     mkdir -p "$DEST"
-    cp "$OUT/ur-workertools" "$DEST/ur-workertools"
-    cp "$OUT/workerd" "$DEST/workerd"
+    cp "$WORKER_OUT/ur-workertools" "$DEST/ur-workertools"
+    cp "$WORKER_OUT/workerd" "$DEST/workerd"
     echo "Staged worker binaries in $DEST/"
 done

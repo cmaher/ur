@@ -115,15 +115,29 @@ case "$1" in
             *) echo "stub cargo tree: unknown package $p" >&2; exit 101 ;;
           esac
         done ;;
-  zigbuild|build) [ -n "${CARGO_BUILD_FAIL:-}" ] && exit 101
+  zigbuild|build) # Builds only the -p packages, into target/[<target>/]release;
+        # each binary records which subcommand built it ("bin <name> via <cmd>").
+        [ -n "${CARGO_BUILD_FAIL:-}" ] && exit 101
         if [ -n "${CARGO_BUILD_HOOK:-}" ]; then eval "$CARGO_BUILD_HOOK"; fi
-        t=target/release; [ "$1" = zigbuild ] && t="target/$4/release"
-        mkdir -p "$t"; for b in ur-server workerd ur-workertools; do echo "bin $b" > "$t/$b"; done ;;
+        cmd="$1"; shift; pkgs=""; t=target/release
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -p) pkgs="$pkgs $2"; shift ;;
+            --target) t="target/$2/release"; shift ;;
+          esac
+          shift
+        done
+        mkdir -p "$t"; for b in $pkgs; do echo "bin $b via $cmd" > "$t/$b"; done ;;
   test) if [ -n "${CARGO_TEST_HOOK:-}" ]; then eval "$CARGO_TEST_HOOK"; fi; exit "${CARGO_TEST_RC:-0}" ;;
   make) echo "make $2" >> "$DSTATE/make-calls"
         case "$2" in ci) exit "${MAKE_CI_RC:-0}" ;; acceptance-ci) exit "${MAKE_ACC_RC:-0}" ;; esac ;;
   sweep) exit 0 ;;
 esac
+EOF
+cat > "$STUBS/cargo-zigbuild" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-}" = --version ] || { echo "stub cargo-zigbuild: only --version is supported" >&2; exit 2; }
+echo "cargo-zigbuild ${ZIGBUILD_VER:-0.22.2}"
 EOF
 cat > "$STUBS/rustc" <<'EOF'
 #!/usr/bin/env bash
@@ -205,7 +219,7 @@ done
 case "$S" in "$HOME"/.ur|"$HOME"/.ur/*) echo "test-ci-scripts: sandbox is inside ~/.ur" >&2; exit 1 ;; esac
 reset_state() {
     chmod -R u+w "$R" "$CFG" "$STATE" 2>/dev/null
-    rm -rf "$R" "$S/repo2" "$DSTATE" "$CFG" "$S/urcfgB" "$STATE" "$SANDBOX_HOME"
+    rm -rf "$R" "$S/repo2" "$S/ch" "$DSTATE" "$CFG" "$S/urcfgB" "$STATE" "$SANDBOX_HOME"
     cp -R "$S/template" "$R" && mkdir -p "$DSTATE" "$CFG" "$STATE" "$SANDBOX_HOME" \
         && touch "$DSTATE/images" "$DSTATE/inuse"
 }
@@ -295,6 +309,12 @@ t_hash_uninit_submodule() { # an uninitialized submodule still hashes, stably
     a=$(hash_) && b=$(hash_) && [ -n "$a" ] && [ "$a" = "$b" ]
 }
 t_hash_other_path() { cp -R "$R" "$S/repo2" && [ "$(hash_in "$S/repo2")" = "$BASE" ]; }
+t_hash_user_cargo_config() { # ~/.cargo/config.toml (or $CARGO_HOME's, or the legacy name) is an input
+    changes 'mkdir -p "$SANDBOX_HOME/.cargo" && echo "[build]" > "$SANDBOX_HOME/.cargo/config.toml"' || return 1
+    mkdir -p "$S/ch" && echo '[profile.release]' > "$S/ch/config" || return 1
+    [ "$BASE" != "$(hash_ CARGO_HOME="$S/ch")" ] && [ "$BASE" = "$(hash_ CARGO_HOME="$S/empty-cargo-home")" ]
+}
+t_hash_zigbuild_version() { [ "$BASE" != "$(hash_ ZIGBUILD_VER=9.9.9)" ]; }
 t_hash_cargo_make_env() { [ "$BASE" = "$(hash_ CARGO_MAKE_TASK=x CARGO=/x CARGO_HOME=/y)" ]; }
 t_hash_staged_outputs() { same 'echo b > containers/server/ur-server; echo b > containers/server/builderd;
                                 mkdir -p containers/worker-claude/bin; echo b > containers/worker-claude/bin/workerd'; }
@@ -313,10 +333,10 @@ t_acc_cold() {
 }
 t_acc_warm() {
     acc || return 1; : > "$DSTATE/cargo-calls"; acc || return 1
-    ! grep -q zigbuild "$DSTATE/cargo-calls" && grep -q "already built" "$S/acc.out"
+    ! grep -q "^cargo zigbuild --release" "$DSTATE/cargo-calls" && grep -q "already built" "$S/acc.out"
 }
-t_acc_update_agent() { seed "$BASE"; acc UR_UPDATE_AGENT=claude && grep -q zigbuild "$DSTATE/cargo-calls"; }
-t_acc_force_base()   { warm; acc UR_FORCE_REBUILD_BASE=1 && grep -q zigbuild "$DSTATE/cargo-calls"; }
+t_acc_update_agent() { seed "$BASE"; acc UR_UPDATE_AGENT=claude && grep -q "^cargo zigbuild --release" "$DSTATE/cargo-calls"; }
+t_acc_force_base()   { warm; acc UR_FORCE_REBUILD_BASE=1 && grep -q "^cargo zigbuild --release" "$DSTATE/cargo-calls"; }
 t_acc_docker_down()  { acc DOCKER_DOWN=1 && return 1; grep -q "docker unreachable" "$S/acc.out" && [ ! -e "$FLOCKS" ]; }
 t_acc_stage_fail()   { acc CARGO_BUILD_FAIL=1 && return 1; ! grep -q "^cargo test" "$DSTATE/cargo-calls" && ! grep -q ':ci-' "$DSTATE/images"; }
 t_acc_midbuild_edit() {
@@ -458,7 +478,8 @@ t_lock_concurrent_runs_serialize() {
 t_lock_holds_during_run() { # holder file and legacy dir name this run while it runs, and go away after
     warm
     acc UR_PUSH_BRANCH=feat CARGO_TEST_HOOK='[ "$(cat "$UR_CI_STATE_DIR/locks/pre-push.holder")" = "$PPID:feat" ] &&
-        [ "$(cat "$UR_CONFIG/locks/pre-push/pid")" = "$PPID" ] && touch "$DSTATE/held"' || return 1
+        [ "$(cat "$UR_CONFIG/locks/pre-push/pid")" = "$PPID" ] && [ -e "$UR_CONFIG/locks/pre-push/flock-owner" ] &&
+        touch "$DSTATE/held"' || return 1
     [ -e "$DSTATE/held" ] && [ ! -e "$LOCKS/pre-push" ] && [ ! -e "$FLOCKS/pre-push.holder" ]
 }
 t_lock_unwritable() { # fails fast with a message instead of spinning
@@ -485,6 +506,12 @@ t_lock_legacy_new_holds_old_waits() { # new holds: the old script waits, then ge
 }
 t_lock_legacy_stale() { dead_pid; warm; mkdir -p "$LOCKS/pre-push"; echo "$DEAD" > "$LOCKS/pre-push/pid"
                         acc && [ ! -e "$LOCKS/pre-push" ]; }
+t_lock_legacy_marked_reused_pid() { # our own leftover (marked) dir whose pid now belongs to someone else
+    local p; warm; live_pid; mkdir -p "$LOCKS/pre-push"; : > "$LOCKS/pre-push/flock-owner"
+    echo "$LIVE" > "$LOCKS/pre-push/pid"
+    acc || return 1
+    ! grep -q "older acceptance-ci" "$S/acc.out" && [ ! -e "$LOCKS/pre-push" ]
+}
 t_lock_legacy_pidless() { warm; mkdir -p "$LOCKS/pre-push"; acc && [ ! -e "$LOCKS/pre-push" ]; }
 t_lock_legacy_release_not_owner() { # never remove a legacy dir that another pid owns by now
     warm; live_pid
@@ -527,17 +554,25 @@ t_prune_log_unreadable() { prune_setup; chmod 000 "$TAGLOG"; acc; local r=$?; ch
 # ------------------------------------------------- stage / housekeeping --
 t_stage_once() { # one cross-compile for all three binaries
     (cd "$R" && sandbox_env bash scripts/build/stage.sh >/dev/null 2>&1) || return 1
-    [ "$(grep -c '^cargo zigbuild' "$DSTATE/cargo-calls")" = 1 ] \
+    [ "$(grep -c '^cargo zigbuild --release' "$DSTATE/cargo-calls")" = 1 ] \
         && grep -q -- '-p ur-server -p workerd -p ur-workertools' "$DSTATE/cargo-calls"
 }
-t_stage() {
+# stage <mode-env...>: run stage.sh; then check each staged binary was built by
+# the expected subcommand ($SERVER_VIA for ur-server, $WORKER_VIA for workers).
+staged_as() {
     local c
-    (cd "$R" && sandbox_env bash scripts/build/stage.sh >/dev/null 2>&1) || return 1
     for c in worker-claude worker-codex worker-agy; do
-        [ "$(cat "$R/containers/$c/bin/workerd")" = "bin workerd" ] || return 1
-        [ "$(cat "$R/containers/$c/bin/ur-workertools")" = "bin ur-workertools" ] || return 1
+        [ "$(cat "$R/containers/$c/bin/workerd")" = "bin workerd via $2" ] || return 1
+        [ "$(cat "$R/containers/$c/bin/ur-workertools")" = "bin ur-workertools via $2" ] || return 1
     done
-    [ "$(cat "$R/containers/server/ur-server")" = "bin ur-server" ]
+    [ "$(cat "$R/containers/server/ur-server")" = "bin ur-server via $1" ]
+}
+t_stage() { (cd "$R" && sandbox_env bash scripts/build/stage.sh >/dev/null 2>&1) && staged_as zigbuild zigbuild; }
+t_stage_native() { # UR_NATIVE_BUILD: ur-server still via zigbuild (image glibc), workers via a host build
+    (cd "$R" && sandbox_env UR_NATIVE_BUILD=1 bash scripts/build/stage.sh >/dev/null 2>&1) || return 1
+    staged_as zigbuild build || return 1
+    grep -q '^cargo zigbuild --release --target [a-z0-9_]*-unknown-linux-gnu -p ur-server TAG' "$DSTATE/cargo-calls" \
+        && grep -q '^cargo build --release -p workerd -p ur-workertools TAG' "$DSTATE/cargo-calls"
 }
 t_housekeeping_warns_never_fails() {
     (cd "$R" && sandbox_env DOCKER_PRUNE_RC=1 bash scripts/build/housekeeping.sh >/dev/null 2>"$S/hk.err") \
