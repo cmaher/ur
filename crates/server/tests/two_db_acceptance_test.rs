@@ -190,6 +190,27 @@ async fn collect_ui_event_flags(
     (saw_ticket, saw_worker)
 }
 
+/// A running worker row for `process_id`, as the launch path would record it.
+fn running_worker(worker_id: &str, process_id: &str) -> workflow_db::model::Worker {
+    let now = chrono::Utc::now().to_rfc3339();
+    workflow_db::model::Worker {
+        worker_id: worker_id.to_string(),
+        process_id: process_id.to_string(),
+        project_key: "ur".to_string(),
+        container_id: "two-db-test-container".to_string(),
+        worker_secret: "test-secret".to_string(),
+        strategy: "code".to_string(),
+        agent_type: "claude".to_string(),
+        container_status: "running".to_string(),
+        agent_status: "starting".to_string(),
+        workspace_path: Some("/tmp/two-db-test".to_string()),
+        created_at: now.clone(),
+        updated_at: now,
+        idle_redispatch_count: 0,
+        brain_path: None,
+    }
+}
+
 /// End-to-end test: two-DB launch path exercises both ticket_db and workflow_db pools
 /// and verifies that UI events from both databases arrive on the merged stream.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -275,23 +296,7 @@ async fn two_db_split_events_arrive_on_merged_stream() {
 
     // ---- (5) Insert a worker row into workflow_db → verify isolation ----
     let worker_id = format!("tw-worker-{}", Uuid::new_v4().simple());
-    let now = chrono::Utc::now().to_rfc3339();
-    let worker = workflow_db::model::Worker {
-        worker_id: worker_id.clone(),
-        process_id: ticket_id.clone(),
-        project_key: "ur".to_string(),
-        container_id: "two-db-test-container".to_string(),
-        worker_secret: "test-secret".to_string(),
-        strategy: "code".to_string(),
-        agent_type: "claude".to_string(),
-        container_status: "running".to_string(),
-        agent_status: "starting".to_string(),
-        workspace_path: Some("/tmp/two-db-test".to_string()),
-        created_at: now.clone(),
-        updated_at: now,
-        idle_redispatch_count: 0,
-        brain_path: None,
-    };
+    let worker = running_worker(&worker_id, &ticket_id);
     worker_repo
         .insert_worker(&worker)
         .await
