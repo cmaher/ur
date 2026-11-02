@@ -115,9 +115,13 @@ hash_submodule() {
     fi
 }
 
-# Build settings that change the binaries without changing any source file.
-# Scoped to variables cargo/docker actually read so the hash is the same from a
-# plain shell and from inside `cargo make` (which sets CARGO_MAKE_*, CARGO, ...).
+# Build settings that change the binaries without changing any source file:
+# rustc flags (RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS), profile/build/target
+# settings and the docker platform. Scoped to variables that change the OUTPUT,
+# so the hash is the same from a plain shell and from inside `cargo make`
+# (which sets CARGO_MAKE_*, CARGO, ...). Where the output goes
+# (CARGO_TARGET_DIR, CARGO_BUILD_TARGET_DIR) and how many jobs build it
+# (CARGO_BUILD_JOBS) do not count.
 build_settings() {
     echo "arch $(uname -m)"
     echo "native ${UR_NATIVE_BUILD:-}"
@@ -135,7 +139,10 @@ build_settings() {
             "${SHA[@]}" "$cfg"
         fi
     done
-    env | { grep -E '^(RUSTFLAGS=|CARGO_PROFILE_|CARGO_BUILD_|CARGO_TARGET_|DOCKER_DEFAULT_PLATFORM=)' || true; } | sort
+    env \
+        | { grep -E '^(RUSTFLAGS=|CARGO_ENCODED_RUSTFLAGS=|CARGO_PROFILE_|CARGO_BUILD_|CARGO_TARGET_|DOCKER_DEFAULT_PLATFORM=)' || true; } \
+        | { grep -Ev '^(CARGO_TARGET_DIR|CARGO_BUILD_TARGET_DIR|CARGO_BUILD_JOBS)=' || true; } \
+        | sort
 }
 
 {

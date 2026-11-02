@@ -2,7 +2,9 @@
 set -euo pipefail
 
 # Rebuild and redeploy the ur-server container.
-# Stages the server binary, rebuilds the image, and recreates the container.
+# Stages all image binaries (scripts/build/stage.sh: ur-server and the worker
+# binaries, in one build), rebuilds the ur-server image, and recreates the
+# container.
 
 echo "=== Staging image binaries ==="
 scripts/build/stage.sh

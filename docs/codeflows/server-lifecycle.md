@@ -127,9 +127,11 @@ agent-agnostic `ur-worker-base:latest`. Toolchain-specific startup behavior is s
 directories to image tags and agent names; the image, staging, acceptance, and deploy
 scripts all source it. `scripts/acceptance-ci.sh` builds images tagged `ci-<hash>`
 (`scripts/build/image-hash.sh`) and prunes old tags by last use: every run that uses or builds
-a hash appends it to `${UR_CONFIG:-~/.ur}/ci-image-tags`, and `scripts/build/ci-tags.sh` keeps
+a hash appends it to `${UR_CI_STATE_DIR:-~/.ur}/ci-image-tags`, and `scripts/build/ci-tags.sh` keeps
 the same `UR_KEEP_CI_TAGS` (default 3) most recently used hashes across all images. Only hashes in
-that log are ever pruned; `ci-*` tags it never recorded (another `UR_CONFIG`, or older) are left alone.
+that log are ever pruned; `ci-*` tags it never recorded (older ones, or another `UR_CI_STATE_DIR`) are left alone.
+The log and the acceptance-ci lock (a flock on `${UR_CI_STATE_DIR:-~/.ur}/locks/pre-push.flock`) are host-wide, not
+per `UR_CONFIG`, because the docker daemon and its images are shared by every `UR_CONFIG` on the host.
 
 ## Squid Allowlist Default
 

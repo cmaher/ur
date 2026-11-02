@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 
 # Mutex for scripts/acceptance-ci.sh: only one image build + acceptance run at a
-# time per UR_CONFIG. Sourced; defines acquire_lock and release_lock and uses
-# file descriptor 9. Needs perl (for flock).
+# time per host. Sourced; defines acquire_lock and release_lock and uses file
+# descriptor 9. Needs perl (for flock).
+#
+# The lock lives in the host-wide CI state dir UR_CI_STATE_DIR (default
+# $HOME/.ur), NOT in UR_CONFIG: the docker daemon and its ci-* images are shared
+# by every UR_CONFIG on the host, so runs with different UR_CONFIGs must still
+# exclude each other.
 #
 # The lock is a kernel flock(LOCK_EX) on $LOCK_FILE. The shell opens the file on
 # fd 9 and a one-shot perl takes the flock on that inherited fd. A flock belongs
@@ -14,7 +19,7 @@
 #
 # Optional: UR_LOCK_POLL_SECS (default 10) between attempts while waiting.
 
-LOCKS_DIR="${UR_CONFIG:-$HOME/.ur}/locks"
+LOCKS_DIR="${UR_CI_STATE_DIR:-$HOME/.ur}/locks"
 LOCK_FILE="$LOCKS_DIR/pre-push.flock"
 # `<pid>:<branch>` of the current holder, for the waiting message only.
 LOCK_HOLDER="$LOCKS_DIR/pre-push.holder"
@@ -61,15 +66,17 @@ release_lock() {
 }
 
 # --- LEGACY compat: remove once no branch runs a pre-flock acceptance-ci.sh ---
-# Older scripts (master before ur-1pijn) lock the DIRECTORY locks/pre-push with
-# a `pid` file inside and take it over when `kill -0 <pid>` fails. While holding
-# the flock we also hold that directory, so old and new scripts exclude each
+# Older scripts (master before ur-1pijn) lock the DIRECTORY
+# ${UR_CONFIG:-$HOME/.ur}/locks/pre-push with a `pid` file inside and take it
+# over when `kill -0 <pid>` fails. While holding the flock we also hold that
+# directory (where old scripts look for it), so old and new scripts exclude each
 # other. Only old scripts can contend for it here (new ones are serialized by
 # the flock), and they see our live pid and wait.
-LEGACY_LOCK="$LOCKS_DIR/pre-push"
+LEGACY_LOCK="${UR_CONFIG:-$HOME/.ur}/locks/pre-push"
 
 acquire_legacy_lock() {
     local pid
+    mkdir -p "$(dirname "$LEGACY_LOCK")" 2>/dev/null || true
     while ! mkdir "$LEGACY_LOCK" 2>/dev/null; do
         if [ ! -d "$LEGACY_LOCK" ]; then
             echo "acceptance-ci: cannot create legacy lock $LEGACY_LOCK" >&2

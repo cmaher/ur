@@ -5,13 +5,14 @@
 #   scripts/build/test-ci-scripts.sh [TEST_NAME_REGEX]
 #
 # Every test runs the real scripts in a throwaway git repo under a mktemp dir,
-# with docker, cargo and rustc stubbed, HOME and UR_CONFIG pointed into the
-# sandbox, and git fault injection available via a pass-through wrapper. It
+# with docker, cargo and rustc stubbed, HOME, UR_CONFIG and UR_CI_STATE_DIR
+# pointed into the sandbox, and git fault injection available via a pass-through wrapper. It
 # never touches real docker, images, ~/.ur or the real acceptance lock.
 #
 # UR_CI_TEST_SRC=<dir> tests the scripts under <dir> instead of this checkout
-# (used to run mutants against the suite). Needs bash 3.2+, git, a sha256 tool,
-# and `timeout` or perl. Runs serially; each script invocation gets a generous
+# (used to run mutants against the suite). Needs bash 3.2+, git, perl (the lock
+# under test uses it; also the timeout fallback and timings) and a sha256 tool;
+# uses `timeout` when present. Runs serially; each script invocation gets a generous
 # timeout (UR_CI_TEST_STEP_TIMEOUT, default 120s) so a loaded machine slows the
 # suite rather than flaking it. UR_CI_TEST_KEEP=1 keeps the sandbox for debugging;
 # UR_CI_TEST_FAIL_FAST=1 stops at the first failing test (mutation runs).
@@ -190,24 +191,38 @@ make_template() {
 R="$S/repo"
 DSTATE="$S/dstate"
 CFG="$S/urcfg"
-LOCKS="$CFG/locks"
+LOCKS="$CFG/locks"              # legacy directory lock lives here (old scripts)
+STATE="$S/cistate"              # UR_CI_STATE_DIR: flock + tag log
+FLOCKS="$STATE/locks"
+TAGLOG="$STATE/ci-image-tags"
+# Never let a script under test resolve a state path to the real ~/.ur.
+for p in "$SANDBOX_HOME" "$CFG" "$STATE"; do
+    case "$p" in
+        "$S"/*) ;;
+        *) echo "test-ci-scripts: $p is outside the sandbox" >&2; exit 1 ;;
+    esac
+done
+case "$S" in "$HOME"/.ur|"$HOME"/.ur/*) echo "test-ci-scripts: sandbox is inside ~/.ur" >&2; exit 1 ;; esac
 reset_state() {
-    chmod -R u+w "$R" "$CFG" 2>/dev/null
-    rm -rf "$R" "$DSTATE" "$CFG" "$SANDBOX_HOME"
-    cp -R "$S/template" "$R" && mkdir -p "$DSTATE" "$CFG" "$SANDBOX_HOME" \
+    chmod -R u+w "$R" "$CFG" "$STATE" 2>/dev/null
+    rm -rf "$R" "$S/repo2" "$DSTATE" "$CFG" "$S/urcfgB" "$STATE" "$SANDBOX_HOME"
+    cp -R "$S/template" "$R" && mkdir -p "$DSTATE" "$CFG" "$STATE" "$SANDBOX_HOME" \
         && touch "$DSTATE/images" "$DSTATE/inuse"
 }
 
-sandbox_env() { env -i HOME="$SANDBOX_HOME" PATH="$BASEPATH" DSTATE="$DSTATE" "${GIT_ENV[@]}" "$@"; }
+SANDBOX_VARS=(HOME="$SANDBOX_HOME" PATH="$BASEPATH" DSTATE="$DSTATE" UR_CONFIG="$CFG" UR_CI_STATE_DIR="$STATE")
+sandbox_env() { env -i "${SANDBOX_VARS[@]}" "${GIT_ENV[@]}" "$@"; }
 hash_() { (cd "$R" && sandbox_env "$@" bash scripts/build/image-hash.sh 2>"$S/hash.err"); }
-acc() { (cd "$R" && "${TO[@]}" env -i HOME="$SANDBOX_HOME" PATH="$BASEPATH" DSTATE="$DSTATE" "${GIT_ENV[@]}" \
-            UR_CONFIG="$CFG" UR_LOCK_POLL_SECS=1 "$@" bash scripts/acceptance-ci.sh >"$S/acc.out" 2>&1); }
+hash_in() { (cd "$1" && sandbox_env bash scripts/build/image-hash.sh 2>"$S/hash.err"); }
+# Foreground run in $ACC_REPO (default $R); extra env assignments as arguments.
+acc() { (cd "${ACC_REPO:-$R}" && "${TO[@]}" env -i "${SANDBOX_VARS[@]}" "${GIT_ENV[@]}" \
+            UR_LOCK_POLL_SECS=1 "$@" bash scripts/acceptance-ci.sh >"$S/acc.out" 2>&1); }
 # Background run with extra env assignments as arguments; output to $ACC_OUT
 # (default $S/acc.out). $! is the run.
-acc_bg() { (cd "$R" && exec "${TO[@]}" env -i HOME="$SANDBOX_HOME" PATH="$BASEPATH" DSTATE="$DSTATE" "${GIT_ENV[@]}" \
-            UR_CONFIG="$CFG" UR_LOCK_POLL_SECS=1 "$@" bash scripts/acceptance-ci.sh >"${ACC_OUT:-$S/acc.out}" 2>&1) & }
+acc_bg() { (cd "$R" && exec "${TO[@]}" env -i "${SANDBOX_VARS[@]}" "${GIT_ENV[@]}" \
+            UR_LOCK_POLL_SECS=1 "$@" bash scripts/acceptance-ci.sh >"${ACC_OUT:-$S/acc.out}" 2>&1) & }
 hook() { (cd "$R" && echo "refs/heads/feat abc refs/heads/feat def" \
-            | "${TO[@]}" env -i HOME="$SANDBOX_HOME" PATH="$BASEPATH" DSTATE="$DSTATE" "${GIT_ENV[@]}" GIT_DIR="$R/.git" \
+            | "${TO[@]}" env -i "${SANDBOX_VARS[@]}" "${GIT_ENV[@]}" GIT_DIR="$R/.git" \
               "$@" bash ur-hooks/git/pre-push >"$S/hook.out" 2>&1); }
 
 IMGS="ur-worker-base ur-server ur-squid ur-worker-claude ur-worker-codex ur-worker-agy"
@@ -270,6 +285,16 @@ t_hash_rustflags()     { [ "$BASE" != "$(hash_ RUSTFLAGS=-Copt-level=1)" ]; }
 t_hash_rustc()         { [ "$BASE" != "$(hash_ RUSTC_VER=1.91.0)" ]; }
 t_hash_native()        { [ "$BASE" != "$(hash_ UR_NATIVE_BUILD=1)" ]; }
 t_hash_cargo_cfg()     { changes 'mkdir -p .cargo && echo "[build]" > .cargo/config.toml'; }
+t_hash_target_dir_env() { # where the output goes / how many jobs: not an input
+    [ "$BASE" = "$(hash_ CARGO_TARGET_DIR=/elsewhere CARGO_BUILD_TARGET_DIR=/x CARGO_BUILD_JOBS=3)" ]; }
+t_hash_encoded_rustflags() { [ "$BASE" != "$(hash_ CARGO_ENCODED_RUSTFLAGS=-Copt-level=1)" ]; }
+t_hash_deleted_tracked() { changes 'rm containers/squid/Dockerfile'; }
+t_hash_uninit_submodule() { # an uninitialized submodule still hashes, stably
+    local a b; (cd "$R" && G submodule --quiet deinit -f "$SUBDIR") || return 1
+    [ -z "$(ls -A "$R/$SUBDIR")" ] || return 1
+    a=$(hash_) && b=$(hash_) && [ -n "$a" ] && [ "$a" = "$b" ]
+}
+t_hash_other_path() { cp -R "$R" "$S/repo2" && [ "$(hash_in "$S/repo2")" = "$BASE" ]; }
 t_hash_cargo_make_env() { [ "$BASE" = "$(hash_ CARGO_MAKE_TASK=x CARGO=/x CARGO_HOME=/y)" ]; }
 t_hash_staged_outputs() { same 'echo b > containers/server/ur-server; echo b > containers/server/builderd;
                                 mkdir -p containers/worker-claude/bin; echo b > containers/worker-claude/bin/workerd'; }
@@ -284,14 +309,15 @@ t_acc_cold() {
     acc || return 1
     local H=$BASE; has_all "$H" || return 1
     grep -q "^cargo test -p acceptance --features acceptance TAG=ci-$H" "$DSTATE/cargo-calls" || return 1
-    grep -q " $H$" "$CFG/ci-image-tags" && [ ! -e "$LOCKS/pre-push" ]
+    grep -q " $H$" "$TAGLOG" && [ ! -e "$LOCKS/pre-push" ]
 }
 t_acc_warm() {
     acc || return 1; : > "$DSTATE/cargo-calls"; acc || return 1
     ! grep -q zigbuild "$DSTATE/cargo-calls" && grep -q "already built" "$S/acc.out"
 }
 t_acc_update_agent() { seed "$BASE"; acc UR_UPDATE_AGENT=claude && grep -q zigbuild "$DSTATE/cargo-calls"; }
-t_acc_docker_down()  { acc DOCKER_DOWN=1 && return 1; grep -q "docker unreachable" "$S/acc.out" && [ ! -e "$CFG/locks" ]; }
+t_acc_force_base()   { warm; acc UR_FORCE_REBUILD_BASE=1 && grep -q zigbuild "$DSTATE/cargo-calls"; }
+t_acc_docker_down()  { acc DOCKER_DOWN=1 && return 1; grep -q "docker unreachable" "$S/acc.out" && [ ! -e "$FLOCKS" ]; }
 t_acc_stage_fail()   { acc CARGO_BUILD_FAIL=1 && return 1; ! grep -q "^cargo test" "$DSTATE/cargo-calls" && ! grep -q ':ci-' "$DSTATE/images"; }
 t_acc_midbuild_edit() {
     local H=$BASE
@@ -313,7 +339,7 @@ t_acc_rehash_fail() {
 }
 t_acc_record_before_build() {
     local H=$BASE
-    acc DOCKER_BUILD_HOOK='grep -q " '"$H"'$" "$UR_CONFIG/ci-image-tags" && touch "$DSTATE/logged-early"' || return 1
+    acc DOCKER_BUILD_HOOK='grep -q " '"$H"'$" "$UR_CI_STATE_DIR/ci-image-tags" && touch "$DSTATE/logged-early"' || return 1
     [ -e "$DSTATE/logged-early" ]
 }
 t_acc_hash_after_lock() { # sources edited while waiting on the lock: the tag names the edited sources
@@ -330,13 +356,13 @@ wait_file() { local i=0; until [ -e "$1" ]; do i=$((i + 1)); [ $i -gt 600 ] && r
 # A background process holding the flock the way acceptance-ci does (fd 9 +
 # perl), with branch "other". Sets HOLDER.
 hold_lock() {
-    mkdir -p "$LOCKS"
+    mkdir -p "$FLOCKS"
     bash -c 'exec 9>>"$1/pre-push.flock"
              perl -MFcntl=:flock -e "open(my \$f, q(>&=), 9) or die; flock(\$f, LOCK_EX) or die" || exit 1
              echo "$$:other" > "$1/pre-push.holder"; : > "$1/test-held"
-             while :; do sleep 0.2 9>&-; done' _ "$LOCKS" &
+             while :; do sleep 0.2 9>&-; done' _ "$FLOCKS" &
     HOLDER=$!; BGPIDS+=("$HOLDER")
-    wait_file "$LOCKS/test-held"
+    wait_file "$FLOCKS/test-held"
 }
 # The lock code of master's acceptance-ci.sh before ur-1pijn (18374fa), verbatim
 # except `sleep 10` -> `sleep 1`: a directory lock with a pid file, taken over
@@ -381,7 +407,7 @@ acquire_lock
 : > "$UR_CONFIG/old-acquired"
 while :; do sleep 0.2; done
 EOF
-old_script_bg() { env UR_CONFIG="$CFG" bash "$S/old-lock.sh" >"$S/old.out" 2>&1 & OLD=$!; BGPIDS+=("$OLD"); }
+old_script_bg() { env -i "${SANDBOX_VARS[@]}" bash "$S/old-lock.sh" >"$S/old.out" 2>&1 & OLD=$!; BGPIDS+=("$OLD"); }
 
 t_lock_second_holder_waits() { # waits while held, naming the holder; proceeds once it is gone
     local p; warm; hold_lock || return 1
@@ -413,6 +439,14 @@ t_lock_build_children_do_not_hold() { # same for processes left behind by stage.
     acc || return 1
     ! grep -q "waiting for lock" "$S/acc.out"
 }
+t_lock_cross_cfg_serialize() { # different UR_CONFIGs share the docker daemon: still one at a time
+    local p1 p2 hook='[ -e "$DSTATE/inside" ] && touch "$DSTATE/overlap"; touch "$DSTATE/inside"; sleep 1; rm -f "$DSTATE/inside"'
+    warm; mkdir -p "$S/urcfgB"
+    ACC_OUT="$S/acc1.out" acc_bg CARGO_TEST_HOOK="$hook"; p1=$!
+    ACC_OUT="$S/acc2.out" acc_bg UR_CONFIG="$S/urcfgB" CARGO_TEST_HOOK="$hook"; p2=$!
+    wait "$p1" && wait "$p2" || return 1
+    [ "$(grep -c "^cargo test" "$DSTATE/cargo-calls")" = 2 ] && [ ! -e "$DSTATE/overlap" ]
+}
 t_lock_concurrent_runs_serialize() {
     local p1 p2 hook='[ -e "$DSTATE/inside" ] && touch "$DSTATE/overlap"; touch "$DSTATE/inside"; sleep 1; rm -f "$DSTATE/inside"'
     warm
@@ -423,13 +457,13 @@ t_lock_concurrent_runs_serialize() {
 }
 t_lock_holds_during_run() { # holder file and legacy dir name this run while it runs, and go away after
     warm
-    acc UR_PUSH_BRANCH=feat CARGO_TEST_HOOK='[ "$(cat "$UR_CONFIG/locks/pre-push.holder")" = "$PPID:feat" ] &&
+    acc UR_PUSH_BRANCH=feat CARGO_TEST_HOOK='[ "$(cat "$UR_CI_STATE_DIR/locks/pre-push.holder")" = "$PPID:feat" ] &&
         [ "$(cat "$UR_CONFIG/locks/pre-push/pid")" = "$PPID" ] && touch "$DSTATE/held"' || return 1
-    [ -e "$DSTATE/held" ] && [ ! -e "$LOCKS/pre-push" ] && [ ! -e "$LOCKS/pre-push.holder" ]
+    [ -e "$DSTATE/held" ] && [ ! -e "$LOCKS/pre-push" ] && [ ! -e "$FLOCKS/pre-push.holder" ]
 }
 t_lock_unwritable() { # fails fast with a message instead of spinning
-    local r; mkdir -p "$LOCKS"; chmod 555 "$LOCKS"
-    acc; r=$?; chmod 755 "$LOCKS"
+    local r; mkdir -p "$FLOCKS"; chmod 555 "$FLOCKS"
+    acc; r=$?; chmod 755 "$FLOCKS"
     [ $r -ne 0 ] && [ $r -ne 124 ] && grep -q "cannot open lock file" "$S/acc.out"
 }
 # Legacy directory lock (old master scripts).
@@ -460,26 +494,42 @@ t_lock_legacy_release_not_owner() { # never remove a legacy dir that another pid
 
 # ------------------------------------------------------------------- prune --
 prune_setup() {
-    local h; warm; printf '100 h1\n200 h2\n300 h3\n400 h4\n' > "$CFG/ci-image-tags"
+    local h; warm; printf '100 h1\n200 h2\n300 h3\n400 h4\n' > "$TAGLOG"
     for h in h1 h2 h3 h4 other; do seed $h; done
 }
 t_prune_keepset() { # keep 3 in total (current + 2 newest logged); never touch unlogged tags
     local H=$BASE; prune_setup; acc || return 1
     has_none h1 && has_none h2 && has_all h3 && has_all h4 && has_all "$H" && has_all other || return 1
-    [ "$(awk '{print $2}' "$CFG/ci-image-tags" | sort | tr '\n' ' ')" = "$(printf '%s\n' h3 h4 "$H" | sort | tr '\n' ' ')" ]
+    [ "$(awk '{print $2}' "$TAGLOG" | sort | tr '\n' ' ')" = "$(printf '%s\n' h3 h4 "$H" | sort | tr '\n' ' ')" ]
 }
 t_prune_inuse_retained() {
     prune_setup; echo "ur-squid:ci-h1" > "$DSTATE/inuse"; acc || return 1
     grep -qxF ur-squid:ci-h1 "$DSTATE/images" && ! grep -qxF ur-server:ci-h1 "$DSTATE/images" \
-        && grep -q ' h1$' "$CFG/ci-image-tags"
+        && grep -q ' h1$' "$TAGLOG"
 }
-t_prune_biglog()        { local i; warm; for i in $(seq 1 5000); do echo "$i h$i"; done > "$CFG/ci-image-tags"
-                          acc && [ "$(wc -l < "$CFG/ci-image-tags")" -le 3 ]; }
-t_prune_log_unwritable() { warm; mkdir -p "$CFG/ci-image-tags"; acc; }
-t_prune_log_unreadable() { prune_setup; chmod 000 "$CFG/ci-image-tags"; acc; local r=$?; chmod 644 "$CFG/ci-image-tags"
+t_prune_cross_cfg_shared_hash() {
+    # Run B (another UR_CONFIG, another checkout) just used hash HB, which A's
+    # earlier use logged as old. A's prune must see B's use and keep HB.
+    local HB; cp -R "$R" "$S/repo2" && echo b >> "$S/repo2/crates/server/src/main.rs" || return 1
+    HB=$(hash_in "$S/repo2") || return 1
+    printf '1 %s\n2 h2\n3 h3\n' "$HB" > "$TAGLOG"; cp "$TAGLOG" "$CFG/ci-image-tags"  # old (per-UR_CONFIG) location too
+    seed "$HB"; seed h2; seed h3; warm; mkdir -p "$S/urcfgB"
+    ACC_REPO="$S/repo2" acc UR_CONFIG="$S/urcfgB" || return 1
+    acc || return 1
+    has_all "$HB" && has_none h2
+}
+t_prune_biglog()        { local i; warm; for i in $(seq 1 5000); do echo "$i h$i"; done > "$TAGLOG"
+                          acc && [ "$(wc -l < "$TAGLOG")" -le 3 ]; }
+t_prune_log_unwritable() { warm; mkdir -p "$TAGLOG"; acc; }
+t_prune_log_unreadable() { prune_setup; chmod 000 "$TAGLOG"; acc; local r=$?; chmod 644 "$TAGLOG"
                            [ $r -eq 0 ] && has_all h1; }
 
 # ------------------------------------------------- stage / housekeeping --
+t_stage_once() { # one cross-compile for all three binaries
+    (cd "$R" && sandbox_env bash scripts/build/stage.sh >/dev/null 2>&1) || return 1
+    [ "$(grep -c '^cargo zigbuild' "$DSTATE/cargo-calls")" = 1 ] \
+        && grep -q -- '-p ur-server -p workerd -p ur-workertools' "$DSTATE/cargo-calls"
+}
 t_stage() {
     local c
     (cd "$R" && sandbox_env bash scripts/build/stage.sh >/dev/null 2>&1) || return 1
@@ -498,6 +548,8 @@ t_housekeeping_warns_never_fails() {
 t_hook_ok()       { hook || return 1; [ -z "$(ls "$R/tmp" 2>/dev/null)" ] && grep -q "make ci" "$DSTATE/make-calls" \
                         && grep -q "make acceptance-ci" "$DSTATE/make-calls"; }
 t_hook_ci_fail()  { hook MAKE_CI_RC=1 && return 1; ! grep -q "make acceptance-ci" "$DSTATE/make-calls" && [ -n "$(ls "$R/tmp")" ]; }
+t_hook_mkdir_fail() { # trap is installed before mkdir: housekeeping runs, the push still fails
+    echo x > "$R/tmp"; hook && return 1; grep -q "builder prune" "$DSTATE/calls"; }
 t_hook_acc_fail() { ! hook MAKE_ACC_RC=1; }
 t_hook_housekeeping_runs() { hook MAKE_ACC_RC=1; grep -q "builder prune" "$DSTATE/calls"; }
 t_hook_housekeeping_fails() { printf '#!/usr/bin/env bash\nexit 7\n' > "$R/scripts/build/housekeeping.sh"

@@ -17,10 +17,12 @@
 #
 # Callers set: IMAGES (array of image names), TAG (current `ci-<hash>`).
 # Optional: KEEP_CI_TAGS (default 3), CI_TAG_LOG (default
-# ${UR_CONFIG:-$HOME/.ur}/ci-image-tags).
+# ${UR_CI_STATE_DIR:-$HOME/.ur}/ci-image-tags). The log lives in the host-wide CI
+# state dir, not UR_CONFIG: the images are shared by every UR_CONFIG on the host,
+# so one log must see every run's use of a hash.
 
 ci_tag_log() {
-    echo "${CI_TAG_LOG:-${UR_CONFIG:-$HOME/.ur}/ci-image-tags}"
+    echo "${CI_TAG_LOG:-${UR_CI_STATE_DIR:-$HOME/.ur}/ci-image-tags}"
 }
 
 # Record that hash ($1, without the `ci-` prefix) was used now.
