@@ -171,7 +171,7 @@ fn collect_empty(brain: &Path, dir: &Path, out: &mut Vec<String>) {
             continue;
         }
         has_content = true;
-        if entry.path().is_dir() {
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
             collect_empty(brain, &entry.path(), out);
         }
     }

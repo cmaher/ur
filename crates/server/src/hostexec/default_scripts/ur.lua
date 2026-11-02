@@ -51,7 +51,8 @@ function transform(command, args, working_dir, worker_context)
         end
         for i = 2, #args do
             local a = args[i]
-            if a == "-p" or a == "--project" or a:sub(1, 10) == "--project=" then
+            -- clap also accepts an attached short value (`-pother`).
+            if a:sub(1, 2) == "-p" or a == "--project" or a:sub(1, 10) == "--project=" then
                 error("ur dream: --project is not allowed from workers (pinned to this worker's project)")
             end
         end

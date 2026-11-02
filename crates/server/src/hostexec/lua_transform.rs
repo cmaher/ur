@@ -2976,6 +2976,7 @@ mod tests {
 
         for flag in [
             ["-p", "other"],
+            ["-pother", "x"],
             ["--project", "other"],
             ["--project=other", "x"],
         ] {

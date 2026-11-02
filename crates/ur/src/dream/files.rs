@@ -14,7 +14,9 @@ const TEXT_EXTS: &[&str] = &["md", "markdown", "txt"];
 const MOUNT_PREFIX: &str = "/brain/";
 
 static LINK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[[^\]]*\]\(([^)\s]+)\)").unwrap());
-static IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^@(\S+)").unwrap());
+/// `@path` imports: the target must look like a path (contain `/` or `.`), so a line that
+/// starts with an `@mention` is not mistaken for one.
+static IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^@(\S*[./]\S*)").unwrap());
 static URL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z][\w+.-]*:").unwrap());
 static LAST_VERIFIED_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?mi)^Last verified:\s*(\d{4}-\d{2}-\d{2})").unwrap());
@@ -37,7 +39,8 @@ fn walk_into(brain: &Path, dir: &Path, out: &mut Vec<String>) {
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
-        if path.is_dir() {
+        // Never follow symlinked directories: a link back up the tree would loop.
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
             if !SKIP_DIRS.contains(&name.as_str()) {
                 walk_into(brain, &path, out);
             }
@@ -201,7 +204,7 @@ mod tests {
 
     #[test]
     fn links_resolve_relative_mount_and_imports() {
-        let text = "see [a](../x/a.md#h) and [b](/brain/y/b.md)\n@z.md\n\
+        let text = "see [a](../x/a.md#h) and [b](/brain/y/b.md)\n@z.md\n@someone said hi\n\
                     [web](https://e.example) [up](../../out.md) [abs](/etc/p)";
         let got: Vec<_> = links("dir/f.md", text)
             .into_iter()
@@ -212,10 +215,21 @@ mod tests {
             vec![
                 (1, Some("x/a.md".into())),
                 (1, Some("y/b.md".into())),
-                (3, None),
+                (4, None),
                 (2, Some("dir/z.md".into())),
             ]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_does_not_follow_symlinked_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let b = tmp.path();
+        std::fs::create_dir_all(b.join("a")).unwrap();
+        std::fs::write(b.join("a/x.md"), "x").unwrap();
+        std::os::unix::fs::symlink(b, b.join("a/loop")).unwrap();
+        assert_eq!(walk(b), vec!["a/loop", "a/x.md"]);
     }
 
     #[test]

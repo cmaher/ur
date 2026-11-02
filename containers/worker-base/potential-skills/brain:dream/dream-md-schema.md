@@ -90,10 +90,15 @@ Text scan, and commit-message search in repos with a local path.
 
 ## Ref kinds
 
+- Patterns use Rust `regex` syntax: no lookaround or backreferences. Named groups are
+  `(?P<name>...)`.
 - Patterns are tried in config order; a match overlapping an earlier match is skipped, so list
   specific patterns (a full URL) before looser ones (a bare `PR #N`). Keep patterns narrow: a broad
   pattern like `\w+:\w+` matches ordinary prose.
 - `id` and every `check` placeholder must be filled by each pattern's named groups or its `set`.
+- `check` is an argv, run without a shell. Don't put `{group}` inside an `sh -c` string: group
+  values come from brain text. If a shell is needed, pass values as positional arguments
+  (`["sh", "-c", "tool \"$1\"", "_", "{key}"]`).
 - In `state`, `{group}` is replaced by the escaped group value, e.g. `'^{key}\s+\S+\s+(.+)$'` for
   output that starts with the id. Other braces (`\d{4}`) are left alone.
 - The result is done only if the state is listed in `done`, not done only if in `not_done`.
