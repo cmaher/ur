@@ -124,8 +124,11 @@ Container directories/tags are named `<layer>-<agent>` rather than a bare layer 
 `containers/worker-claude/` (`ur-worker-claude:latest`), `containers/worker-codex/`
 (`ur-worker-codex:latest`), and `containers/worker-agy/` (`ur-worker-agy:latest`) — each on top of the shared,
 agent-agnostic `ur-worker-base:latest`. Toolchain-specific startup behavior is supplied by project hooks instead of multiplying images by toolchain. `scripts/build/agent-images.sh` is the single manifest that maps build context
-directories to image tags and agent names; the image, staging, acceptance cleanup, and deploy
-scripts all source it.
+directories to image tags and agent names; the image, staging, acceptance, and deploy
+scripts all source it. `scripts/acceptance-ci.sh` builds images tagged `ci-<hash>`
+(`scripts/build/image-hash.sh`) and prunes old tags by last use: every run that uses or builds
+a hash appends it to `${UR_CONFIG:-~/.ur}/ci-image-tags`, and `scripts/build/ci-tags.sh` keeps
+the same `UR_KEEP_CI_TAGS` (default 3) most recently used hashes across all images.
 
 ## Squid Allowlist Default
 

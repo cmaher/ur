@@ -62,7 +62,7 @@ hash_files() {
 # git ignores (repo or global gitignore). List containers/ WITHOUT
 # --exclude-standard, minus the staged build outputs. Crates, proto and scripts
 # keep --exclude-standard: cargo does not read ignored files there.
-STAGED_OUTPUTS='^containers/server/ur-server$|^containers/[^/]+/bin/'
+STAGED_OUTPUTS='^containers/server/ur-server$|^containers/server/builderd$|^containers/[^/]+/bin/'
 
 files=()
 submodules=()

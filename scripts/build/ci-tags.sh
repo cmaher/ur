@@ -6,9 +6,9 @@
 # Docker's CreatedAt is the original build time, and a cache hit re-tags an old
 # image, so "newest by CreatedAt" is not "most recently used" and differs per
 # image. Instead every run that uses or builds a hash appends `<epoch> <hash>` to
-# a last-used log, and pruning keeps the newest $KEEP_CI_TAGS hashes by that log
-# across ALL images (plus the current one). ci-* tags whose hash is not in the
-# log predate it and are pruned too.
+# a last-used log, and pruning keeps $KEEP_CI_TAGS hashes in total across ALL
+# images: the current one plus the most recently used others by that log. ci-*
+# tags whose hash is not in the log predate it and are pruned too.
 #
 # Everything here is best effort: a failure warns and never fails the caller.
 #
@@ -29,16 +29,19 @@ record_ci_tag_use() {
     fi
 }
 
-# Hashes to keep, one per line: the newest $KEEP_CI_TAGS distinct hashes by last
-# use, plus the current one.
+# Hashes to keep, one per line: $KEEP_CI_TAGS in total, the current one first,
+# then the most recently used others by the log. (The caller records the
+# current hash before pruning, so it is also the log's newest entry.)
+# The limit is applied inside awk, which reads all its input: a `head` would
+# exit early and SIGPIPE the pipeline, failing the caller under pipefail.
 ci_hashes_to_keep() {
-    local log
+    local log cur="${TAG#ci-}"
     log=$(ci_tag_log)
-    echo "${TAG#ci-}"
+    echo "$cur"
     if [ -f "$log" ]; then
         LC_ALL=C sort -k1,1nr "$log" 2>/dev/null \
-            | awk '!seen[$2]++ { print $2 }' \
-            | head -n "${KEEP_CI_TAGS:-3}"
+            | awk -v cur="$cur" -v keep="${KEEP_CI_TAGS:-3}" \
+                '$2 != cur && !seen[$2]++ && ++n < keep { print $2 }'
     fi
 }
 
