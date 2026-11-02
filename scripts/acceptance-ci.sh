@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 
 source "$(dirname "$0")/build/agent-images.sh"
+source "$(dirname "$0")/build/ci-tags.sh"
 
 # Run acceptance tests against CI images tagged by a content hash of their
 # inputs (scripts/build/image-hash.sh). If every image already exists at that
 # tag, the release build and `docker build` are skipped entirely; otherwise the
-# binaries are staged and the images built. The newest few ci-* tags per image
-# are kept so alternating between branches does not rebuild every push.
+# binaries are staged and the images built. The ci-* tags of the few most
+# recently used hashes are kept (scripts/build/ci-tags.sh) so alternating
+# between branches does not rebuild every push.
 
 KEEP_CI_TAGS="${UR_KEEP_CI_TAGS:-3}"
-TAG="ci-$(scripts/build/image-hash.sh)"
 IMAGES=(ur-worker-base ur-server ur-squid)
 for entry in "${AGENT_IMAGES[@]}"; do
     IFS=':' read -r _dir image_tag _agent _cachebust _stage_binaries <<< "$entry"
@@ -58,23 +60,12 @@ images_present() {
     done
 }
 
-# Drop all but the newest $KEEP_CI_TAGS ci-* tags of each image (the current
-# tag always survives). `docker images` lists newest first.
-prune_old_ci_tags() {
-    local img old
-    for img in "${IMAGES[@]}"; do
-        docker images --format '{{.Tag}}' "$img" \
-            | { grep '^ci-' || true; } | { grep -vx "$TAG" || true; } \
-            | tail -n +"$KEEP_CI_TAGS" \
-            | while IFS= read -r old; do
-                docker rmi "${img}:${old}" >/dev/null
-            done
-    done
-}
-
 mkdir -p "$(dirname "$LOCK_DIR")"
 acquire_lock
 trap release_lock EXIT
+
+# Hash under the lock, so the tag names the sources this run actually builds.
+TAG="ci-$(scripts/build/image-hash.sh)"
 
 # An agent update or forced base rebuild must actually rebuild.
 if [ -z "${UR_UPDATE_AGENT:-}" ] && [ "${UR_FORCE_REBUILD_BASE:-}" != "1" ] && images_present; then
@@ -83,7 +74,17 @@ else
     echo "=== Building images with tag=$TAG ==="
     scripts/build/stage.sh
     UR_IMAGE_TAG="$TAG" scripts/build/image.sh
+    # A source edit during the build would leave images tagged with a hash
+    # they do not match; a later push with those sources would then skip the
+    # build and test stale images. Drop them and fail instead.
+    rebuilt_tag="ci-$(scripts/build/image-hash.sh)"
+    if [ "$rebuilt_tag" != "$TAG" ]; then
+        remove_ci_tag "${TAG#ci-}"
+        echo "acceptance-ci: sources changed during build ($TAG -> $rebuilt_tag); re-run push" >&2
+        exit 1
+    fi
 fi
+record_ci_tag_use "${TAG#ci-}"
 prune_old_ci_tags
 
 echo "=== Running acceptance tests with tag=$TAG ==="

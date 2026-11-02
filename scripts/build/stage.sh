@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck source-path=SCRIPTDIR
 source "$(dirname "$0")/agent-images.sh"
 
 # Build every Linux binary baked into the container images and stage each into
