@@ -14,15 +14,16 @@ set -euo pipefail
 # shellcheck disable=SC2046
 unset $(git rev-parse --local-env-vars)
 
-mkdir -p tmp
-LOGFILE=$(mktemp tmp/ur-pre-push.XXXXXX)
-
 # Prune target/ and Docker build cache on every exit, pass or fail: a full disk
 # is usually what made the push fail in the first place. The hook is shared by
 # every checkout of the repo, so tolerate one without the script, and never let
-# housekeeping change the push's exit status.
+# housekeeping change the push's exit status. Installed before anything that
+# can fail (mkdir/mktemp) so housekeeping runs on every exit.
 # shellcheck disable=SC2154 # rc is assigned inside the trap string
 trap 'rc=$?; if [ -x scripts/build/housekeeping.sh ]; then scripts/build/housekeeping.sh || true; fi; exit $rc' EXIT
+
+mkdir -p tmp
+LOGFILE=$(mktemp tmp/ur-pre-push.XXXXXX)
 
 # Capture the branch being pushed from stdin (format: <local ref> <local sha> <remote ref> <remote sha>)
 while IFS=' ' read -r local_ref _local_sha _remote_ref _remote_sha; do

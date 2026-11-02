@@ -128,7 +128,8 @@ directories to image tags and agent names; the image, staging, acceptance, and d
 scripts all source it. `scripts/acceptance-ci.sh` builds images tagged `ci-<hash>`
 (`scripts/build/image-hash.sh`) and prunes old tags by last use: every run that uses or builds
 a hash appends it to `${UR_CONFIG:-~/.ur}/ci-image-tags`, and `scripts/build/ci-tags.sh` keeps
-the same `UR_KEEP_CI_TAGS` (default 3) most recently used hashes across all images.
+the same `UR_KEEP_CI_TAGS` (default 3) most recently used hashes across all images. Only hashes in
+that log are ever pruned; `ci-*` tags it never recorded (another `UR_CONFIG`, or older) are left alone.
 
 ## Squid Allowlist Default
 

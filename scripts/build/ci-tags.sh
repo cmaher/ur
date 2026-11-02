@@ -7,8 +7,11 @@
 # image, so "newest by CreatedAt" is not "most recently used" and differs per
 # image. Instead every run that uses or builds a hash appends `<epoch> <hash>` to
 # a last-used log, and pruning keeps $KEEP_CI_TAGS hashes in total across ALL
-# images: the current one plus the most recently used others by that log. ci-*
-# tags whose hash is not in the log predate it and are pruned too.
+# images: the current one plus the most recently used others by that log.
+#
+# Only hashes that appear in the log are ever pruned. A ci-* tag absent from the
+# log belongs to someone else (a push with a different UR_CONFIG, so a different
+# log) or predates the log; it is never touched.
 #
 # Everything here is best effort: a failure warns and never fails the caller.
 #
@@ -45,26 +48,36 @@ ci_hashes_to_keep() {
     fi
 }
 
-# Remove every `<image>:ci-<hash>` tag whose hash is not kept, and compact the
-# log to one line per kept hash.
+# Remove every `<image>:ci-<hash>` tag whose hash is in the log but not kept,
+# then compact the log to one line per hash that is kept or whose removal failed
+# (so it is retried next time rather than leaked).
 prune_old_ci_tags() {
-    local keep img tag log
+    local keep logged img tag hash log retained
     keep=$(ci_hashes_to_keep)
+    log=$(ci_tag_log)
+    logged=""
+    if [ -f "$log" ]; then
+        logged=$(awk '{ print $2 }' "$log" 2>/dev/null | LC_ALL=C sort -u || true)
+    fi
+    retained="$keep"
     for img in "${IMAGES[@]}"; do
         while IFS= read -r tag; do
-            if ! grep -qxF "${tag#ci-}" <<< "$keep"; then
-                docker rmi "${img}:${tag}" >/dev/null 2>&1 \
-                    || echo "ci-tags: could not remove ${img}:${tag} (in use?); leaving it" >&2
+            hash="${tag#ci-}"
+            if grep -qxF "$hash" <<< "$keep" || ! grep -qxF "$hash" <<< "$logged"; then
+                continue
+            fi
+            if ! docker rmi "${img}:${tag}" >/dev/null 2>&1; then
+                echo "ci-tags: could not remove ${img}:${tag} (in use?); leaving it" >&2
+                retained="$retained"$'\n'"$hash"
             fi
         done < <(docker images --format '{{.Tag}}' "$img" 2>/dev/null | grep '^ci-' || true)
     done
 
-    log=$(ci_tag_log)
     if [ -f "$log" ]; then
         if ! {
             LC_ALL=C sort -k1,1nr "$log" \
                 | awk 'NR == FNR { keep[$1]; next } ($2 in keep) && !seen[$2]++' \
-                    <(echo "$keep") - > "$log.tmp" \
+                    <(echo "$retained") - > "$log.tmp" \
                 && mv "$log.tmp" "$log"
         } 2>/dev/null; then
             rm -f "$log.tmp"

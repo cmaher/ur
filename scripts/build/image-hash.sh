@@ -30,17 +30,22 @@ fi
 cargo_root=$(cargo metadata --locked --no-deps --format-version 1 \
     | sed -n 's#.*"workspace_root":"\([^"]*\)".*#\1#p')
 
+# Lists are collected with plain command substitution (not `< <(...)`), so a
+# failing cargo/git under pipefail fails the script instead of silently
+# producing a partial list -- and therefore a wrong hash.
+
 # Workspace crates in the normal/build dependency closure of the image binaries.
 # Path deps print as `name vX (/abs/path)`; registry and git deps never match.
-crate_dirs=()
-while IFS= read -r dir; do
-    crate_dirs+=("$dir")
-done < <(
-    cargo tree --locked -e normal,build --prefix none --format '{p}' --target all \
-        -p ur-server -p workerd -p ur-workertools 2>/dev/null \
+crate_list=$(
+    cargo tree --quiet --locked -e normal,build --prefix none --format '{p}' --target all \
+        -p ur-server -p workerd -p ur-workertools \
         | sed -n "s#.*(${cargo_root}/\([^)]*\)).*#\1#p" \
         | sort -u
 )
+crate_dirs=()
+while IFS= read -r dir; do
+    [ -n "$dir" ] && crate_dirs+=("$dir")
+done <<< "$crate_list"
 if [ "${#crate_dirs[@]}" -eq 0 ]; then
     echo "image-hash: cargo tree found no workspace crates" >&2
     exit 1
@@ -64,6 +69,17 @@ hash_files() {
 # keep --exclude-standard: cargo does not read ignored files there.
 STAGED_OUTPUTS='^containers/server/ur-server$|^containers/server/builderd$|^containers/[^/]+/bin/'
 
+# `&&` between the two listings: errexit is off inside command substitution
+# (bash < 4.4 has no inherit_errexit), so a failure of the first would
+# otherwise be masked by the second's status.
+path_list=$(
+    {
+        git ls-files -co --exclude-standard -- \
+            Cargo.toml Cargo.lock rust-toolchain rust-toolchain.toml \
+            proto scripts/build "${crate_dirs[@]}" \
+            && git ls-files -co -- containers | { grep -Ev "$STAGED_OUTPUTS" || true; }
+    } | sort -u
+)
 files=()
 submodules=()
 while IFS= read -r path; do
@@ -72,14 +88,11 @@ while IFS= read -r path; do
     elif [ -f "$path" ]; then
         files+=("$path")
     fi
-done < <(
-    {
-        git ls-files -co --exclude-standard -- \
-            Cargo.toml Cargo.lock rust-toolchain rust-toolchain.toml \
-            proto scripts/build "${crate_dirs[@]}"
-        git ls-files -co -- containers | { grep -Ev "$STAGED_OUTPUTS" || true; }
-    } | sort -u
-)
+done <<< "$path_list"
+if [ "${#files[@]}" -eq 0 ]; then
+    echo "image-hash: git ls-files found no input files" >&2
+    exit 1
+fi
 
 # Submodule working-tree contents: names and bytes of every file, tracked or
 # not, so two different uncommitted edits never collide. Inside containers/ the
@@ -92,7 +105,10 @@ hash_submodule() {
         containers/*) ;;
         *) ls_args+=(--exclude-standard) ;;
     esac
-    git submodule status -- "$sub" 2>/dev/null || echo "nested-repo $sub"
+    # Status flag + recorded/checked-out commit + path. The trailing
+    # `(git describe)` is dropped: it changes when tags are fetched.
+    git submodule status -- "$sub" 2>/dev/null | sed 's/ (.*)$//' \
+        || echo "nested-repo $sub $(git -C "$sub" rev-parse HEAD 2>/dev/null || echo none)"
     if [ -z "$(git -C "$sub" rev-parse --show-prefix 2>/dev/null || echo uninit)" ]; then
         echo "submodule-files $sub"
         (cd "$sub" && git ls-files "${ls_args[@]}" | hash_files)
