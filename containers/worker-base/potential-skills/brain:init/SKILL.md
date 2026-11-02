@@ -1,6 +1,6 @@
 ---
 name: brain:init
-description: Scaffold or finish setting up the per-project brain — a top-level orientation CLAUDE.md, evergreen/ and working/ table-of-contents stubs, a git repository, and the dream config. Non-destructive: only creates what is missing, never overwrites existing brain content. Use to initialize an empty brain, or one that isn't under git or has no dream config.
+description: Scaffold or finish setting up the per-project brain — a top-level orientation CLAUDE.md, reference/ and working/ table-of-contents stubs, a git repository, and the dream config. Non-destructive: only creates what is missing, never overwrites existing brain content. Use to initialize an empty brain, or one that isn't under git or has no dream config.
 ---
 
 # Brain Init
@@ -18,7 +18,7 @@ Target layout:
   .git/                <- the brain is its own git repository
   .gitignore
   CLAUDE.md            <- top-level orientation; links to the two ToCs below
-  evergreen/CLAUDE.md  <- ToC for durable knowledge (architecture, decisions, domain facts)
+  reference/CLAUDE.md  <- ToC for durable knowledge (architecture, decisions, domain facts)
   working/CLAUDE.md    <- ToC for in-progress/transient context (investigations, scratch)
   DREAM.md             <- configures /brain:dream, filled in by /brain:dream-init
 ```
@@ -29,13 +29,13 @@ Target layout:
 
 For each item below, first check whether it already exists. If it exists, **leave it untouched** and record it as "already present". If it is missing, create it and record it as "created".
 
-1. **Directories**: ensure `<brain>/`, `<brain>/evergreen/` and `<brain>/working/` exist (create only if missing).
+1. **Directories**: ensure `<brain>/`, `<brain>/reference/` and `<brain>/working/` exist (create only if missing).
 
 2. **`<brain>/CLAUDE.md`** (only if missing) — top-level orientation. Write a short intro explaining that this is the project's brain (user-managed context, mounted at `/brain` in workers), followed by one-line pointers to the two sub-indexes:
-   - `evergreen/CLAUDE.md` — durable, long-lived knowledge (architecture, decisions, domain facts).
+   - `reference/CLAUDE.md` — durable, long-lived knowledge (architecture, decisions, domain facts).
    - `working/CLAUDE.md` — transient, in-progress context (investigations, scratch notes).
 
-3. **`<brain>/evergreen/CLAUDE.md`** (only if missing) — a table-of-contents stub. Explain that `evergreen/` holds **durable, long-lived** knowledge, and that this file is an index following the one-line-pointer convention (one `- [Title](file.md) — one-line hook` per sibling file, added as content grows). Leave the index empty for now.
+3. **`<brain>/reference/CLAUDE.md`** (only if missing) — a table-of-contents stub. Explain that `reference/` holds **durable, long-lived** knowledge, and that this file is an index following the one-line-pointer convention (one `- [Title](file.md) — one-line hook` per sibling file, added as content grows). Leave the index empty for now.
 
 4. **`<brain>/working/CLAUDE.md`** (only if missing) — a table-of-contents stub. Explain that `working/` holds **transient, in-progress** context, and that this file is an index following the same one-line-pointer convention. Leave the index empty for now.
 
@@ -51,4 +51,4 @@ For each item below, first check whether it already exists. If it exists, **leav
 
 Report exactly what was **created** versus what was **already present**, per path, and the commit made.
 
-Then, if `<brain>/DREAM.md` has no folder table (it is the stub), run `/brain:dream-init` to fill it in. If that skill isn't installed here, say that dream config is still to do and that `/brain:dream-init` is available on the host and in manual workers. If `DREAM.md` is already configured, skip this and say so.
+Then, if `<brain>/DREAM.md` has no ```` ```toml ```` config block (it is the stub), run `/brain:dream-init` to fill it in. If that skill isn't installed here, say that dream config is still to do and that `/brain:dream-init` is available on the host and in manual workers. If `DREAM.md` is already configured, skip this and say so.
