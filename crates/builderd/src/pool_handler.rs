@@ -15,15 +15,16 @@ use ur_rpc::proto::builder_pool::{
     ScanSlotsResponse,
 };
 
+use crate::overlay::LocalOverlayManager;
+
 /// Handles BuilderPoolService RPCs: pool slot lifecycle (clone, reset, clean) and
 /// branch checkout. Runs natively on the host with direct filesystem and git access.
 #[derive(Clone)]
 pub struct BuilderPoolHandler {
     /// Host-side workspace root — pool lives at `<workspace>/pool/<project>/<slot>/`.
     pub workspace: PathBuf,
-    /// Host-side config directory — local overlay files live at
-    /// `<config_dir>/projects/<project>/local/`.
-    pub config_dir: PathBuf,
+    /// Installs local overlay files into slots and tracks their per-slot state.
+    pub overlays: LocalOverlayManager,
     /// Per-slot async mutexes that serialize concurrent RPC handlers on the same slot.
     /// Keyed by `"<project_key>/<slot_name>"`. The outer std::sync::Mutex is held only
     /// to look up or insert the per-slot Arc; it is never held across await points.
@@ -204,7 +205,7 @@ impl BuilderPoolHandler {
     /// reset --hard origin/master, clean -fdx, submodule update.
     ///
     /// Before fetching, clears any skip-worktree flags so that the subsequent
-    /// `reset --hard` can restore tracked files that were overlaid via `apply_local_files`.
+    /// `reset --hard` can restore tracked files that were overlaid by `LocalOverlayManager`.
     async fn reset_slot(&self, project_key: &str, slot_name: &str) -> Result<(), String> {
         let slot = self.slot_path(project_key, slot_name);
 
@@ -231,6 +232,10 @@ impl BuilderPoolHandler {
                 )
             })?;
         }
+
+        // Drop the overlay copy so a slot cleaned without re-applying (clean_slot) is not
+        // handed overlays by the next bracketed git command.
+        self.overlays.discard(&slot)?;
 
         self.git(&["fetch", "--no-tags", "origin"], &slot)
             .await
@@ -292,7 +297,7 @@ impl BuilderPoolHandler {
                 .await?;
         }
 
-        self.apply_local_files(&req.project_key, &slot).await?;
+        self.overlays.apply(&req.project_key, &slot).await?;
 
         Ok(slot.display().to_string())
     }
@@ -369,150 +374,6 @@ impl BuilderPoolHandler {
             );
         }
     }
-
-    /// Copy local overlay files from `<config_dir>/projects/<project>/local/` into the slot,
-    /// then set `skip-worktree` on any overlaid paths that are tracked by git.
-    ///
-    /// Tracked files with `skip-worktree` set will appear clean in `git status` even though
-    /// their content differs from HEAD, preventing them from being wiped by `git reset --hard`.
-    /// Untracked overlays (e.g., `.cargo/config.toml`) are left alone — they are removed by
-    /// `git clean -fdx` on reset and re-copied on the next apply.
-    ///
-    /// No-op if the source directory does not exist.
-    async fn apply_local_files(&self, project_key: &str, slot: &Path) -> Result<(), String> {
-        let source = self
-            .config_dir
-            .join("projects")
-            .join(project_key)
-            .join("local");
-
-        if !source.is_dir() {
-            return Ok(());
-        }
-
-        info!(
-            project_key,
-            source = %source.display(),
-            slot = %slot.display(),
-            "applying local overlay files"
-        );
-
-        // Collect all destination paths (relative to slot) during the copy.
-        let mut copied_rel_paths: Vec<String> = Vec::new();
-        copy_dir_recursive_collecting(&source, slot, slot, &mut copied_rel_paths)?;
-
-        info!(
-            project_key,
-            count = copied_rel_paths.len(),
-            files = ?copied_rel_paths,
-            "copied local overlay files"
-        );
-
-        // For each copied file, check if it is tracked. If so, set skip-worktree so that
-        // git status reports a clean working tree despite the overlay.
-        for rel_path in &copied_rel_paths {
-            self.pin_if_tracked(rel_path, slot).await?;
-        }
-
-        Ok(())
-    }
-
-    /// If `rel_path` is tracked in the git index of `slot`, set `skip-worktree` on it.
-    /// Untracked files are silently skipped.
-    async fn pin_if_tracked(&self, rel_path: &str, slot: &Path) -> Result<(), String> {
-        let tracked = self
-            .git_output(&["ls-files", "--error-unmatch", "--", rel_path], slot)
-            .await;
-        if tracked.is_ok() {
-            info!(rel_path, slot = %slot.display(), "setting skip-worktree on tracked overlay");
-            self.git(&["update-index", "--skip-worktree", "--", rel_path], slot)
-                .await
-                .map_err(|e| {
-                    format!(
-                        "git update-index --skip-worktree failed for {rel_path} in {}: {e}",
-                        slot.display()
-                    )
-                })?;
-        }
-        Ok(())
-    }
-}
-
-/// Recursively copy all files and directories from `src` into `dst`,
-/// collecting the relative paths of copied files (relative to `root_dst`) into `collected`.
-/// Creates intermediate directories as needed; overwrites existing files.
-///
-/// When a destination path is a symlink, the symlink is removed first and the overlay
-/// replaces it with a regular file. The symlink target path is also recorded in `collected`
-/// so the caller can pin both paths with skip-worktree.
-fn copy_dir_recursive_collecting(
-    src: &Path,
-    dst: &Path,
-    root_dst: &Path,
-    collected: &mut Vec<String>,
-) -> Result<(), String> {
-    let entries = std::fs::read_dir(src)
-        .map_err(|e| format!("failed to read directory {}: {e}", src.display()))?;
-
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("failed to read entry in {}: {e}", src.display()))?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-
-        if src_path.is_dir() {
-            std::fs::create_dir_all(&dst_path)
-                .map_err(|e| format!("failed to create directory {}: {e}", dst_path.display()))?;
-            copy_dir_recursive_collecting(&src_path, &dst_path, root_dst, collected)?;
-        } else {
-            replace_symlink_collecting(&dst_path, dst, root_dst, collected)?;
-            copy_file(&src_path, &dst_path)?;
-            if let Ok(rel) = dst_path.strip_prefix(root_dst) {
-                collected.push(rel.display().to_string());
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// If `dst_path` is a symlink, record its target in `collected` (so the caller can
-/// pin it with skip-worktree) and remove the symlink so the subsequent copy creates
-/// a regular file instead of writing through the link.
-fn replace_symlink_collecting(
-    dst_path: &Path,
-    parent_dir: &Path,
-    root_dst: &Path,
-    collected: &mut Vec<String>,
-) -> Result<(), String> {
-    let is_symlink = std::fs::symlink_metadata(dst_path)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false);
-    if !is_symlink {
-        return Ok(());
-    }
-    if let Ok(target) = std::fs::read_link(dst_path) {
-        let target_abs = dst_path.parent().unwrap_or(parent_dir).join(&target);
-        if let Ok(rel) = target_abs.strip_prefix(root_dst) {
-            collected.push(rel.display().to_string());
-        }
-    }
-    std::fs::remove_file(dst_path)
-        .map_err(|e| format!("failed to remove symlink {}: {e}", dst_path.display()))
-}
-
-/// Copy a single file, creating parent directories as needed.
-fn copy_file(src: &Path, dst: &Path) -> Result<(), String> {
-    if let Some(parent) = dst.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            format!(
-                "failed to create parent directory {}: {e}",
-                parent.display()
-            )
-        })?;
-    }
-    std::fs::copy(src, dst)
-        .map_err(|e| format!("failed to copy {} to {}: {e}", src.display(), dst.display()))?;
-    Ok(())
 }
 
 /// Map an internal `String` error to a gRPC `Internal` status.
@@ -551,12 +412,13 @@ impl BuilderPoolService for BuilderPoolHandler {
             .await
             .map_err(internal)?;
 
-        self.apply_local_files(
-            &req.project_key,
-            &self.slot_path(&req.project_key, &req.slot_name),
-        )
-        .await
-        .map_err(internal)?;
+        self.overlays
+            .apply(
+                &req.project_key,
+                &self.slot_path(&req.project_key, &req.slot_name),
+            )
+            .await
+            .map_err(internal)?;
 
         let host_path = self
             .slot_path(&req.project_key, &req.slot_name)
@@ -694,7 +556,11 @@ mod tests {
     fn make_handler(tmp: &Path) -> BuilderPoolHandler {
         BuilderPoolHandler {
             workspace: tmp.join("workspace"),
-            config_dir: tmp.join("config"),
+            overlays: LocalOverlayManager {
+                workspace: tmp.join("workspace"),
+                config_dir: tmp.join("config"),
+                active: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            },
             slot_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
@@ -732,7 +598,7 @@ mod tests {
         let h = make_handler(tmp.path());
         let slot = tmp.path().join("slot");
         std::fs::create_dir_all(&slot).unwrap();
-        assert!(h.apply_local_files("proj", &slot).await.is_ok());
+        assert!(h.overlays.apply("proj", &slot).await.is_ok());
     }
 
     #[tokio::test]
@@ -741,7 +607,12 @@ mod tests {
         let h = make_handler(tmp.path());
 
         // Create source local directory.
-        let src = h.config_dir.join("projects").join("proj").join("local");
+        let src = h
+            .overlays
+            .config_dir
+            .join("projects")
+            .join("proj")
+            .join("local");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("hello.txt"), "world").unwrap();
         let nested_dir = src.join("sub");
@@ -752,7 +623,7 @@ mod tests {
         let slot = tmp.path().join("slot");
         std::fs::create_dir_all(&slot).unwrap();
 
-        h.apply_local_files("proj", &slot).await.unwrap();
+        h.overlays.apply("proj", &slot).await.unwrap();
 
         assert_eq!(
             std::fs::read_to_string(slot.join("hello.txt")).unwrap(),
@@ -1026,7 +897,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let h = make_handler(tmp.path());
 
-        let src = h.config_dir.join("projects").join("proj").join("local");
+        let src = h
+            .overlays
+            .config_dir
+            .join("projects")
+            .join("proj")
+            .join("local");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("config.txt"), "new-value").unwrap();
 
@@ -1034,7 +910,7 @@ mod tests {
         std::fs::create_dir_all(&slot).unwrap();
         std::fs::write(slot.join("config.txt"), "old-value").unwrap();
 
-        h.apply_local_files("proj", &slot).await.unwrap();
+        h.overlays.apply("proj", &slot).await.unwrap();
         assert_eq!(
             std::fs::read_to_string(slot.join("config.txt")).unwrap(),
             "new-value"
@@ -1051,7 +927,12 @@ mod tests {
         let repo_url = bare.display().to_string();
 
         // Create a local overlay file.
-        let src = h.config_dir.join("projects").join("proj").join("local");
+        let src = h
+            .overlays
+            .config_dir
+            .join("projects")
+            .join("proj")
+            .join("local");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("overlay.txt"), "from-local").unwrap();
 
@@ -1085,7 +966,12 @@ mod tests {
         std::fs::write(slot.join("untracked.txt"), "garbage").unwrap();
 
         // Set up local overlay.
-        let src = h.config_dir.join("projects").join("proj").join("local");
+        let src = h
+            .overlays
+            .config_dir
+            .join("projects")
+            .join("proj")
+            .join("local");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("local.txt"), "local-content").unwrap();
 
@@ -1168,7 +1054,12 @@ mod tests {
         std::fs::write(slot.join("junk.txt"), "junk").unwrap();
 
         // Set up local overlay — it should NOT be applied by clean_slot.
-        let src = h.config_dir.join("projects").join("proj").join("local");
+        let src = h
+            .overlays
+            .config_dir
+            .join("projects")
+            .join("proj")
+            .join("local");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("local.txt"), "should-not-appear").unwrap();
 
@@ -1186,26 +1077,6 @@ mod tests {
             !slot.join("local.txt").exists(),
             "local overlay must NOT be applied by clean_slot"
         );
-    }
-
-    // ── copy_dir_recursive_collecting ─────────────────────────────────────────
-
-    #[test]
-    fn copy_dir_recursive_nested() {
-        let tmp = tempfile::tempdir().unwrap();
-        let src = tmp.path().join("src");
-        let dst = tmp.path().join("dst");
-        std::fs::create_dir_all(src.join("a").join("b")).unwrap();
-        std::fs::write(src.join("a").join("b").join("f.txt"), "deep").unwrap();
-        std::fs::create_dir_all(&dst).unwrap();
-
-        let mut collected = Vec::new();
-        copy_dir_recursive_collecting(&src, &dst, &dst, &mut collected).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(dst.join("a").join("b").join("f.txt")).unwrap(),
-            "deep"
-        );
-        assert_eq!(collected, vec!["a/b/f.txt"]);
     }
 
     // ── skip-worktree tests ───────────────────────────────────────────────────
@@ -1244,11 +1115,16 @@ mod tests {
         let slot = h.slot_path("proj", "0");
 
         // Overlay README.md — a tracked file in the repo.
-        let src = h.config_dir.join("projects").join("proj").join("local");
+        let src = h
+            .overlays
+            .config_dir
+            .join("projects")
+            .join("proj")
+            .join("local");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("README.md"), "overlay content").unwrap();
 
-        h.apply_local_files("proj", &slot).await.unwrap();
+        h.overlays.apply("proj", &slot).await.unwrap();
 
         assert_eq!(
             std::fs::read_to_string(slot.join("README.md")).unwrap(),
@@ -1285,11 +1161,16 @@ mod tests {
         let slot = h.slot_path("proj", "0");
 
         // Overlay an untracked file (not in the repo).
-        let src = h.config_dir.join("projects").join("proj").join("local");
+        let src = h
+            .overlays
+            .config_dir
+            .join("projects")
+            .join("proj")
+            .join("local");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("untracked-overlay.txt"), "new file").unwrap();
 
-        h.apply_local_files("proj", &slot).await.unwrap();
+        h.overlays.apply("proj", &slot).await.unwrap();
 
         assert!(
             slot.join("untracked-overlay.txt").exists(),
@@ -1348,7 +1229,12 @@ mod tests {
         h.clone_slot("proj", "0", &repo_url).await.unwrap();
 
         // Set up local overlay for a tracked file.
-        let src = h.config_dir.join("projects").join("proj").join("local");
+        let src = h
+            .overlays
+            .config_dir
+            .join("projects")
+            .join("proj")
+            .join("local");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("README.md"), "overlay-recycle").unwrap();
 
@@ -1452,11 +1338,16 @@ mod tests {
         );
 
         // Overlay CLAUDE.md with a regular file.
-        let src = h.config_dir.join("projects").join("proj").join("local");
+        let src = h
+            .overlays
+            .config_dir
+            .join("projects")
+            .join("proj")
+            .join("local");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("CLAUDE.md"), "overlay content").unwrap();
 
-        h.apply_local_files("proj", &slot).await.unwrap();
+        h.overlays.apply("proj", &slot).await.unwrap();
 
         // The symlink should be replaced with a regular file.
         let meta = std::fs::symlink_metadata(slot.join("CLAUDE.md")).unwrap();
@@ -1510,7 +1401,12 @@ mod tests {
         let slot = h.slot_path("proj", "0");
 
         // First recycle: overlay README.md.
-        let src = h.config_dir.join("projects").join("proj").join("local");
+        let src = h
+            .overlays
+            .config_dir
+            .join("projects")
+            .join("proj")
+            .join("local");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("README.md"), "overlay-first").unwrap();
 
