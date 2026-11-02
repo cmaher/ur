@@ -297,7 +297,7 @@ Every pool slot acquired for the `ur` project will have `.cargo/config.toml` cop
 
 ### Overriding Tracked Files (e.g., CLAUDE.md)
 
-The same `local/` overlay mechanism works for **tracked** files that already exist in the repository (e.g., `CLAUDE.md`, `.cargo/config.toml` if it is committed). After copying, `apply_local_files()` runs:
+The same `local/` overlay mechanism works for **tracked** files that already exist in the repository (e.g., `CLAUDE.md`, `.cargo/config.toml` if it is committed). After copying, `LocalOverlayManager::apply()` runs:
 
 ```
 git update-index --skip-worktree <file>
@@ -311,7 +311,30 @@ for every file that was placed on top of a tracked path. `--skip-worktree` tells
 
 - `git status` is clean — the override is invisible.
 - `git add .`, `git commit -a`, and `git push` cannot include the overridden content.
+- `git checkout`, `switch`, `rebase`, `merge`, `pull` and `stash` are never blocked by an override, even when the target commit changes the overridden path (see [Hiding Overlays from Git](#hiding-overlays-from-git)).
 - Workers operate as if the file came from the repo, but Claude Code reads the host-supplied version.
+
+### Hiding Overlays from Git
+
+`skip-worktree` alone is not enough: git refuses to rewrite a skip-worktree path, so `git checkout <branch>` fails with "local changes would be overwritten" whenever the branch has a different version of an overridden file, and untracked overlays (e.g. `.cargo/config.toml`) still show up in `git status`. builderd therefore brackets every worker git command run in an overlaid pool slot so git never sees the overlays at all.
+
+`LocalOverlayManager` (`crates/builderd/src/overlay.rs`) keeps the slot's overlay state under `<slot>/.git/ur-overlay/` (outside the working tree, untouched by `git clean`):
+
+- `files/` — a copy of every overlay file at its slot-relative path
+- `pinned` — the tracked paths pinned with `skip-worktree` on the last reveal (including symlink targets)
+
+When builderd's `Exec` runs a short-lived `git` or `gh` command (`OVERLAY_BRACKETED_COMMANDS`) whose working dir is inside `<workspace>/pool/<project>/<slot>/` and that slot has overlay state:
+
+1. **Conceal** (first concurrent command in the slot only — a per-slot counter makes overlapping commands share one conceal):
+   a. Copy each overlay's current working-tree content back into `files/`, so worker edits to an overlay persist
+   b. `git update-index --no-skip-worktree` on the `pinned` paths
+   c. Remove untracked overlays; `git checkout -- <tracked overlays>` restores the index version (and restores symlinks the overlay replaced)
+2. Spawn the command; git sees a working tree identical to the repo
+3. **Reveal** (last concurrent command only) before the exit-code frame is forwarded: copy `files/` back into the working tree and re-pin tracked paths with `skip-worktree`
+
+A conceal failure fails the command with `FailedPrecondition` (after a best-effort reveal); a reveal failure replaces the exit-code frame with an `Internal` status, so both surface to the worker. builderd keeps draining the child's output after a caller disconnects, so overlays come back only once the command has actually exited.
+
+Consequence: anything the git command runs in the slot — including pre-commit and pre-push hooks — sees the repo version of overridden files, not the override. `skip-worktree` is kept for git invoked outside the bracket (e.g. by hand on the host in a slot).
 
 **CLAUDE.md example:**
 
@@ -323,7 +346,7 @@ Drop a project-specific CLAUDE.md at:
 
 Workers on that project will read your local CLAUDE.md instead of the repo's version, with no `ur.toml` change required and no risk of accidentally committing the override.
 
-**Reverting:** Removing the file from `local/` reverts the slot's working copy to repo HEAD on the next recycle. `reset_slot()` clears all `skip-worktree` bits before resetting, so `git reset --hard` and `git clean -fdx` operate normally.
+**Reverting:** Removing the file from `local/` reverts the slot's working copy to repo HEAD on the next recycle. `reset_slot()` clears all `skip-worktree` bits and discards `.git/ur-overlay/` before resetting, so `git reset --hard` and `git clean -fdx` operate normally and a slot cleaned by `CleanSlot` gets no overlays back.
 
 **Pool mode only.** This mechanism is exclusive to pool slots. Workers launched with `-w` (workspace mode) mount the caller's working directory directly and do not use the `local/` overlay.
 
@@ -332,26 +355,27 @@ Workers on that project will read your local CLAUDE.md instead of the repo's ver
 The copy runs **after** clone/reset and **before** container launch:
 
 1. `acquire_slot()` clones or resets the slot (via builderd)
-2. `apply_local_files()` runs against `<config_dir>/projects/<key>/local/`:
-   a. If the destination is a symlink, record the symlink target and remove the symlink
-   b. Copy the overlay file into the slot workspace (overwrites existing content)
-   c. If the file (or former symlink target) is tracked by git, run `git update-index --skip-worktree <file>` so the override is invisible to git
+2. `LocalOverlayManager::apply()` runs against `<config_dir>/projects/<key>/local/`:
+   a. Replace the slot's overlay state: copy `local/` into `<slot>/.git/ur-overlay/files/`
+   b. Reveal: if a destination is a symlink, record the symlink target and remove the symlink
+   c. Copy each overlay file into the slot workspace (overwrites existing content)
+   d. If the file (or former symlink target) is tracked by git, run `git update-index --skip-worktree <file>` and record it in `.git/ur-overlay/pinned`
 3. Worker branch checkout (`git checkout -b <worker_id>`)
 4. Container launched with the slot as `/workspace`
 
-On slot release, `reset_slot()` first clears all `skip-worktree` bits (`git update-index --no-skip-worktree`) so that `git reset --hard origin/master` and `git clean -fdx` can restore every file to repo HEAD. Local files are re-copied on the next acquire.
+On slot release, `reset_slot()` first clears all `skip-worktree` bits (`git update-index --no-skip-worktree`) and discards `.git/ur-overlay/` so that `git reset --hard origin/master` and `git clean -fdx` can restore every file to repo HEAD. Local files are re-copied on the next acquire.
 
 ### Error Behavior
 
 - **Missing directory**: If `<config_dir>/projects/<key>/local/` does not exist or is empty, the copy step is a **no-op** (no error).
-- **Copy failure**: If the directory exists but a copy operation fails (e.g., permission error, disk full), the error **propagates from `apply_local_files()`** and surfaces to the CLI as an acquire error. The slot is not handed out.
-- **`git update-index` failure**: If `git update-index --skip-worktree` fails for a file (e.g., the git index is corrupt, or the file path is malformed), the error propagates from `apply_local_files()` and the slot is not acquired. This prevents a worker from launching in a state where the override would be accidentally staged or committed.
+- **Copy failure**: If the directory exists but a copy operation fails (e.g., permission error, disk full), the error **propagates from `LocalOverlayManager::apply()`** and surfaces to the CLI as an acquire error. The slot is not handed out.
+- **`git update-index` failure**: If `git update-index --skip-worktree` fails for a file (e.g., the git index is corrupt, or the file path is malformed), the error propagates from `LocalOverlayManager::apply()` and the slot is not acquired. This prevents a worker from launching in a state where the override would be accidentally staged or committed.
 
 ### Implementation
 
 Builderd-side copy using `std::fs` and `git update-index`. Builderd runs natively on the host with direct access to both the config directory and pool slot directories, making it the right place for filesystem and git operations on pool slots.
 
-Source: `apply_local_files()` in `crates/builderd/src/pool_handler.rs`
+Source: `LocalOverlayManager` in `crates/builderd/src/overlay.rs` (called from `crates/builderd/src/pool_handler.rs`; git bracketing from `crates/builderd/src/handler.rs`)
 
 ## Full Flow (Updated)
 
@@ -365,17 +389,19 @@ BuilderPoolHandler::recycle_slot() / prepare_new_slot()   [builderd/src/pool_han
   │       (git update-index --no-skip-worktree on all tracked local-overlay paths)
   │       so reset --hard and clean -fdx restore repo HEAD cleanly
   │
-  ├─ apply_local_files()              ← convention-based copy + skip-worktree
+  ├─ LocalOverlayManager::apply()     ← convention-based copy + skip-worktree
   │   │
   │   ├─ Reads <config_dir>/projects/<key>/local/
   │   │   └─ If missing or empty → no-op, return Ok
+  │   │
+  │   ├─ Copies it to <slot>/.git/ur-overlay/files/ (used by the git bracket)
   │   │
   │   ├─ Recursively copies files into slot workspace
   │   │   ├─ If destination is a symlink → record target, remove symlink
   │   │   └─ Copy overlay file (local file wins)
   │   │
   │   ├─ For each copied file (and former symlink targets) tracked by git:
-  │   │   └─ git update-index --skip-worktree <file>
+  │   │   └─ git update-index --skip-worktree <file>  (recorded in .git/ur-overlay/pinned)
   │   │       (override invisible to git status, add, commit, push)
   │   │
   │   └─ On copy or git update-index failure → Err propagates, slot not acquired
@@ -384,4 +410,9 @@ BuilderPoolHandler::recycle_slot() / prepare_new_slot()   [builderd/src/pool_han
   │
   ▼
 Slot returned to server → container launch with /workspace mount
+
+Worker `git`/`gh` via hostexec → builderd Exec            [builderd/src/handler.rs]
+  ├─ conceal_for(working_dir)   ← restore repo versions, remove untracked overlays
+  ├─ run command                ← git sees a clean repo working tree
+  └─ reveal_after(lease)        ← overlays back + re-pinned, then exit code forwarded
 ```

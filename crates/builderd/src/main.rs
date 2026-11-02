@@ -12,6 +12,7 @@ use ur_rpc::proto::builder_pool::builder_pool_service_server::BuilderPoolService
 mod container_handler;
 mod handler;
 mod logging;
+mod overlay;
 mod pool_handler;
 mod registry;
 
@@ -68,15 +69,21 @@ async fn main() -> anyhow::Result<()> {
         .workspace
         .clone()
         .unwrap_or_else(|| config_dir.join("workspace"));
+    let overlays = overlay::LocalOverlayManager {
+        workspace: pool_workspace.clone(),
+        config_dir: config_dir.clone(),
+        active: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+    };
     let pool_handler = pool_handler::BuilderPoolHandler {
         workspace: pool_workspace,
-        config_dir: config_dir.clone(),
+        overlays: overlays.clone(),
         slot_locks: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
     let handler = handler::BuilderDaemonHandler {
         workspace: cli.workspace,
         registry,
+        overlays,
     };
 
     let container_handler = container_handler::BuilderContainerHandler::new();
