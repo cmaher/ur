@@ -31,12 +31,15 @@ images_present() {
 # Fail fast rather than hashing, locking and building against a dead daemon.
 docker info >/dev/null 2>&1 || { echo "acceptance-ci: docker unreachable" >&2; exit 1; }
 
-mkdir -p "$(dirname "$LOCK")"
+mkdir -p "$LOCKS_DIR"
 acquire_lock
 trap release_lock EXIT
+# From here on fd 9 holds the lock (scripts/build/ci-lock.sh). Every child that
+# can outlive this script (builds, the acceptance suite and anything it starts)
+# runs with `9>&-`, so a leftover process never keeps the lock held.
 
 # Hash under the lock, so the tag names the sources this run actually builds.
-TAG="ci-$(scripts/build/image-hash.sh)"
+TAG="ci-$(scripts/build/image-hash.sh 9>&-)"
 # Log the hash before building: a concurrent pruner sharing this log then sees
 # it as the newest entry and keeps it, instead of deleting a build in progress.
 record_ci_tag_use "${TAG#ci-}"
@@ -46,12 +49,12 @@ if [ -z "${UR_UPDATE_AGENT:-}" ] && [ "${UR_FORCE_REBUILD_BASE:-}" != "1" ] && i
     echo "=== Images for tag=$TAG already built; skipping build ==="
 else
     echo "=== Building images with tag=$TAG ==="
-    scripts/build/stage.sh
-    UR_IMAGE_TAG="$TAG" scripts/build/image.sh
+    scripts/build/stage.sh 9>&-
+    UR_IMAGE_TAG="$TAG" scripts/build/image.sh 9>&-
     # A source edit during the build would leave images tagged with a hash
     # they do not match; a later push with those sources would then skip the
     # build and test stale images. Drop them and fail instead.
-    rebuilt_tag="ci-$(scripts/build/image-hash.sh)" || {
+    rebuilt_tag="ci-$(scripts/build/image-hash.sh 9>&-)" || {
         remove_ci_tag "${TAG#ci-}"
         echo "acceptance-ci: could not re-hash sources after the build; dropped unverified $TAG images" >&2
         exit 1
@@ -65,4 +68,4 @@ fi
 prune_old_ci_tags
 
 echo "=== Running acceptance tests with tag=$TAG ==="
-UR_IMAGE_TAG="$TAG" cargo test -p acceptance --features acceptance
+UR_IMAGE_TAG="$TAG" cargo test -p acceptance --features acceptance 9>&-

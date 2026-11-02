@@ -1,75 +1,102 @@
 #!/usr/bin/env bash
 
 # Mutex for scripts/acceptance-ci.sh: only one image build + acceptance run at a
-# time per UR_CONFIG. Sourced; defines LOCK, acquire_lock, release_lock.
+# time per UR_CONFIG. Sourced; defines acquire_lock and release_lock and uses
+# file descriptor 9. Needs perl (for flock).
 #
-# The lock is a symlink whose target is `<pid>:<branch>`. symlink(2) creates it
-# atomically and only if nothing is there, so the lock and its owner's pid
-# appear in ONE step: there is no window in which a lock exists without a pid
-# for another waiter to misjudge as stale. (A directory + pid file needs two
-# steps, and a waiter can delete a live lock in between.)
+# The lock is a kernel flock(LOCK_EX) on $LOCK_FILE. The shell opens the file on
+# fd 9 and a one-shot perl takes the flock on that inherited fd. A flock belongs
+# to the open file description, which the shell keeps after perl exits, so the
+# lock is held until the shell exits, and the kernel releases it if the shell
+# dies (even on SIGKILL). There is no stale-lock detection or takeover to get
+# wrong. Any child that also inherits fd 9 keeps the lock alive while it runs,
+# so long-lived children must be started with `9>&-`.
 #
-# Stale locks (owner pid not running) are taken over with an atomic rename of
-# the symlink, so when several waiters see the same stale lock only one wins.
-#
-# Optional: UR_LOCK_POLL_SECS (default 10) between checks while waiting.
+# Optional: UR_LOCK_POLL_SECS (default 10) between attempts while waiting.
 
-LOCK="${UR_CONFIG:-$HOME/.ur}/locks/pre-push.lock"
+LOCKS_DIR="${UR_CONFIG:-$HOME/.ur}/locks"
+LOCK_FILE="$LOCKS_DIR/pre-push.flock"
+# `<pid>:<branch>` of the current holder, for the waiting message only.
+LOCK_HOLDER="$LOCKS_DIR/pre-push.holder"
 
-# Remove the lock only if we still own it: after a stale takeover, a slow
-# previous holder must not delete the new holder's lock on exit.
-release_lock() {
-    local target
-    target=$(readlink "$LOCK" 2>/dev/null) || return 0
-    if [ "${target%%:*}" = "$$" ]; then
-        rm -f "$LOCK"
-    fi
-}
-
-# Take over a stale lock whose target the caller read as $1. Only one waiter's
-# rename succeeds; the others find nothing to move and retry. If the lock was
-# replaced between the caller's read and the rename, we moved a LIVE lock: put
-# an identical one back (ln is create-if-absent, so this never clobbers).
-take_over_stale_lock() {
-    local observed="$1" moved="$LOCK.stale.$$" found
-    mv "$LOCK" "$moved" 2>/dev/null || return 0
-    found=$(readlink "$moved" 2>/dev/null || true)
-    if [ "$found" != "$observed" ]; then
-        ln -sn "$found" "$LOCK" 2>/dev/null \
-            || echo "acceptance-ci: live lock ($found) was displaced during stale-lock takeover" >&2
-    fi
-    rm -f "$moved"
+# One non-blocking attempt on fd 9: 0 = acquired, 1 = held by someone else,
+# anything else = error.
+try_flock() {
+    perl -MFcntl=:flock -e 'open(my $fh, ">&=", 9) or die "flock: fd 9: $!\n";
+                            flock($fh, LOCK_NB | LOCK_EX) and exit 0;
+                            $!{EWOULDBLOCK} and exit 1; die "flock: $!\n"'
 }
 
 acquire_lock() {
-    local mine="$$:${UR_PUSH_BRANCH:-?}" err target pid retried=""
-    if [ -d "$LOCK" ] && [ ! -L "$LOCK" ]; then
-        # ln would create the link INSIDE a directory and appear to succeed.
-        echo "acceptance-ci: $LOCK is a directory, not a lock; remove it" >&2
+    local rc holder
+    if ! (: >> "$LOCK_FILE") 2>/dev/null; then
+        echo "acceptance-ci: cannot open lock file $LOCK_FILE (is $LOCKS_DIR writable?)" >&2
         exit 1
     fi
+    exec 9>>"$LOCK_FILE"
     while true; do
-        if err=$(ln -sn "$mine" "$LOCK" 2>&1); then
-            return 0
+        if try_flock; then
+            break
+        else
+            rc=$?
         fi
-        if ! target=$(readlink "$LOCK" 2>/dev/null); then
-            # Nothing to wait for. Either the holder released between our ln
-            # and readlink (retry once), or ln cannot work here (permissions,
-            # read-only fs, a non-symlink in the way), which waiting never fixes.
-            if [ -z "$retried" ] && [ ! -e "$LOCK" ]; then
-                retried=1
-                continue
-            fi
-            echo "acceptance-ci: cannot create lock $LOCK: $err" >&2
+        if [ "$rc" -ne 1 ]; then
+            echo "acceptance-ci: cannot lock $LOCK_FILE" >&2
             exit 1
         fi
-        retried=""
-        pid="${target%%:*}"
-        if ! kill -0 "$pid" 2>/dev/null; then
-            take_over_stale_lock "$target"
+        holder=$(cat "$LOCK_HOLDER" 2>/dev/null || echo '?:?')
+        echo "acceptance-ci: waiting for lock (PID ${holder%%:*}, branch ${holder#*:})..."
+        sleep "${UR_LOCK_POLL_SECS:-10}" 9>&-
+    done
+    echo "$$:${UR_PUSH_BRANCH:-?}" > "$LOCK_HOLDER" 2>/dev/null || true
+    acquire_legacy_lock
+}
+
+release_lock() {
+    release_legacy_lock
+    if [ "$(cat "$LOCK_HOLDER" 2>/dev/null || true)" = "$$:${UR_PUSH_BRANCH:-?}" ]; then
+        rm -f "$LOCK_HOLDER"
+    fi
+    exec 9>&-
+}
+
+# --- LEGACY compat: remove once no branch runs a pre-flock acceptance-ci.sh ---
+# Older scripts (master before ur-1pijn) lock the DIRECTORY locks/pre-push with
+# a `pid` file inside and take it over when `kill -0 <pid>` fails. While holding
+# the flock we also hold that directory, so old and new scripts exclude each
+# other. Only old scripts can contend for it here (new ones are serialized by
+# the flock), and they see our live pid and wait.
+LEGACY_LOCK="$LOCKS_DIR/pre-push"
+
+acquire_legacy_lock() {
+    local pid
+    while ! mkdir "$LEGACY_LOCK" 2>/dev/null; do
+        if [ ! -d "$LEGACY_LOCK" ]; then
+            echo "acceptance-ci: cannot create legacy lock $LEGACY_LOCK" >&2
+            exit 1
+        fi
+        pid=$(cat "$LEGACY_LOCK/pid" 2>/dev/null || true)
+        if [ -z "$pid" ]; then
+            # An old script writes its pid right after mkdir: give it a moment.
+            sleep 1 9>&-
+            pid=$(cat "$LEGACY_LOCK/pid" 2>/dev/null || true)
+        fi
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            echo "acceptance-ci: waiting for lock held by an older acceptance-ci (PID $pid)..."
+            sleep "${UR_LOCK_POLL_SECS:-10}" 9>&-
             continue
         fi
-        echo "acceptance-ci: waiting for lock (PID $pid, branch ${target#*:})..."
-        sleep "${UR_LOCK_POLL_SECS:-10}"
+        rm -rf "$LEGACY_LOCK"
     done
+    echo $$ > "$LEGACY_LOCK/pid"
+    if [ -n "${UR_PUSH_BRANCH:-}" ]; then
+        echo "$UR_PUSH_BRANCH" > "$LEGACY_LOCK/branch"
+    fi
 }
+
+release_legacy_lock() {
+    if [ "$(cat "$LEGACY_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
+        rm -rf "$LEGACY_LOCK"
+    fi
+}
+# --- end LEGACY compat ---

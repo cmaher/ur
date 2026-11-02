@@ -31,7 +31,6 @@ STEP_TIMEOUT="${UR_CI_TEST_STEP_TIMEOUT:-120}"
 unset $(git rev-parse --local-env-vars 2>/dev/null)
 
 if [ -x /usr/bin/git ]; then REAL_GIT=/usr/bin/git; else REAL_GIT=$(command -v git); fi
-REAL_LN=$(command -v ln)
 if command -v timeout >/dev/null 2>&1; then
     TO=(timeout "$STEP_TIMEOUT")
 else
@@ -87,12 +86,36 @@ echo "cargo $* TAG=${UR_IMAGE_TAG:-} GIT_DIR=${GIT_DIR:-}" >> "$DSTATE/cargo-cal
 case "$1" in
   -V) echo "cargo 1.90.0 (stub)" ;;
   metadata) echo "{\"packages\":[],\"workspace_root\":\"$PWD\",\"version\":1}" ;;
-  tree) [ -n "${CARGO_TREE_FAIL:-}" ] && exit 101
+  tree) # Like the real one: prints the closure of each -p only, and refuses
+        # edge kinds / targets other than the ones image-hash.sh must pass.
+        [ -n "${CARGO_TREE_FAIL:-}" ] && exit 101
         [ -n "${CARGO_TREE_EMPTY:-}" ] && exit 0
-        echo "ur-server v0.1.0 ($PWD/crates/server)"
-        echo "tokio v1.0.0"
-        echo "workerd v0.1.0 ($PWD/crates/workerd)" ;;
+        shift; pkgs=""; edges=""; target=""
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -p) pkgs="$pkgs $2"; shift ;;
+            -e) edges="$2"; shift ;;
+            --target) target="$2"; shift ;;
+            --format|--prefix) shift ;;
+            --quiet|--locked) ;;
+            *) echo "stub cargo tree: unexpected argument $1" >&2; exit 2 ;;
+          esac
+          shift
+        done
+        [ "$edges" = normal,build ] || { echo "stub cargo tree: unexpected -e '$edges'" >&2; exit 2; }
+        [ "$target" = all ] || { echo "stub cargo tree: unexpected --target '$target'" >&2; exit 2; }
+        for p in $pkgs; do
+          case "$p" in
+            ur-server) echo "ur-server v0.1.0 ($PWD/crates/server)"; echo "ur_utils v0.1.0 ($PWD/crates/ur_utils)"
+                       echo "tokio v1.0.0" ;;
+            workerd) echo "workerd v0.1.0 ($PWD/crates/workerd)"; echo "tmux v0.1.0 ($PWD/crates/tmux)" ;;
+            ur-workertools) echo "ur-workertools v0.1.0 ($PWD/crates/ur-workertools)"
+                            echo "ur_utils v0.1.0 ($PWD/crates/ur_utils)" ;;
+            *) echo "stub cargo tree: unknown package $p" >&2; exit 101 ;;
+          esac
+        done ;;
   zigbuild|build) [ -n "${CARGO_BUILD_FAIL:-}" ] && exit 101
+        if [ -n "${CARGO_BUILD_HOOK:-}" ]; then eval "$CARGO_BUILD_HOOK"; fi
         t=target/release; [ "$1" = zigbuild ] && t="target/$4/release"
         mkdir -p "$t"; for b in ur-server workerd ur-workertools; do echo "bin $b" > "$t/$b"; done ;;
   test) if [ -n "${CARGO_TEST_HOOK:-}" ]; then eval "$CARGO_TEST_HOOK"; fi; exit "${CARGO_TEST_RC:-0}" ;;
@@ -105,7 +128,7 @@ cat > "$STUBS/rustc" <<'EOF'
 #!/usr/bin/env bash
 echo "rustc ${RUSTC_VER:-1.90.0} (stub)"; echo "host: aarch64-apple-darwin"
 EOF
-# git / ln: pass through to the real tools unless a fault is injected.
+# git: pass through to the real git unless a fault is injected.
 cat > "$STUBS/git" <<EOF
 #!/usr/bin/env bash
 if [ "\${1:-}" = ls-files ]; then
@@ -116,17 +139,13 @@ if [ "\${1:-}" = ls-files ]; then
 fi
 exec "$REAL_GIT" "\$@"
 EOF
-cat > "$STUBS/ln" <<EOF
-#!/usr/bin/env bash
-if [ -n "\${LN_FAIL_ONCE:-}" ] && [ ! -e "\$DSTATE/ln-failed" ]; then
-  : > "\$DSTATE/ln-failed"; echo "ln: injected transient failure" >&2; exit 1
-fi
-exec "$REAL_LN" "\$@"
-EOF
 chmod +x "$STUBS"/*
 
 # ------------------------------------------------------------ fake repo ----
-G() { HOME="$SANDBOX_HOME" "$REAL_GIT" -c user.email=t@t -c user.name=t -c commit.gpgsign=false \
+# No global or system git config may reach the sandbox (signing, excludesFile,
+# hooksPath, ...): every git and script invocation gets GIT_ENV.
+GIT_ENV=(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
+G() { env HOME="$SANDBOX_HOME" "${GIT_ENV[@]}" "$REAL_GIT" -c user.email=t@t -c user.name=t -c commit.gpgsign=false \
         -c protocol.file.allow=always "$@"; }
 
 # One template repo, copied per test: crates (two in the image closure, one
@@ -140,11 +159,14 @@ make_template() {
         && G add . && G commit -qm s) || return 1
     cd "$T" || return 1
     G init -q
-    mkdir -p crates/server/src crates/workerd/src crates/unused proto scripts/build ur-hooks/git \
+    mkdir -p crates/server/src crates/workerd/src crates/ur-workertools/src crates/ur_utils crates/tmux \
+        crates/unused proto scripts/build ur-hooks/git \
         containers/server containers/worker-base containers/worker-claude containers/worker-codex \
         containers/worker-agy containers/squid docs
     echo '[workspace]' > Cargo.toml; echo lock > Cargo.lock
     echo 'fn main(){}' > crates/server/src/main.rs; echo 'fn main(){}' > crates/workerd/src/main.rs
+    echo 'fn main(){}' > crates/ur-workertools/src/main.rs; echo u > crates/ur_utils/lib.rs
+    echo t > crates/tmux/lib.rs
     echo x > crates/unused/lib.rs; echo 'syntax="proto3";' > proto/a.proto; echo doc > docs/a.md
     # Names whose order differs between C and UTF-8 collation (t_hash_locale).
     echo a > containers/server/a; echo B > containers/server/B
@@ -168,21 +190,24 @@ make_template() {
 R="$S/repo"
 DSTATE="$S/dstate"
 CFG="$S/urcfg"
-LOCK_PATH="$CFG/locks/pre-push.lock"
+LOCKS="$CFG/locks"
 reset_state() {
     chmod -R u+w "$R" "$CFG" 2>/dev/null
-    rm -rf "$R" "$DSTATE" "$CFG"
-    cp -R "$S/template" "$R" && mkdir -p "$DSTATE" "$CFG" && touch "$DSTATE/images" "$DSTATE/inuse"
+    rm -rf "$R" "$DSTATE" "$CFG" "$SANDBOX_HOME"
+    cp -R "$S/template" "$R" && mkdir -p "$DSTATE" "$CFG" "$SANDBOX_HOME" \
+        && touch "$DSTATE/images" "$DSTATE/inuse"
 }
 
-sandbox_env() { env -i HOME="$SANDBOX_HOME" PATH="$BASEPATH" DSTATE="$DSTATE" "$@"; }
+sandbox_env() { env -i HOME="$SANDBOX_HOME" PATH="$BASEPATH" DSTATE="$DSTATE" "${GIT_ENV[@]}" "$@"; }
 hash_() { (cd "$R" && sandbox_env "$@" bash scripts/build/image-hash.sh 2>"$S/hash.err"); }
-acc() { (cd "$R" && "${TO[@]}" env -i HOME="$SANDBOX_HOME" PATH="$BASEPATH" DSTATE="$DSTATE" \
+acc() { (cd "$R" && "${TO[@]}" env -i HOME="$SANDBOX_HOME" PATH="$BASEPATH" DSTATE="$DSTATE" "${GIT_ENV[@]}" \
             UR_CONFIG="$CFG" UR_LOCK_POLL_SECS=1 "$@" bash scripts/acceptance-ci.sh >"$S/acc.out" 2>&1); }
-acc_bg() { (cd "$R" && exec "${TO[@]}" env -i HOME="$SANDBOX_HOME" PATH="$BASEPATH" DSTATE="$DSTATE" \
-            UR_CONFIG="$CFG" UR_LOCK_POLL_SECS=1 bash scripts/acceptance-ci.sh >"$S/acc.out" 2>&1) & }
+# Background run with extra env assignments as arguments; output to $ACC_OUT
+# (default $S/acc.out). $! is the run.
+acc_bg() { (cd "$R" && exec "${TO[@]}" env -i HOME="$SANDBOX_HOME" PATH="$BASEPATH" DSTATE="$DSTATE" "${GIT_ENV[@]}" \
+            UR_CONFIG="$CFG" UR_LOCK_POLL_SECS=1 "$@" bash scripts/acceptance-ci.sh >"${ACC_OUT:-$S/acc.out}" 2>&1) & }
 hook() { (cd "$R" && echo "refs/heads/feat abc refs/heads/feat def" \
-            | "${TO[@]}" env -i HOME="$SANDBOX_HOME" PATH="$BASEPATH" DSTATE="$DSTATE" GIT_DIR="$R/.git" \
+            | "${TO[@]}" env -i HOME="$SANDBOX_HOME" PATH="$BASEPATH" DSTATE="$DSTATE" "${GIT_ENV[@]}" GIT_DIR="$R/.git" \
               "$@" bash ur-hooks/git/pre-push >"$S/hook.out" 2>&1); }
 
 IMGS="ur-worker-base ur-server ur-squid ur-worker-claude ur-worker-codex ur-worker-agy"
@@ -204,8 +229,34 @@ same()    { local b; (cd "$R" && eval "$1"); b=$(hash_) || return 1; [ "$BASE" =
 SUBDIR=containers/worker-base/vendor/sub
 
 t_hash_stable()        { [ "$(hash_)" = "$BASE" ] && [ ${#BASE} -eq 12 ]; }
-t_hash_locale()        { [ "$(hash_ LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8)" = "$(hash_ LC_ALL=C)" ]; }
+# A locale whose collation puts "a" before "B" (C/byte order puts B first);
+# C.UTF-8 collates like C, so it does not count. UR_CI_TEST_COLLATE_LOCALE
+# overrides the candidates.
+collating_locale() {
+    local l
+    for l in ${UR_CI_TEST_COLLATE_LOCALE:-en_US.UTF-8 $(locale -a 2>/dev/null | grep -iE '\.utf-?8$' | grep -vE '^(C|POSIX)\.')}; do
+        if [ "$(printf 'a\nB\n' | LC_ALL="$l" sort 2>/dev/null | head -n 1)" = a ]; then
+            echo "$l"; return 0
+        fi
+    done
+    return 1
+}
+t_hash_locale() {
+    local l; l=$(collating_locale) || return 77
+    [ "$(hash_ LANG="$l" LC_ALL="$l")" = "$(hash_ LC_ALL=C)" ]
+}
 t_hash_crate()         { changes 'echo y >> crates/server/src/main.rs'; }
+t_hash_workerd()       { changes 'echo y >> crates/workerd/src/main.rs'; }
+t_hash_workertools()   { changes 'echo y >> crates/ur-workertools/src/main.rs'; }
+t_hash_dep_crate()     { changes 'echo y >> crates/tmux/lib.rs'; }
+t_hash_git_hermetic()  { # host git config must not leak in: a global excludesFile
+    local a b                # ignoring everything must not hide an untracked crate file
+    echo y > "$R/crates/server/src/new.rs"; a=$(hash_) || return 1
+    echo '*' > "$SANDBOX_HOME/ignore-all"
+    printf '[core]\n\texcludesFile = %s\n' "$SANDBOX_HOME/ignore-all" > "$SANDBOX_HOME/.gitconfig"
+    b=$(hash_) || return 1
+    [ "$a" = "$b" ] && [ "$a" != "$BASE" ]
+}
 t_hash_proto()         { changes 'echo y >> proto/a.proto'; }
 t_hash_cargo_lock()    { changes 'echo y >> Cargo.lock'; }
 t_hash_scripts()       { changes 'echo "#" >> scripts/build/image.sh'; }
@@ -233,7 +284,7 @@ t_acc_cold() {
     acc || return 1
     local H=$BASE; has_all "$H" || return 1
     grep -q "^cargo test -p acceptance --features acceptance TAG=ci-$H" "$DSTATE/cargo-calls" || return 1
-    grep -q " $H$" "$CFG/ci-image-tags" && [ ! -L "$LOCK_PATH" ]
+    grep -q " $H$" "$CFG/ci-image-tags" && [ ! -e "$LOCKS/pre-push" ]
 }
 t_acc_warm() {
     acc || return 1; : > "$DSTATE/cargo-calls"; acc || return 1
@@ -266,62 +317,145 @@ t_acc_record_before_build() {
     [ -e "$DSTATE/logged-early" ]
 }
 t_acc_hash_after_lock() { # sources edited while waiting on the lock: the tag names the edited sources
-    local p H; live_pid; mkdir -p "$CFG/locks"; ln -s "$LIVE:other" "$LOCK_PATH"
+    local p H; hold_lock || return 1
     acc_bg; p=$!
     wait_for "waiting for lock" "$S/acc.out" || return 1
-    echo edit >> "$R/crates/server/src/main.rs"; kill "$LIVE"
+    echo edit >> "$R/crates/server/src/main.rs"; kill -9 "$HOLDER"
     wait "$p" || return 1
     H=$(hash_); grep -q "TAG=ci-$H" "$DSTATE/cargo-calls"
 }
 
 # -------------------------------------------------------------------- lock --
-t_lock_live_holder_waits() {
-    local p alive=0; live_pid; mkdir -p "$CFG/locks"; ln -s "$LIVE:other" "$LOCK_PATH"
+wait_file() { local i=0; until [ -e "$1" ]; do i=$((i + 1)); [ $i -gt 600 ] && return 1; sleep 0.1; done; }
+# A background process holding the flock the way acceptance-ci does (fd 9 +
+# perl), with branch "other". Sets HOLDER.
+hold_lock() {
+    mkdir -p "$LOCKS"
+    bash -c 'exec 9>>"$1/pre-push.flock"
+             perl -MFcntl=:flock -e "open(my \$f, q(>&=), 9) or die; flock(\$f, LOCK_EX) or die" || exit 1
+             echo "$$:other" > "$1/pre-push.holder"; : > "$1/test-held"
+             while :; do sleep 0.2 9>&-; done' _ "$LOCKS" &
+    HOLDER=$!; BGPIDS+=("$HOLDER")
+    wait_file "$LOCKS/test-held"
+}
+# The lock code of master's acceptance-ci.sh before ur-1pijn (18374fa), verbatim
+# except `sleep 10` -> `sleep 1`: a directory lock with a pid file, taken over
+# when `kill -0 <pid>` fails. Runs in the background until killed; touches
+# $UR_CONFIG/old-acquired once it holds the lock. Sets OLD.
+cat > "$S/old-lock.sh" <<'EOF'
+LOCK_DIR="${UR_CONFIG:-$HOME/.ur}/locks/pre-push"
+PID_FILE="$LOCK_DIR/pid"
+
+release_lock() {
+    rm -rf "$LOCK_DIR"
+}
+
+acquire_lock() {
+    while true; do
+        if mkdir "$LOCK_DIR" 2>/dev/null; then
+            echo $$ > "$PID_FILE"
+            if [ -n "${UR_PUSH_BRANCH:-}" ]; then
+                echo "$UR_PUSH_BRANCH" > "$LOCK_DIR/branch"
+            fi
+            return 0
+        fi
+
+        if [ -f "$PID_FILE" ]; then
+            local stale_pid
+            stale_pid=$(cat "$PID_FILE" 2>/dev/null || true)
+            if [ -n "$stale_pid" ] && ! kill -0 "$stale_pid" 2>/dev/null; then
+                rm -rf "$LOCK_DIR"
+                continue
+            fi
+        fi
+
+        local lock_branch
+        lock_branch=$(cat "$LOCK_DIR/branch" 2>/dev/null || echo '?')
+        echo "acceptance-ci: waiting for lock (PID $(cat "$PID_FILE" 2>/dev/null || echo '?'), branch $lock_branch)..."
+        sleep 1
+    done
+}
+
+mkdir -p "$(dirname "$LOCK_DIR")"
+acquire_lock
+: > "$UR_CONFIG/old-acquired"
+while :; do sleep 0.2; done
+EOF
+old_script_bg() { env UR_CONFIG="$CFG" bash "$S/old-lock.sh" >"$S/old.out" 2>&1 & OLD=$!; BGPIDS+=("$OLD"); }
+
+t_lock_second_holder_waits() { # waits while held, naming the holder; proceeds once it is gone
+    local p; warm; hold_lock || return 1
     acc_bg; p=$!
-    wait_for "waiting for lock (PID $LIVE, branch other)" "$S/acc.out" || { kill "$p"; return 1; }
-    sleep 1.5; kill -0 "$p" 2>/dev/null && alive=1
-    pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
-    [ $alive = 1 ] && ! grep -q "^cargo test" "$DSTATE/cargo-calls" 2>/dev/null \
-        && [ "$(readlink "$LOCK_PATH")" = "$LIVE:other" ]
+    wait_for "waiting for lock (PID $HOLDER, branch other)" "$S/acc.out" || return 1
+    sleep 1.5; kill -0 "$p" 2>/dev/null || return 1
+    grep -q "^cargo test" "$DSTATE/cargo-calls" 2>/dev/null && return 1
+    kill -9 "$HOLDER"; wait "$p" && grep -q "^cargo test" "$DSTATE/cargo-calls"
 }
-t_lock_stale_pid()  { warm; dead_pid; mkdir -p "$CFG/locks"; ln -s "$DEAD:gone" "$LOCK_PATH"; acc && [ ! -L "$LOCK_PATH" ]; }
-t_lock_holds_pid()  { # the lock names this run (pid + branch) for the whole run
-    warm; acc UR_PUSH_BRANCH=feat CARGO_TEST_HOOK='[ "$(readlink "$UR_CONFIG/locks/pre-push.lock")" = "$PPID:feat" ] && touch "$DSTATE/held"' \
-        && [ -e "$DSTATE/held" ]
+t_lock_sigkill_released() { # a SIGKILLed holder leaves nothing that blocks the next run
+    local p; warm
+    acc_bg CARGO_TEST_HOOK='echo $PPID > "$DSTATE/acc-pid"; while [ ! -e "$DSTATE/go" ]; do sleep 0.1; done'; p=$!
+    wait_file "$DSTATE/acc-pid" || return 1
+    kill -9 "$(cat "$DSTATE/acc-pid")"; : > "$DSTATE/go"; wait "$p" 2>/dev/null
+    acc || return 1
+    ! grep -q "waiting for lock" "$S/acc.out"
 }
-t_lock_release_not_owner() { # another run took the lock over mid-run: exiting must not delete its lock
+t_lock_child_does_not_hold() { # a process left behind by the run must not keep the lock
+    warm
+    acc CARGO_TEST_HOOK='sleep 30 & echo $! > "$DSTATE/child"' || return 1
+    BGPIDS+=("$(cat "$DSTATE/child")")
+    acc || return 1
+    ! grep -q "waiting for lock" "$S/acc.out"
+}
+t_lock_build_children_do_not_hold() { # same for processes left behind by stage.sh / image.sh
+    acc CARGO_BUILD_HOOK='sleep 30 & echo $! >> "$DSTATE/child"' \
+        DOCKER_BUILD_HOOK='[ -e "$DSTATE/dchild" ] || { sleep 30 & echo $! > "$DSTATE/dchild"; }' || return 1
+    local c; while read -r c; do BGPIDS+=("$c"); done < <(cat "$DSTATE/child" "$DSTATE/dchild")
+    acc || return 1
+    ! grep -q "waiting for lock" "$S/acc.out"
+}
+t_lock_concurrent_runs_serialize() {
+    local p1 p2 hook='[ -e "$DSTATE/inside" ] && touch "$DSTATE/overlap"; touch "$DSTATE/inside"; sleep 1; rm -f "$DSTATE/inside"'
+    warm
+    ACC_OUT="$S/acc1.out" acc_bg CARGO_TEST_HOOK="$hook"; p1=$!
+    ACC_OUT="$S/acc2.out" acc_bg CARGO_TEST_HOOK="$hook"; p2=$!
+    wait "$p1" && wait "$p2" || return 1
+    [ "$(grep -c "^cargo test" "$DSTATE/cargo-calls")" = 2 ] && [ ! -e "$DSTATE/overlap" ]
+}
+t_lock_holds_during_run() { # holder file and legacy dir name this run while it runs, and go away after
+    warm
+    acc UR_PUSH_BRANCH=feat CARGO_TEST_HOOK='[ "$(cat "$UR_CONFIG/locks/pre-push.holder")" = "$PPID:feat" ] &&
+        [ "$(cat "$UR_CONFIG/locks/pre-push/pid")" = "$PPID" ] && touch "$DSTATE/held"' || return 1
+    [ -e "$DSTATE/held" ] && [ ! -e "$LOCKS/pre-push" ] && [ ! -e "$LOCKS/pre-push.holder" ]
+}
+t_lock_unwritable() { # fails fast with a message instead of spinning
+    local r; mkdir -p "$LOCKS"; chmod 555 "$LOCKS"
+    acc; r=$?; chmod 755 "$LOCKS"
+    [ $r -ne 0 ] && [ $r -ne 124 ] && grep -q "cannot open lock file" "$S/acc.out"
+}
+# Legacy directory lock (old master scripts).
+t_lock_legacy_old_holds_new_waits() { # old script holds: new waits; old killed -> new takes it over
+    local p; warm; old_script_bg; wait_file "$CFG/old-acquired" || return 1
+    acc_bg; p=$!
+    wait_for "older acceptance-ci (PID $OLD)" "$S/acc.out" || return 1
+    grep -q "^cargo test" "$DSTATE/cargo-calls" 2>/dev/null && return 1
+    kill -9 "$OLD"; wait "$p" && [ ! -e "$LOCKS/pre-push" ]
+}
+t_lock_legacy_new_holds_old_waits() { # new holds: the old script waits, then gets it after release
+    local p; warm
+    acc_bg CARGO_TEST_HOOK=': > "$DSTATE/in-test"; while [ ! -e "$DSTATE/go" ]; do sleep 0.1; done'; p=$!
+    wait_file "$DSTATE/in-test" || return 1
+    old_script_bg; wait_for "waiting for lock" "$S/old.out" || return 1
+    sleep 1.5; [ -e "$CFG/old-acquired" ] && return 1
+    : > "$DSTATE/go"; wait "$p" || return 1
+    wait_file "$CFG/old-acquired"
+}
+t_lock_legacy_stale() { dead_pid; warm; mkdir -p "$LOCKS/pre-push"; echo "$DEAD" > "$LOCKS/pre-push/pid"
+                        acc && [ ! -e "$LOCKS/pre-push" ]; }
+t_lock_legacy_pidless() { warm; mkdir -p "$LOCKS/pre-push"; acc && [ ! -e "$LOCKS/pre-push" ]; }
+t_lock_legacy_release_not_owner() { # never remove a legacy dir that another pid owns by now
     warm; live_pid
-    acc OTHER="$LIVE" CARGO_TEST_HOOK='rm -f "$UR_CONFIG/locks/pre-push.lock"; ln -s "$OTHER:new" "$UR_CONFIG/locks/pre-push.lock"' \
-        || return 1
-    [ "$(readlink "$LOCK_PATH")" = "$LIVE:new" ]
-}
-t_lock_unwritable() {
-    local r; mkdir -p "$CFG/locks"; chmod 555 "$CFG/locks"
-    acc; r=$?; chmod 755 "$CFG/locks"
-    [ $r -ne 0 ] && [ $r -ne 124 ] && grep -q "cannot create lock" "$S/acc.out"
-}
-t_lock_dir_in_way() { mkdir -p "$LOCK_PATH"; acc && return 1; grep -q "is a directory" "$S/acc.out"; }
-t_lock_transient_ln_failure() { warm; acc LN_FAIL_ONCE=1 && [ -e "$DSTATE/ln-failed" ]; }
-# Deterministic replay of the double stale-takeover race: W1 and W2 both read
-# the same stale lock; W2 takes it over and acquires; then W1 acts on its stale
-# read. W2's live lock must survive and W1 must not get it.
-t_lock_race_double_takeover() {
-    dead_pid; live_pid; local W2="$LIVE"
-    (
-        export UR_CONFIG="$CFG"; mkdir -p "$CFG/locks"
-        # shellcheck source=scripts/build/ci-lock.sh
-        source "$R/scripts/build/ci-lock.sh"
-        ln -s "$DEAD:stale" "$LOCK"
-        observed=$(readlink "$LOCK")          # W1 and W2 both read it as stale
-        take_over_stale_lock "$observed"      # W2 wins the rename
-        ln -sn "$W2:w2" "$LOCK"               # ... and acquires
-        take_over_stale_lock "$observed"      # W1 acts on its stale read
-        [ "$(readlink "$LOCK")" = "$W2:w2" ] || exit 1
-        ! ln -sn "$$:w1" "$LOCK" 2>/dev/null  # W1's acquire attempt must fail
-    ) || return 1
-    local f
-    for f in "$CFG/locks/"*stale*; do [ -e "$f" ] && return 1; done
-    return 0
+    acc OTHER="$LIVE" CARGO_TEST_HOOK='echo "$OTHER" > "$UR_CONFIG/locks/pre-push/pid"' || return 1
+    [ "$(cat "$LOCKS/pre-push/pid" 2>/dev/null)" = "$LIVE" ]
 }
 
 # ------------------------------------------------------------------- prune --
@@ -386,6 +520,7 @@ if ! { reset_state && BASE=$(hash_) && [ -n "$BASE" ]; }; then
     exit 1
 fi
 FAILS=()
+SKIPS=()
 COUNT=0
 for t in $(declare -F | awk '{print $3}' | grep -E '^t_'); do
     echo "$t" | grep -Eq "$ONLY" || continue
@@ -393,9 +528,14 @@ for t in $(declare -F | awk '{print $3}' | grep -E '^t_'); do
     reset_state || { echo "FAIL $t (setup)"; FAILS+=("$t"); continue; }
     # Each test runs in a subshell; it kills the background processes it started.
     start=$(now)
-    if ( trap kill_bg EXIT; "$t" ) >/dev/null 2>&1; then r="ok  "; else r=FAIL; FAILS+=("$t"); fi
-    echo "$r $t ($(elapsed "$start")s)"
+    ( trap kill_bg EXIT; "$t" ) >/dev/null 2>&1
+    case $? in
+        0) r="ok  " ;;
+        77) r=skip; SKIPS+=("$t") ;;
+        *) r=FAIL; FAILS+=("$t") ;;
+    esac
+    echo "$r $t ($(elapsed "$start")s)$([ "$r" = skip ] && echo ' (no collating locale)')"
     [ -n "${UR_CI_TEST_FAIL_FAST:-}" ] && [ ${#FAILS[@]} -gt 0 ] && break
 done
-echo "test-ci-scripts: $((COUNT - ${#FAILS[@]}))/$COUNT passed"
+echo "test-ci-scripts: $((COUNT - ${#FAILS[@]}))/$COUNT passed${SKIPS[*]:+ (skipped: ${SKIPS[*]})}"
 [ ${#FAILS[@]} -eq 0 ]
