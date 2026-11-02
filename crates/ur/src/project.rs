@@ -81,6 +81,9 @@ pub fn list(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
                 pool_limit: (!proj.is_local()).then_some(proj.pool_limit),
                 slots_in_use,
                 local: proj.is_local(),
+                brain: proj
+                    .brain_path(&config.config_dir)
+                    .map(|p| p.display().to_string()),
             }
         })
         .collect();
@@ -843,6 +846,7 @@ image = "ur-worker"
                 pool_limit: None,
                 slots_in_use: None,
                 local: true,
+                brain: None,
             },
             ProjectInfo {
                 key: "poolproj".into(),
@@ -851,6 +855,7 @@ image = "ur-worker"
                 pool_limit: Some(10),
                 slots_in_use: Some(2),
                 local: false,
+                brain: None,
             },
         ];
         assert_eq!(

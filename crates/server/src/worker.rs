@@ -511,6 +511,8 @@ pub struct WorkerContext {
     pub slot_path: PathBuf,
     /// Worker strategy string as persisted in the database (e.g. `"code"`, `"design"`, `"manual"`).
     pub strategy: String,
+    /// Host path of the brain mounted at `/brain`, if any.
+    pub brain_path: Option<PathBuf>,
 }
 
 /// Summary of a running process, returned by `WorkerManager::list()`.
@@ -746,6 +748,7 @@ impl WorkerManager {
             project_key,
             slot_path: PathBuf::from(workspace_path),
             strategy: worker.strategy,
+            brain_path: worker.brain_path.map(PathBuf::from),
         })
     }
 
@@ -776,6 +779,33 @@ impl WorkerManager {
         container_id: String,
         worker_secret: String,
     ) {
+        self.register_worker_with_brain(
+            worker_id,
+            process_id,
+            project_key,
+            slot_path,
+            strategy,
+            container_id,
+            worker_secret,
+            None,
+        )
+        .await;
+    }
+
+    /// [`Self::register_worker`] with the worker's host brain path recorded, as a
+    /// launch with a brain mount would.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn register_worker_with_brain(
+        &self,
+        worker_id: WorkerId,
+        process_id: String,
+        project_key: String,
+        slot_path: Option<PathBuf>,
+        strategy: WorkerStrategy,
+        container_id: String,
+        worker_secret: String,
+        brain_path: Option<PathBuf>,
+    ) {
         let now = Utc::now().to_rfc3339();
         let worker = workflow_db::model::Worker {
             worker_id: worker_id.0,
@@ -791,6 +821,7 @@ impl WorkerManager {
             created_at: now.clone(),
             updated_at: now,
             idle_redispatch_count: 0,
+            brain_path: brain_path.map(|p| p.display().to_string()),
         };
         self.worker_repo
             .insert_worker(&worker)
@@ -1037,6 +1068,7 @@ impl WorkerManager {
             created_at: now.clone(),
             updated_at: now,
             idle_redispatch_count: 0,
+            brain_path: brain_host_path(config, &self.host_config_dir),
         };
         self.worker_repo
             .insert_worker(&worker)
@@ -1506,14 +1538,30 @@ fn resolve_brain_dir(
     if project_key.is_empty() {
         return workspace_brain_dir.clone();
     }
-    let convention_path = host_config_dir
-        .join("projects")
-        .join(project_key)
-        .join("brain");
+    let convention_path = ur_config::brain_convention_path(host_config_dir, project_key);
     if convention_check_path(&convention_path, host_config_dir).exists() {
         Some(convention_path.to_string_lossy().into_owned())
     } else {
         None
+    }
+}
+
+/// Host path of the brain this worker gets mounted at `/brain`, or `None` without one.
+///
+/// Uses the same resolution as the mount itself ([`resolve_brain_dir`] then template
+/// resolution), so hostexec maps `/brain` to exactly the directory that was mounted.
+fn brain_host_path(config: &WorkerConfig, host_config_dir: &std::path::Path) -> Option<String> {
+    let template = resolve_brain_dir(
+        &config.brain_dir,
+        &config.workspace_brain_dir,
+        &config.project_key,
+        host_config_dir,
+    )?;
+    match ur_config::resolve_template_path(&template, host_config_dir).ok()? {
+        ur_config::ResolvedTemplatePath::HostPath(path) => {
+            Some(path.to_string_lossy().into_owned())
+        }
+        ur_config::ResolvedTemplatePath::ProjectRelative(_) => None,
     }
 }
 
@@ -3052,6 +3100,36 @@ agent = "claude"
         let tmp = tempfile::tempdir().unwrap();
         let result = resolve_memory_dir(&None, "myproj", tmp.path());
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn brain_host_path_resolves_like_the_mount() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let mut config = test_worker_config(WorkerStrategy::Manual, "");
+        config.project_key = "proj".into();
+
+        // No brain_dir and no convention dir on disk: no mount, no path.
+        assert_eq!(brain_host_path(&config, dir), None);
+
+        // Convention dir exists: that path.
+        let convention = dir.join("projects").join("proj").join("brain");
+        std::fs::create_dir_all(&convention).unwrap();
+        assert_eq!(
+            brain_host_path(&config, dir),
+            Some(convention.display().to_string())
+        );
+
+        // %URCONFIG% template wins and resolves against the host config dir.
+        config.brain_dir = Some("%URCONFIG%/brains/proj".into());
+        assert_eq!(
+            brain_host_path(&config, dir),
+            Some(dir.join("brains").join("proj").display().to_string())
+        );
+
+        // Absolute brain_dir is used as-is.
+        config.brain_dir = Some("/abs/brain".into());
+        assert_eq!(brain_host_path(&config, dir), Some("/abs/brain".into()));
     }
 
     #[test]

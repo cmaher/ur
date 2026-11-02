@@ -253,7 +253,8 @@ impl RunOptsBuilder {
     ///   real host dir to be auto-created by Docker as root.
     /// - Pushes a single read-write volume mount: host path → `/brain`. Read-write because
     ///   `/brain:init` writes the scaffold and `working/` is worker scratch.
-    /// - No env var is added; skills reference the fixed `/brain` path directly.
+    /// - Sets [`ur_config::UR_BRAIN_ENV`] to `/brain`, so brain skills resolve the same root
+    ///   variable in workers as on the host.
     pub fn add_brain_dir(
         mut self,
         brain_dir: &Option<String>,
@@ -289,8 +290,12 @@ impl RunOptsBuilder {
         )
         .map_err(|e| format!("failed to chown brain_dir '{}': {e}", create_path.display()))?;
 
-        let container_path = PathBuf::from("/brain");
+        let container_path = PathBuf::from(ur_config::BRAIN_CONTAINER_PATH);
         self.volumes.push((host_path, container_path));
+        self.env_vars.push((
+            ur_config::UR_BRAIN_ENV.into(),
+            ur_config::BRAIN_CONTAINER_PATH.into(),
+        ));
 
         Ok(self)
     }
@@ -1507,14 +1512,16 @@ mod tests {
             "brain dir should be created on host"
         );
 
-        // Exactly one volume, no env vars.
+        // Exactly one volume, and UR_BRAIN points at it.
         assert_eq!(req.volumes.len(), 1, "expected one volume mount");
         assert_eq!(
             req.volumes[0].host_path,
             brain_host_path.display().to_string()
         );
         assert_eq!(req.volumes[0].container_path, "/brain");
-        assert!(req.env_vars.is_empty(), "no env vars should be added");
+        assert_eq!(req.env_vars.len(), 1, "expected only UR_BRAIN");
+        assert_eq!(req.env_vars[0].key, ur_config::UR_BRAIN_ENV);
+        assert_eq!(req.env_vars[0].value, "/brain");
     }
 
     /// A `%URCONFIG%`-based brain dir (the shape a `workspace_brain_dir` usually takes)

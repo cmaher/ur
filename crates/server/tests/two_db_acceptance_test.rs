@@ -290,6 +290,7 @@ async fn two_db_split_events_arrive_on_merged_stream() {
         created_at: now.clone(),
         updated_at: now,
         idle_redispatch_count: 0,
+        brain_path: None,
     };
     worker_repo
         .insert_worker(&worker)

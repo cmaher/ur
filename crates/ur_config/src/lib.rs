@@ -164,6 +164,13 @@ use serde::Deserialize;
 /// Environment variable: override the config directory (default `~/.ur`).
 pub const UR_CONFIG_ENV: &str = "UR_CONFIG";
 
+/// Environment variable: the brain root. Set to [`BRAIN_CONTAINER_PATH`] in workers with a
+/// brain mount; on the host, brain skills read the `brain` field of `ur project list`.
+pub const UR_BRAIN_ENV: &str = "UR_BRAIN";
+
+/// Container path the brain directory is mounted at.
+pub const BRAIN_CONTAINER_PATH: &str = "/brain";
+
 /// Environment variable: `host:port` address for worker→server gRPC connections.
 pub const UR_SERVER_ADDR_ENV: &str = "UR_SERVER_ADDR";
 
@@ -1232,7 +1239,25 @@ pub struct ProjectConfig {
     pub forge: Option<ForgeType>,
 }
 
+/// Convention brain directory for a project: `<config_dir>/projects/<key>/brain`.
+pub fn brain_convention_path(config_dir: &Path, project_key: &str) -> PathBuf {
+    config_dir.join("projects").join(project_key).join("brain")
+}
+
 impl ProjectConfig {
+    /// Host path of this project's brain: `brain_dir` resolved against `config_dir` when
+    /// set, otherwise [`brain_convention_path`] (which may not exist yet). `None` only
+    /// when `brain_dir` fails to resolve to a host path.
+    pub fn brain_path(&self, config_dir: &Path) -> Option<PathBuf> {
+        let Some(template) = self.brain_dir.as_deref() else {
+            return Some(brain_convention_path(config_dir, &self.key));
+        };
+        match resolve_template_path(template, config_dir).ok()? {
+            ResolvedTemplatePath::HostPath(path) => Some(path),
+            ResolvedTemplatePath::ProjectRelative(_) => None,
+        }
+    }
+
     /// True when this project has no git remote (`local = true` in `ur.toml`).
     ///
     /// A local project has no pool, cannot be dispatched, and is only usable in
@@ -3335,6 +3360,46 @@ image = "ur-worker"
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.projects["ur"].brain_dir, None);
+    }
+
+    #[test]
+    fn brain_path_resolves_template_absolute_and_convention() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.conv]
+repo = "git@github.com:example-org/conv.git"
+[projects.conv.container]
+image = "ur-worker"
+[projects.tpl]
+repo = "git@github.com:example-org/tpl.git"
+brain_dir = "%URCONFIG%/brains/tpl"
+[projects.tpl.container]
+image = "ur-worker"
+[projects.abs]
+repo = "git@github.com:example-org/abs.git"
+brain_dir = "/some/abs/brain"
+[projects.abs.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let dir = tmp.path();
+        assert_eq!(
+            cfg.projects["conv"].brain_path(dir),
+            Some(dir.join("projects").join("conv").join("brain"))
+        );
+        assert_eq!(
+            cfg.projects["tpl"].brain_path(dir),
+            Some(dir.join("brains").join("tpl"))
+        );
+        assert_eq!(
+            cfg.projects["abs"].brain_path(dir),
+            Some(PathBuf::from("/some/abs/brain"))
+        );
     }
 
     #[test]

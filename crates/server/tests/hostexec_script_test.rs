@@ -1,6 +1,6 @@
 //! HostExec authorization paths that need a registered worker but no container:
-//! the script allowlist (`exec_script`) and the per-project `allow_no_verify`
-//! grant reaching the git Lua transform.
+//! the script allowlist (`exec_script`), the per-project `allow_no_verify`
+//! grant reaching the git Lua transform, and `/brain` working-directory routing.
 //!
 //! Workers are registered straight into the worker table, and builderd is a lazy
 //! channel to a dead port: a request refused by authorization fails with its own
@@ -149,6 +149,24 @@ impl HostExecHarness {
         worker_id.to_string()
     }
 
+    /// Register a running project worker whose launch recorded `brain_path`.
+    async fn register_worker_with_brain(&self, process_id: &str, brain_path: &Path) -> String {
+        let worker_id = self.worker_manager.generate_worker_id(process_id);
+        self.worker_manager
+            .register_worker_with_brain(
+                worker_id.clone(),
+                process_id.into(),
+                "poolproj".into(),
+                Some(self.workspace.join(process_id)),
+                ur_server::WorkerStrategy::Manual,
+                "fake-cid".into(),
+                "secret".into(),
+                Some(brain_path.to_path_buf()),
+            )
+            .await;
+        worker_id.to_string()
+    }
+
     /// Send a single-frame Exec request as `worker_id` and return the RPC error.
     async fn exec_error(&self, worker_id: &str, start: HostExecRequest) -> tonic::Status {
         let frames = tokio_stream::iter(vec![HostExecMessage {
@@ -265,4 +283,65 @@ async fn allow_no_verify_reaches_git_transform() {
         allowed.message().contains("builderd exec failed"),
         "allow_no_verify should let the push through the transform: {allowed:?}"
     );
+}
+
+fn brain_request(command: &str, working_dir: &str) -> HostExecRequest {
+    HostExecRequest {
+        command: command.into(),
+        args: vec!["status".into()],
+        working_dir: working_dir.into(),
+        ..Default::default()
+    }
+}
+
+fn assert_invalid_working_dir(status: &tonic::Status, reason: &str) {
+    assert_eq!(status.code(), Code::InvalidArgument, "{status:?}");
+    assert!(status.message().contains(reason), "{status:?}");
+}
+
+/// `/brain` routes to the worker's recorded host brain, for git only: git passes
+/// the mapping and reaches builderd, any other allowlisted command is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn brain_working_dir_allows_git_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = HostExecHarness::start(dir.path()).await;
+    let worker_id = harness
+        .register_worker_with_brain("brain-man-0", &dir.path().join("brain"))
+        .await;
+
+    let git = harness
+        .exec_error(&worker_id, brain_request("git", "/brain"))
+        .await;
+    assert_eq!(git.code(), Code::Internal, "{git:?}");
+    assert!(
+        git.message().contains("builderd exec failed"),
+        "git in /brain should pass mapping and reach builderd: {git:?}"
+    );
+
+    let cargo = harness
+        .exec_error(&worker_id, brain_request("cargo", "/brain"))
+        .await;
+    assert_invalid_working_dir(&cargo, "only git may run in /brain");
+}
+
+/// A worker whose launch recorded no brain cannot run anything in `/brain`, and
+/// `..` cannot walk out of a recorded brain.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn brain_working_dir_requires_mount_and_stays_inside() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = HostExecHarness::start(dir.path()).await;
+    let no_brain = harness.register_worker("brain-none-test", "poolproj").await;
+    let with_brain = harness
+        .register_worker_with_brain("brain-esc-test", &dir.path().join("brain"))
+        .await;
+
+    let missing = harness
+        .exec_error(&no_brain, brain_request("git", "/brain"))
+        .await;
+    assert_invalid_working_dir(&missing, "worker has no brain mount");
+
+    let escape = harness
+        .exec_error(&with_brain, brain_request("git", "/brain/../etc"))
+        .await;
+    assert_invalid_working_dir(&escape, "must not contain '..'");
 }

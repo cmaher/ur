@@ -234,6 +234,9 @@ pub struct ProjectInfo {
     /// `None` for a local project, which has no pool directory.
     pub slots_in_use: Option<usize>,
     pub local: bool,
+    /// Host path of the project's brain (its `brain_dir`, else the convention path,
+    /// which may not exist yet). Brain skills on the host read it from here.
+    pub brain: Option<String>,
 }
 
 #[derive(Serialize)]

@@ -48,6 +48,7 @@ type WorkerRow = (
     String,
     String,
     i32,
+    Option<String>,
 );
 
 fn worker_from_row(row: WorkerRow) -> Worker {
@@ -65,6 +66,7 @@ fn worker_from_row(row: WorkerRow) -> Worker {
         created_at: row.10,
         updated_at: row.11,
         idle_redispatch_count: row.12,
+        brain_path: row.13,
     }
 }
 
@@ -97,8 +99,8 @@ impl WorkerRepo {
 
     pub async fn insert_worker(&self, worker: &Worker) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+            "INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, brain_path)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
         )
         .bind(&worker.worker_id)
         .bind(&worker.process_id)
@@ -112,6 +114,7 @@ impl WorkerRepo {
         .bind(&worker.workspace_path)
         .bind(&worker.created_at)
         .bind(&worker.updated_at)
+        .bind(&worker.brain_path)
         .execute(&self.pool)
         .await?;
 
@@ -120,7 +123,7 @@ impl WorkerRepo {
 
     pub async fn get_worker(&self, worker_id: &str) -> Result<Option<Worker>, sqlx::Error> {
         let row = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path
              FROM worker WHERE worker_id = $1",
         )
         .bind(worker_id)
@@ -140,7 +143,7 @@ impl WorkerRepo {
         container_id: &str,
     ) -> Result<Option<Worker>, sqlx::Error> {
         let row = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path
              FROM worker WHERE container_id = $1 ORDER BY created_at DESC LIMIT 1",
         )
         .bind(container_id)
@@ -246,7 +249,7 @@ impl WorkerRepo {
         container_status: &str,
     ) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path
              FROM worker WHERE container_status = $1 ORDER BY created_at ASC",
         )
         .bind(container_status)
@@ -274,7 +277,7 @@ impl WorkerRepo {
         workspace_path: &str,
     ) -> Result<Option<Worker>, sqlx::Error> {
         let row = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path
              FROM worker WHERE project_key = $1 AND workspace_path = $2",
         )
         .bind(project_key)
@@ -464,7 +467,7 @@ impl WorkerRepo {
     /// List all workers regardless of container_status.
     pub async fn list_all_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path
              FROM worker ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
@@ -477,7 +480,7 @@ impl WorkerRepo {
     /// (provisioning, running, stopping).
     pub async fn list_active_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path
              FROM worker WHERE container_status IN ('provisioning', 'running', 'stopping') ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
@@ -755,6 +758,7 @@ mod tests {
             created_at: now.clone(),
             updated_at: now,
             idle_redispatch_count: 0,
+            brain_path: None,
         }
     }
 
@@ -768,6 +772,27 @@ mod tests {
 
         let fetched = repo.get_worker("w-agent-type").await.unwrap().unwrap();
         assert_eq!(fetched.agent_type, "claude");
+    }
+
+    #[tokio::test]
+    async fn insert_and_get_round_trip_brain_path() {
+        let test_db = TestDb::new().await;
+        let repo = WorkerRepo::new(test_db.workflow_pool().clone());
+
+        let mut with_brain = test_worker("w-brain", "claude");
+        with_brain.brain_path = Some("/host/projects/p/brain".to_owned());
+        repo.insert_worker(&with_brain).await.unwrap();
+        repo.insert_worker(&test_worker("w-no-brain", "claude"))
+            .await
+            .unwrap();
+
+        let fetched = repo.get_worker("w-brain").await.unwrap().unwrap();
+        assert_eq!(
+            fetched.brain_path.as_deref(),
+            Some("/host/projects/p/brain")
+        );
+        let fetched = repo.get_worker("w-no-brain").await.unwrap().unwrap();
+        assert_eq!(fetched.brain_path, None);
     }
 
     #[tokio::test]

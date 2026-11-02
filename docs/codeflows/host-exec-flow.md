@@ -16,6 +16,7 @@ allowlist checks.
 4. ur-server `HostExecServiceHandler`:
    a. Checks command against the built-in defaults plus commands granted by the project
    b. Maps CWD: `/workspace/...` -> `%WORKSPACE%/...` (template prefix, not a resolved host path)
+      - Exception: for `git` only, `/brain[/...]` maps to the worker's host brain path (`worker.brain_path`, recorded at launch). Any other command with a `/brain` CWD, a worker without a brain, or a `..` segment is rejected.
    c. Runs Lua transform if configured (validates/modifies args)
    d. Forwards `BuilderDaemonExecRequest` to builderd
 5. builderd resolves `%WORKSPACE%` to its local workspace path (from env var or CLI flag), spawns the actual process
