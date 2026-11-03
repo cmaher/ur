@@ -7,6 +7,7 @@
 //! Workers reach these commands through hostexec (`ur.lua` pins the worker's project), so the
 //! brain path and check commands resolve on the host.
 
+mod candidates;
 mod check;
 mod config;
 mod files;
@@ -50,6 +51,9 @@ pub enum DreamCommands {
         #[arg(long)]
         write: bool,
     },
+    /// Classify active streams for promotion from cached checks (candidate, blocked,
+    /// possibly_abandoned, active); never runs checks
+    Candidates(Target),
     /// Parse TEXT as a ref of KIND and run its check once (for testing a ref kind)
     Try {
         #[command(flatten)]
@@ -106,6 +110,16 @@ pub fn handle(
             emit(
                 output,
                 &check::summarize(&results, &check::attribution(&scanned)),
+            )
+        }
+        DreamCommands::Candidates(t) => {
+            let brain = existing_brain(config, t)?;
+            let cfg = Config::load(&brain)?;
+            let scanned = refs::scan(&brain, &cfg);
+            let st = State::load(&brain)?;
+            emit(
+                output,
+                &candidates::classify(&scanned, &st, cfg.raw.thresholds.quiet_days),
             )
         }
         DreamCommands::Try { target, kind, text } => {

@@ -68,7 +68,7 @@ allowed = true
 max_calls = 20
 
 [thresholds]
-quiet_days = 14
+quiet_days = 14      # days without change before `ur dream candidates` calls a stream quiet
 
 [review]
 per_run = 1          # durable docs reviewed per dream run

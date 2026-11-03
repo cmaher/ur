@@ -31,6 +31,7 @@ directory is mapped to the host, and only git may run there.
 | `ur dream lint` | broken links, index gaps, orphans, long index entries, empty and unlisted folders |
 | `ur dream refs` | each scratch stream: status, recorded, discovered and ignored refs, last change and quiet days (from git; `mtime` when the only commit touching it is `brain: init`) |
 | `ur dream check --write` | each active ref checked (cached done refs skipped), saved to `.dream/state.json`: `summary` counts (done / not done / unknown / cached), `unknown` refs with their state, and per-ref detail in `refs` with the active `streams` (and `recorded`/`discovered` source) each came from |
+| `ur dream candidates` | each active stream classified from the cached checks (run `check --write` first; never re-runs checks): `candidate`, `blocked` (`blocked_by` lists refs with `done` null or never checked, with their state), `possibly_abandoned`, or `active`, plus its refs, `quiet_days`, the `quiet_days_threshold`, `summary` counts, and `inactive` streams by status |
 | `ur dream review` | durable docs by review due date; `pick` is what to review this run |
 | `ur dream reviewed <file> unchanged\|changed --note "…"` | records a review and adapts its interval |
 
@@ -84,9 +85,13 @@ At most one edit per file per report: combine everything for a file into that ed
    - Fill the report's "Refs checked" table and its totals straight from `check`'s `refs` and
      `summary` (one row per ref; Source is each entry of its `streams`). Don't recount or
      re-attribute refs with your own scripts.
-3. **Promote**: a stream is a candidate when every ref is done **and** its `quiet_days` is at least
-   the threshold. A stream with no refs that is quiet is reported as "possibly abandoned", never
-   promoted. Any `unknown` ref → not a candidate; report it. For each candidate:
+3. **Promote**: `ur dream candidates`. Use its `classification` per stream; don't recompute it.
+   - `candidate` (every ref done, quiet at least `quiet_days_threshold`): promote as below.
+   - `blocked`: not a candidate; report each `blocked_by` ref with its state.
+   - `possibly_abandoned` (no refs, quiet): report it, never promote.
+   - `active`: leave it.
+
+   For each candidate:
    - **Reconcile before promoting.** Working notes drift from what shipped. Check each fact and
      decision against the current source of truth — the repos listed in `DREAM.md` (read the code
      at its local path), and what the done refs contain where you can read it (e.g. the merged code). Keep what is still true, correct
