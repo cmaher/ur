@@ -4,6 +4,8 @@ use std::fmt;
 use std::str::FromStr;
 
 pub use ticket_db::LifecycleStatus;
+/// Persisted in `worker.runtime`; `ur_rpc::runtime` mirrors its string values.
+pub use ur_config::WorkerRuntime;
 
 pub struct WorkflowEvent {
     pub id: String,
@@ -111,6 +113,8 @@ pub struct Worker {
     pub idle_redispatch_count: i32,
     /// Host path of the brain mounted at `/brain`, if the worker has one.
     pub brain_path: Option<String>,
+    /// Where the worker's agent runs (`worker.runtime`, default container).
+    pub runtime: WorkerRuntime,
 }
 
 pub struct WorkerSlot {
@@ -136,6 +140,15 @@ mod tests {
             assert_eq!(parsed, status);
             assert_eq!(status.to_string(), s);
         }
+    }
+
+    #[test]
+    fn worker_runtime_strings_match_rpc_constants() {
+        assert_eq!(
+            WorkerRuntime::Container.as_str(),
+            ur_rpc::runtime::CONTAINER
+        );
+        assert_eq!(WorkerRuntime::Local.as_str(), ur_rpc::runtime::LOCAL);
     }
 
     #[test]

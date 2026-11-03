@@ -350,6 +350,7 @@ mod tests {
     fn minimal_test_config(tmp: &std::path::Path) -> ur_config::Config {
         ur_config::Config {
             agent: ur_config::AgentType::Claude,
+            runtime: ur_config::WorkerRuntime::Container,
             config_dir: tmp.join("config"),
             workspace: tmp.join("workspace"),
             server_port: ur_config::DEFAULT_SERVER_PORT,
@@ -470,6 +471,7 @@ mod tests {
                 memory_dir: None,
                 brain_dir: None,
                 forge: None,
+                runtime: None,
             },
         );
         let (worker_repo, test_db) = test_worker_repo().await;
@@ -559,6 +561,7 @@ mod tests {
             updated_at: now,
             idle_redispatch_count: 0,
             brain_path: None,
+            runtime: workflow_db::model::WorkerRuntime::Container,
         };
         worker_repo.insert_worker(&worker).await.unwrap();
         worker_repo
@@ -778,6 +781,7 @@ image = "ur-worker"
             updated_at: now,
             idle_redispatch_count: 0,
             brain_path: None,
+            runtime: workflow_db::model::WorkerRuntime::Container,
         };
         mgr.worker_repo.insert_worker(&worker).await.unwrap();
         mgr.worker_repo

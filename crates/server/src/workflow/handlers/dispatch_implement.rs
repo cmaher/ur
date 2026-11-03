@@ -82,8 +82,7 @@ async fn dispatch_implement(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::R
     let branch = ensure_ticket_branch(ctx, &ticket, ticket_id, worker_id).await?;
 
     // 4. Derive workerd gRPC address and send Implement RPC.
-    let container_name = format!("{}{}", ctx.worker_prefix, worker.process_id);
-    let workerd_addr = format!("http://{}:{}", container_name, ur_config::WORKERD_GRPC_PORT);
+    let workerd_addr = ctx.workerd_resolver.address_for(&worker);
 
     info!(
         ticket_id = %ticket_id,
@@ -93,11 +92,9 @@ async fn dispatch_implement(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::R
         "dispatching implement RPC to workerd"
     );
 
-    let workerd_client = crate::WorkerdClient::with_status_tracking(
-        workerd_addr,
-        ctx.worker_repo.clone(),
-        worker_id.clone(),
-    );
+    let workerd_client = ctx
+        .workerd_resolver
+        .tracked_client_for(&worker, ctx.worker_repo.clone());
     workerd_client
         .implement(ticket_id)
         .await

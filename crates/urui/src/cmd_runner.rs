@@ -935,6 +935,8 @@ async fn dispatch_ticket(
             // No --agent flag on launch yet (ur-vui34 decision 6) — empty
             // defaults to claude server-side.
             agent_type: String::new(),
+            // Empty resolves the runtime from ur.toml server-side.
+            runtime: String::new(),
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -1181,6 +1183,8 @@ fn launch_design_worker(
                 // No --agent flag on launch yet (ur-vui34 decision 6) — empty
                 // defaults to claude server-side.
                 agent_type: String::new(),
+                // Empty resolves the runtime from ur.toml server-side.
+                runtime: String::new(),
             })
             .await
             .map_err(|e| e.to_string())?;

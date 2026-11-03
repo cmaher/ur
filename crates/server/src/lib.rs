@@ -9,6 +9,7 @@ pub mod grpc_remote_repo;
 pub mod grpc_server;
 pub mod grpc_ticket;
 pub mod hostexec;
+pub mod launch_runtime;
 pub mod log_cleanup;
 pub mod logging;
 pub mod network_manager;
@@ -24,6 +25,7 @@ pub mod ticket_import;
 pub mod ui_event_poller;
 pub mod worker;
 pub mod worker_label;
+pub mod workerd_address;
 pub mod workerd_client;
 pub mod workflow;
 
@@ -41,5 +43,6 @@ pub use ui_event_poller::UiEventPoller;
 pub use worker::{
     ResolvedMode, WorkerConfig, WorkerContext, WorkerId, WorkerManager, WorkerSummary,
 };
+pub use workerd_address::WorkerdAddressResolver;
 pub use workerd_client::WorkerdClient;
 pub use workflow::{GithubPollerManager, HandlerEntry, WorkflowEngine};

@@ -660,6 +660,7 @@ mod tests {
         };
         ur_config::Config {
             agent: ur_config::AgentType::Claude,
+            runtime: ur_config::WorkerRuntime::Container,
             config_dir: PathBuf::from("/test/config"),
             logs_dir: PathBuf::from("/test/config/logs"),
             workspace: PathBuf::from("/test/workspace"),
@@ -1296,6 +1297,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = ur_config::Config {
             agent: ur_config::AgentType::Claude,
+            runtime: ur_config::WorkerRuntime::Container,
             config_dir: tmp.path().to_path_buf(),
             logs_dir: tmp.path().join("logs"),
             workspace: tmp.path().join("workspace"),

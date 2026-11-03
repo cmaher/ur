@@ -149,7 +149,10 @@ impl TestHarness {
             ticket_repo: ticket_repo.clone(),
             workflow_repo: workflow_repo.clone(),
             worker_repo: worker_repo.clone(),
-            worker_prefix: "ur-worker-".to_string(),
+            workerd_resolver: ur_server::WorkerdAddressResolver::new(
+                String::new(),
+                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+            ),
             builderd_client: dummy_builderd_client(),
             config: dummy_config(),
             transition_tx: transition_tx.clone(),
@@ -292,6 +295,7 @@ fn config_with_projects(
     };
     Arc::new(ur_config::Config {
         agent: ur_config::AgentType::Claude,
+        runtime: ur_config::WorkerRuntime::Container,
         config_dir: std::path::PathBuf::from("/tmp/test"),
         logs_dir: std::path::PathBuf::from("/tmp/test/logs"),
         workspace: std::path::PathBuf::from("/tmp/test/workspace"),
@@ -404,6 +408,10 @@ fn dummy_launch_manager(
         workspace_brain_dir: None,
         config_dir: config.config_dir.clone(),
         worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
+        workerd_resolver: ur_server::WorkerdAddressResolver::new(
+            String::new(),
+            ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+        ),
     }
 }
 
@@ -487,6 +495,7 @@ async fn seed_ticket_and_worker(
         updated_at: now,
         idle_redispatch_count: 0,
         brain_path: None,
+        runtime: workflow_db::model::WorkerRuntime::Container,
     };
     worker_repo.insert_worker(&worker).await.unwrap();
 
@@ -734,7 +743,10 @@ async fn per_project_cycle_limit_overrides_server_default() {
         ticket_repo: ticket_repo.clone(),
         workflow_repo: workflow_repo.clone(),
         worker_repo: worker_repo.clone(),
-        worker_prefix: "ur-worker-".to_string(),
+        workerd_resolver: ur_server::WorkerdAddressResolver::new(
+            String::new(),
+            ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+        ),
         builderd_client: dummy_builderd_client(),
         config,
         transition_tx,
@@ -809,6 +821,7 @@ async fn seed_ticket_and_worker_for_project(
         updated_at: now,
         idle_redispatch_count: 0,
         brain_path: None,
+        runtime: workflow_db::model::WorkerRuntime::Container,
     };
     worker_repo.insert_worker(&worker).await.unwrap();
     workflow_repo
@@ -850,6 +863,7 @@ fn project_cycle_limit_map(
             memory_dir: None,
             brain_dir: None,
             forge: None,
+            runtime: None,
         },
     );
     projects

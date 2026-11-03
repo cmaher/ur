@@ -8,7 +8,7 @@ use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::model::{AgentStatus, Slot, Worker, WorkerSlot};
+use crate::model::{AgentStatus, Slot, Worker, WorkerRuntime, WorkerSlot};
 
 /// Result of slot reconciliation: reports what was cleaned up or discovered.
 pub struct SlotReconcileResult {
@@ -49,10 +49,17 @@ type WorkerRow = (
     String,
     i32,
     Option<String>,
+    String,
 );
 
-fn worker_from_row(row: WorkerRow) -> Worker {
-    Worker {
+/// Convert a SELECTed row into a [`Worker`]. Fails (rather than defaulting) if
+/// `runtime` holds a value the CHECK constraint should have made impossible.
+fn worker_from_row(row: WorkerRow) -> Result<Worker, sqlx::Error> {
+    let runtime = row
+        .14
+        .parse::<WorkerRuntime>()
+        .map_err(|e| sqlx::Error::Decode(e.into()))?;
+    Ok(Worker {
         worker_id: row.0,
         process_id: row.1,
         project_key: row.2,
@@ -67,7 +74,8 @@ fn worker_from_row(row: WorkerRow) -> Worker {
         updated_at: row.11,
         idle_redispatch_count: row.12,
         brain_path: row.13,
-    }
+        runtime,
+    })
 }
 
 fn slot_from_row(
@@ -99,8 +107,8 @@ impl WorkerRepo {
 
     pub async fn insert_worker(&self, worker: &Worker) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, brain_path)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+            "INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, brain_path, runtime)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(&worker.worker_id)
         .bind(&worker.process_id)
@@ -115,6 +123,7 @@ impl WorkerRepo {
         .bind(&worker.created_at)
         .bind(&worker.updated_at)
         .bind(&worker.brain_path)
+        .bind(worker.runtime.as_str())
         .execute(&self.pool)
         .await?;
 
@@ -123,14 +132,14 @@ impl WorkerRepo {
 
     pub async fn get_worker(&self, worker_id: &str) -> Result<Option<Worker>, sqlx::Error> {
         let row = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime
              FROM worker WHERE worker_id = $1",
         )
         .bind(worker_id)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(worker_from_row))
+        row.map(worker_from_row).transpose()
     }
 
     /// Look up a worker by the container it owns.
@@ -143,14 +152,14 @@ impl WorkerRepo {
         container_id: &str,
     ) -> Result<Option<Worker>, sqlx::Error> {
         let row = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime
              FROM worker WHERE container_id = $1 ORDER BY created_at DESC LIMIT 1",
         )
         .bind(container_id)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(worker_from_row))
+        row.map(worker_from_row).transpose()
     }
 
     pub async fn update_worker_container_status(
@@ -249,14 +258,14 @@ impl WorkerRepo {
         container_status: &str,
     ) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime
              FROM worker WHERE container_status = $1 ORDER BY created_at ASC",
         )
         .bind(container_status)
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(worker_from_row).collect())
+        rows.into_iter().map(worker_from_row).collect()
     }
 
     pub async fn verify_worker(&self, worker_id: &str, secret: &str) -> Result<bool, sqlx::Error> {
@@ -277,7 +286,7 @@ impl WorkerRepo {
         workspace_path: &str,
     ) -> Result<Option<Worker>, sqlx::Error> {
         let row = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime
              FROM worker WHERE project_key = $1 AND workspace_path = $2",
         )
         .bind(project_key)
@@ -285,7 +294,7 @@ impl WorkerRepo {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(worker_from_row))
+        row.map(worker_from_row).transpose()
     }
 
     // --- Slot methods ---
@@ -467,26 +476,26 @@ impl WorkerRepo {
     /// List all workers regardless of container_status.
     pub async fn list_all_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime
              FROM worker ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(worker_from_row).collect())
+        rows.into_iter().map(worker_from_row).collect()
     }
 
     /// List workers whose container_status is one of the active lifecycle states
     /// (provisioning, running, stopping).
     pub async fn list_active_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime
              FROM worker WHERE container_status IN ('provisioning', 'running', 'stopping') ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(worker_from_row).collect())
+        rows.into_iter().map(worker_from_row).collect()
     }
 
     /// Delete all workers that are linked to a given slot_id via worker_slot.
@@ -759,7 +768,62 @@ mod tests {
             updated_at: now,
             idle_redispatch_count: 0,
             brain_path: None,
+            runtime: WorkerRuntime::Container,
         }
+    }
+
+    #[tokio::test]
+    async fn insert_and_get_round_trip_runtime() {
+        let test_db = TestDb::new().await;
+        let repo = WorkerRepo::new(test_db.workflow_pool().clone());
+
+        let mut local = test_worker("w-local", "claude");
+        local.runtime = WorkerRuntime::Local;
+        repo.insert_worker(&local).await.unwrap();
+        repo.insert_worker(&test_worker("w-container", "claude"))
+            .await
+            .unwrap();
+
+        let fetched = repo.get_worker("w-local").await.unwrap().unwrap();
+        assert_eq!(fetched.runtime, WorkerRuntime::Local);
+        let fetched = repo.get_worker("w-container").await.unwrap().unwrap();
+        assert_eq!(fetched.runtime, WorkerRuntime::Container);
+        let all = repo.list_all_workers().await.unwrap();
+        assert!(all.iter().any(|w| w.runtime == WorkerRuntime::Local));
+    }
+
+    #[tokio::test]
+    async fn runtime_check_constraint_rejects_unknown_value() {
+        let test_db = TestDb::new().await;
+        repo_insert_raw(&test_db, "w-bad-runtime").await;
+        let result = sqlx::query("UPDATE worker SET runtime = 'vm' WHERE worker_id = $1")
+            .bind("w-bad-runtime")
+            .execute(test_db.workflow_pool())
+            .await;
+        assert!(result.is_err(), "CHECK constraint must reject 'vm'");
+    }
+
+    /// Insert a row naming only the pre-migration columns, as any row written
+    /// before `agent_type`/`runtime` existed would have been.
+    async fn repo_insert_raw(test_db: &TestDb, worker_id: &str) {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        )
+        .bind(worker_id)
+        .bind(format!("proc-{worker_id}"))
+        .bind("testproj")
+        .bind(format!("container-{worker_id}"))
+        .bind("secret")
+        .bind("code")
+        .bind("running")
+        .bind("starting")
+        .bind(&now)
+        .bind(&now)
+        .execute(test_db.workflow_pool())
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -845,33 +909,17 @@ mod tests {
         assert_eq!(context.agent_type, "claude");
     }
 
-    /// Rows written without specifying `agent_type` (as any row inserted before
-    /// this migration would have been) backfill to the column's DEFAULT.
+    /// Rows written without specifying `agent_type` or `runtime` (as any row
+    /// inserted before those migrations would have been) backfill to the
+    /// columns' DEFAULTs.
     #[tokio::test]
-    async fn rows_missing_agent_type_backfill_to_claude() {
+    async fn rows_missing_agent_type_and_runtime_backfill_to_defaults() {
         let test_db = TestDb::new().await;
         let repo = WorkerRepo::new(test_db.workflow_pool().clone());
-        let now = Utc::now().to_rfc3339();
-
-        sqlx::query(
-            "INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-        )
-        .bind("w-backfill")
-        .bind("proc-backfill")
-        .bind("testproj")
-        .bind("container-backfill")
-        .bind("secret")
-        .bind("code")
-        .bind("running")
-        .bind("starting")
-        .bind(&now)
-        .bind(&now)
-        .execute(test_db.workflow_pool())
-        .await
-        .unwrap();
+        repo_insert_raw(&test_db, "w-backfill").await;
 
         let worker = repo.get_worker("w-backfill").await.unwrap().unwrap();
         assert_eq!(worker.agent_type, "claude");
+        assert_eq!(worker.runtime, WorkerRuntime::Container);
     }
 }

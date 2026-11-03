@@ -13,6 +13,7 @@ Loaded by `Config::load()` / `Config::load_from()` in `crates/ur_config/src/lib.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `agent` | string | `"claude"` | Default agent harness for every worker (`"claude"`, `"codex"`, or `"agy"`). An unrecognized value is a startup config error naming the valid agents — never a silent fallback. See [Agent Default Precedence](#agent-default-precedence) |
+| `runtime` | string | `"container"` | Default worker runtime (`"container"` or `"local"`). Unknown values are a config error naming the key. See [Runtime Precedence](#runtime-precedence) |
 | `workspace` | path | `<config_dir>/workspace` | Worker workspace directory (host-side) |
 | `server_port` | u16 | 12321 | TCP port for ur→server gRPC |
 | `builderd_port` | u16 | `server_port + 2` | TCP port for builderd |
@@ -96,6 +97,7 @@ Each project is a TOML table keyed by a short identifier (e.g., `[projects.ur]`)
 | `hostexec` | string[] | `[]` | no | Additional passthrough commands for hostexec (e.g. `["tea"]`) |
 | `hostexec_deny` | string[] | `[]` | no | Commands denied to this project (e.g. `["gh"]`). Must not overlap with `hostexec` |
 | `mounts` | string[] | `[]` | no | Volume mounts in `"source:destination"` format |
+| `runtime` | string | — | no | Per-project worker runtime (`"container"` or `"local"`); unset defers to the top-level `runtime`. See [Runtime Precedence](#runtime-precedence) |
 | `brain_dir` | template path | — | no | Per-project brain directory, mounted read-write at `/brain`. `%URCONFIG%/...` or absolute path; `%PROJECT%` rejected (brain must be project-stable). Convention fallback: `<config_dir>/projects/<key>/brain/` when unset. See [project-file-mounting.md](project-file-mounting.md) |
 
 ### Per-Project Tooling & Gitea Setup
@@ -207,6 +209,39 @@ below) if a mode's model needs to stay agent-independent.
 
 Deliberately out of scope: a per-project `[projects.<key>].agent` override. A project that
 needs a specific harness declares a custom mode with an explicit `agent` field instead.
+
+## Runtime Precedence
+
+`WorkerRuntime` (`crates/ur_config/src/runtime.rs`, serde `"container" | "local"`) says where a
+worker's agent runs. It is resolved per launch, highest priority first:
+
+```
+--runtime flag (ur worker launch, clap ValueEnum)
+  → worker_modes.<mode>.runtime        (crates/server/src/worker.rs)
+  → projects.<key>.runtime             (ProjectConfig.runtime)
+  → top-level `runtime` key            (Config.runtime / WorkerModesConfig's default_runtime)
+  → container
+```
+
+The chain itself is `ur_config::resolve_worker_runtime`; `WorkerModesConfig::resolve_runtime`
+supplies the mode and top-level levels, and `LaunchManager::resolve_launch_runtime`
+(`crates/server/src/grpc.rs`) adds the request (`WorkerLaunchRequest.runtime`, empty = unset)
+and the project. Workflow-dispatched and TUI launches send an empty `runtime`, so they use the
+same chain minus the CLI level. Invalid values fail config parsing with an error naming the key
+(`runtime`, `projects.<key>.runtime` via the TOML snippet, or `worker_modes.<mode>.runtime`).
+
+Validation (`crates/server/src/launch_runtime.rs`) runs right after mode resolution, before any
+slot acquisition, filesystem, or container work. A resolved `local` is rejected with
+`FailedPrecondition` when the agent's `supports_local_runtime()` is false (Claude only), the
+project is `local = true`, or the launch has no pool slot (`-w` workspace launch or no project).
+A launch that passes those checks is still rejected (`local runtime launch is not available
+yet`) until the local launch path exists — it never falls back to a container.
+
+The resolved runtime is stored on the `workflow_db` `worker.runtime` column (default
+`container`) and returned as `runtime` on `WorkerSummary` / `WorkerInfoResponse`.
+`WorkerdAddressResolver` (`crates/server/src/workerd_address.rs`) reads it to reach a worker's
+daemon: container → `http://<worker_prefix><process_id>:WORKERD_GRPC_PORT`; local → builderd's
+address with `ur-worker-id: <worker_id>` metadata on every call.
 
 ## `[worker_models]` Section
 

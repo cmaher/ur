@@ -8,11 +8,12 @@ use ur_rpc::retry::{RetryChannel, RetryConfig};
 use workflow_db::WorkerRepo;
 use workflow_db::model::AgentStatus;
 
-/// Thin client for sending messages to a workerd instance inside a worker container.
+/// Thin client for sending messages to a worker's daemon.
 ///
-/// Each worker container runs a `workerd` gRPC daemon on a fixed port.
-/// The server derives the workerd address from the container name (Docker DNS)
-/// and the fixed gRPC port.
+/// Build it through [`crate::workerd_address::WorkerdAddressResolver`], which
+/// picks the address per runtime: a container worker's own `workerd` (Docker
+/// DNS + fixed port), or builderd for a local worker — in which case every call
+/// carries `ur-worker-id` so builderd can route to that worker's daemon.
 ///
 /// When `worker_repo` and `worker_id` are set, successful dispatches automatically
 /// update the worker's agent status to `Working`.
@@ -22,6 +23,8 @@ pub struct WorkerdClient {
     retry_channel: RetryChannel,
     /// Optional worker repo + ID for automatic agent status updates.
     status_tracking: Option<StatusTracking>,
+    /// When set, sent as `ur-worker-id` metadata on every call (local workers).
+    routing_worker_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -37,7 +40,29 @@ impl WorkerdClient {
         Self {
             retry_channel,
             status_tracking: None,
+            routing_worker_id: None,
         }
+    }
+
+    /// Send `ur-worker-id: <worker_id>` on every call so a shared daemon host
+    /// (builderd) can route the request to this worker.
+    pub fn with_routing_worker_id(mut self, worker_id: String) -> Self {
+        self.routing_worker_id = Some(worker_id);
+        self
+    }
+
+    /// Wrap `message` in a request carrying the routing header, if any.
+    pub(crate) fn request<T>(&self, message: T) -> Result<tonic::Request<T>, String> {
+        let mut request = tonic::Request::new(message);
+        if let Some(worker_id) = &self.routing_worker_id {
+            let value = worker_id
+                .parse()
+                .map_err(|e| format!("invalid worker id '{worker_id}' for routing header: {e}"))?;
+            request
+                .metadata_mut()
+                .insert(ur_config::WORKER_ID_HEADER, value);
+        }
+        Ok(request)
     }
 
     /// Create a client that automatically sets agent status to Working after
@@ -51,6 +76,7 @@ impl WorkerdClient {
                 worker_repo,
                 worker_id,
             }),
+            routing_worker_id: None,
         }
     }
 
@@ -84,7 +110,7 @@ impl WorkerdClient {
         };
 
         let response = client
-            .send_message(req)
+            .send_message(self.request(req)?)
             .await
             .map_err(|e| format!("workerd SendMessage failed: {e}"))?;
 
@@ -106,7 +132,7 @@ impl WorkerdClient {
         };
 
         client
-            .implement(req)
+            .implement(self.request(req)?)
             .await
             .map_err(|e| format!("workerd Implement failed: {e}"))?;
 
@@ -123,7 +149,7 @@ impl WorkerdClient {
         };
 
         client
-            .design(req)
+            .design(self.request(req)?)
             .await
             .map_err(|e| format!("workerd Design failed: {e}"))?;
 
@@ -148,7 +174,7 @@ impl WorkerdClient {
         };
 
         let response = client
-            .set_status_left(req)
+            .set_status_left(self.request(req)?)
             .await
             .map_err(|e| format!("workerd SetStatusLeft failed: {e}"))?;
 
@@ -179,7 +205,7 @@ impl WorkerdClient {
         };
 
         client
-            .address_feedback_tickets(req)
+            .address_feedback_tickets(self.request(req)?)
             .await
             .map_err(|e| format!("workerd AddressFeedbackTickets failed: {e}"))?;
 

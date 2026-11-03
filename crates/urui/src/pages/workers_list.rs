@@ -17,7 +17,7 @@ use ur_rpc::proto::core::WorkerSummary;
 /// Render the workers list page into the given content area.
 ///
 /// Shows a table of active workers with ID, Project, Mode, Status, Agent,
-/// and Container columns. Supports pagination.
+/// Runtime, and Container columns. Supports pagination.
 pub fn render_workers_list(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: &Model) {
     match &model.worker_list.data {
         LoadState::NotLoaded | LoadState::Loading => {
@@ -73,11 +73,20 @@ fn render_loaded_workers(
         Constraint::Length(8),  // Mode
         Constraint::Length(14), // Status
         Constraint::Length(10), // Agent
+        Constraint::Length(10), // Runtime
         Constraint::Fill(1),    // Container
     ];
 
     let table = ThemedTable {
-        headers: vec!["ID", "Project", "Mode", "Status", "Agent", "Container"],
+        headers: vec![
+            "ID",
+            "Project",
+            "Mode",
+            "Status",
+            "Agent",
+            "Runtime",
+            "Container",
+        ],
         rows,
         selected,
         widths,
@@ -95,6 +104,7 @@ fn worker_to_row(worker: &WorkerSummary) -> Vec<String> {
         worker.mode.clone(),
         worker.container_status.clone(),
         worker.agent_status.clone(),
+        worker.runtime.clone(),
         worker.container_id.clone(),
     ]
 }
@@ -413,6 +423,7 @@ mod tests {
             workflow_stalled: false,
             workflow_stall_reason: String::new(),
             agent_type: ur_rpc::agent::CLAUDE.to_owned(),
+            runtime: ur_rpc::runtime::CONTAINER.to_owned(),
         }
     }
 
@@ -433,7 +444,17 @@ mod tests {
         assert_eq!(row[2], "implement");
         assert_eq!(row[3], "running");
         assert_eq!(row[4], "active");
-        assert_eq!(row[5], "ctr-abc123");
+        assert_eq!(row[5], "container");
+        assert_eq!(row[6], "ctr-abc123");
+    }
+
+    #[test]
+    fn worker_to_row_shows_both_runtimes() {
+        for runtime in [ur_rpc::runtime::CONTAINER, ur_rpc::runtime::LOCAL] {
+            let mut worker = make_worker("ur-rt");
+            worker.runtime = runtime.to_owned();
+            assert_eq!(worker_to_row(&worker)[5], runtime);
+        }
     }
 
     // ── sorted_workers ────────────────────────────────────────────────

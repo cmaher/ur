@@ -340,6 +340,16 @@ impl AgentType {
         }
     }
 
+    /// Whether this agent can run with `runtime = "local"` (natively on the
+    /// host in a pool slot). Claude only for now; other agents are rejected
+    /// with `FailedPrecondition` at launch.
+    pub fn supports_local_runtime(&self) -> bool {
+        match self {
+            Self::Claude => true,
+            Self::Codex | Self::Agy => false,
+        }
+    }
+
     /// Auth profile for this agent, or `None` for agents that need no
     /// credentials. Callers gate credential-bearing logic on
     /// `if let Some(auth) = agent.auth()`.
@@ -480,6 +490,13 @@ mod tests {
 
     /// Serialize tests that mutate the process-wide `UR_AGENT_TYPE` env var.
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn only_claude_supports_local_runtime() {
+        assert!(AgentType::Claude.supports_local_runtime());
+        assert!(!AgentType::Codex.supports_local_runtime());
+        assert!(!AgentType::Agy.supports_local_runtime());
+    }
 
     #[test]
     fn name_and_subdirs() {

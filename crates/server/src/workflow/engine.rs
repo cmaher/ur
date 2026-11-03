@@ -31,7 +31,7 @@ impl WorkflowEngine {
         ticket_repo: TicketRepo,
         workflow_repo: WorkflowRepo,
         worker_repo: WorkerRepo,
-        worker_prefix: String,
+        workerd_resolver: crate::WorkerdAddressResolver,
         builderd_client: ur_rpc::proto::builder::BuilderdClient,
         config: Arc<ur_config::Config>,
         handler_entries: Vec<HandlerEntry>,
@@ -43,7 +43,7 @@ impl WorkflowEngine {
             ticket_repo,
             workflow_repo,
             worker_repo,
-            worker_prefix,
+            workerd_resolver,
             builderd_client,
             config,
             transition_tx,
@@ -253,6 +253,7 @@ mod tests {
     fn dummy_config() -> Arc<ur_config::Config> {
         Arc::new(ur_config::Config {
             agent: ur_config::AgentType::Claude,
+            runtime: ur_config::WorkerRuntime::Container,
             config_dir: std::path::PathBuf::from("/tmp/test"),
             logs_dir: std::path::PathBuf::from("/tmp/test/logs"),
             workspace: std::path::PathBuf::from("/tmp/test/workspace"),
@@ -434,7 +435,10 @@ mod tests {
             repo.clone(),
             workflow_repo.clone(),
             worker_repo.clone(),
-            "ur-worker-".to_string(),
+            crate::WorkerdAddressResolver::new(
+                String::new(),
+                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+            ),
             dummy_builderd_client(),
             dummy_config(),
             vec![(
@@ -505,7 +509,10 @@ mod tests {
             repo.clone(),
             workflow_repo.clone(),
             worker_repo.clone(),
-            "ur-worker-".to_string(),
+            crate::WorkerdAddressResolver::new(
+                String::new(),
+                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+            ),
             dummy_builderd_client(),
             dummy_config(),
             vec![(
@@ -583,7 +590,10 @@ mod tests {
             repo.clone(),
             workflow_repo.clone(),
             worker_repo.clone(),
-            "ur-worker-".to_string(),
+            crate::WorkerdAddressResolver::new(
+                String::new(),
+                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+            ),
             dummy_builderd_client(),
             dummy_config(),
             vec![(
@@ -652,7 +662,10 @@ mod tests {
             repo.clone(),
             workflow_repo.clone(),
             worker_repo.clone(),
-            "ur-worker-".to_string(),
+            crate::WorkerdAddressResolver::new(
+                String::new(),
+                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+            ),
             dummy_builderd_client(),
             dummy_config(),
             vec![(
@@ -694,7 +707,10 @@ mod tests {
             repo.clone(),
             workflow_repo.clone(),
             worker_repo.clone(),
-            "ur-worker-".to_string(),
+            crate::WorkerdAddressResolver::new(
+                String::new(),
+                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+            ),
             dummy_builderd_client(),
             dummy_config(),
             vec![(
@@ -760,7 +776,10 @@ mod tests {
             repo.clone(),
             workflow_repo.clone(),
             worker_repo.clone(),
-            "ur-worker-".to_string(),
+            crate::WorkerdAddressResolver::new(
+                String::new(),
+                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+            ),
             dummy_builderd_client(),
             dummy_config(),
             vec![],

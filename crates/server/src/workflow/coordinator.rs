@@ -492,6 +492,7 @@ mod tests {
     fn dummy_config() -> Arc<ur_config::Config> {
         Arc::new(ur_config::Config {
             agent: ur_config::AgentType::Claude,
+            runtime: ur_config::WorkerRuntime::Container,
             config_dir: std::path::PathBuf::from("/tmp/test"),
             logs_dir: std::path::PathBuf::from("/tmp/test/logs"),
             workspace: std::path::PathBuf::from("/tmp/test/workspace"),
@@ -612,7 +613,10 @@ mod tests {
             ticket_repo,
             workflow_repo,
             worker_repo,
-            worker_prefix: "ur-worker-".to_string(),
+            workerd_resolver: crate::WorkerdAddressResolver::new(
+                String::new(),
+                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+            ),
             builderd_client: dummy_builderd_client(),
             config: dummy_config(),
             transition_tx: tx,

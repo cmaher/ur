@@ -208,6 +208,7 @@ fn running_worker(worker_id: &str, process_id: &str) -> workflow_db::model::Work
         updated_at: now,
         idle_redispatch_count: 0,
         brain_path: None,
+        runtime: workflow_db::model::WorkerRuntime::Container,
     }
 }
 
@@ -259,7 +260,10 @@ async fn two_db_split_events_arrive_on_merged_stream() {
         ui_event_poller: Some(ui_event_poller.clone()),
         worker_manager: None,
         worker_repo: None,
-        worker_prefix: String::new(),
+        workerd_resolver: ur_server::WorkerdAddressResolver::new(
+            String::new(),
+            ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+        ),
     };
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);

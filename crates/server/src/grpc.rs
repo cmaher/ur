@@ -35,6 +35,18 @@ pub enum CoreError {
     #[error("invalid image: {reason}")]
     InvalidImage { reason: String },
 
+    #[error("invalid runtime: {reason}")]
+    InvalidRuntime { reason: String },
+
+    /// `runtime = local` resolved for a launch that cannot run locally
+    /// (unsupported agent, `local = true` project, or no pool slot).
+    #[error("local runtime unsupported: {reason}")]
+    LocalRuntimeUnsupported { reason: String },
+
+    /// A valid `runtime = local` launch; local launch is not implemented yet.
+    #[error("local runtime launch is not available yet — use runtime = \"container\"")]
+    LocalRuntimeLaunchUnavailable,
+
     #[error("pool slot acquisition failed: {reason}")]
     PoolSlotFailed { reason: String },
 
@@ -110,6 +122,13 @@ impl From<CoreError> for Status {
             CoreError::InvalidImage { .. } => {
                 simple_status(Code::InvalidArgument, &err, INVALID_ARGUMENT)
             }
+            CoreError::InvalidRuntime { .. } => {
+                simple_status(Code::InvalidArgument, &err, INVALID_ARGUMENT)
+            }
+            CoreError::LocalRuntimeUnsupported { .. }
+            | CoreError::LocalRuntimeLaunchUnavailable => {
+                simple_status(Code::FailedPrecondition, &err, INVALID_ARGUMENT)
+            }
             CoreError::PoolSlotFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
             CoreError::InvalidContextRepo { .. } => {
                 simple_status(Code::InvalidArgument, &err, INVALID_ARGUMENT)
@@ -165,6 +184,7 @@ struct ResolvedLaunch {
     model: String,
     effort: String,
     agent: ur_config::AgentType,
+    runtime: ur_config::WorkerRuntime,
     generated_process_id: Option<String>,
 }
 
@@ -275,6 +295,8 @@ pub struct LaunchManager {
     pub config_dir: PathBuf,
     /// Tag image aliases resolve against (`ur_config::worker_image_tag`).
     pub worker_image_tag: String,
+    /// Resolves a worker row to its daemon address (design dispatch, labels).
+    pub workerd_resolver: crate::WorkerdAddressResolver,
 }
 
 /// Why a launch against a local project cannot proceed, or `None` if it can.
@@ -431,7 +453,7 @@ impl LaunchManager {
             if strategy == crate::WorkerStrategy::Design && dispatch {
                 spawn_design_dispatch(
                     self.worker_repo.clone(),
-                    self.network_config.clone(),
+                    self.workerd_resolver.clone(),
                     process_id.to_owned(),
                     worker_id_str.to_owned(),
                 );
@@ -445,7 +467,7 @@ impl LaunchManager {
                 workflow_repo: self.workflow_repo.clone(),
                 ticket_repo: self.ticket_repo.clone(),
                 worker_repo: self.worker_repo.clone(),
-                worker_prefix: self.network_config.worker_prefix.clone(),
+                workerd_resolver: self.workerd_resolver.clone(),
             },
             self.worker_repo.clone(),
             worker_id_str.to_owned(),
@@ -552,6 +574,7 @@ impl LaunchManager {
         let effective_project_key = self.resolve_effective_project_key(req);
 
         self.reject_unsupported_local_launch(&effective_project_key, req, strategy)?;
+        let runtime = self.resolve_launch_runtime(req, &effective_project_key, agent)?;
 
         let (workspace_dir, project_key, slot_claim) =
             if !effective_project_key.is_empty() && !req.workspace_dir.is_empty() {
@@ -635,8 +658,37 @@ impl LaunchManager {
             model,
             effort,
             agent,
+            runtime,
             generated_process_id,
         })
+    }
+
+    /// Resolve and validate the launch's runtime before any slot, filesystem,
+    /// or container work. A launch has a pool slot exactly when it names a
+    /// project and no workspace dir (see `resolve_launch_workspace`).
+    fn resolve_launch_runtime(
+        &self,
+        req: &WorkerLaunchRequest,
+        project_key: &str,
+        agent: ur_config::AgentType,
+    ) -> Result<ur_config::WorkerRuntime, CoreError> {
+        let requested = crate::launch_runtime::parse_requested_runtime(&req.runtime)?;
+        let project = self.project_registry.get(project_key);
+        let runtime = self.worker_manager.resolve_runtime(
+            &req.mode,
+            requested,
+            project.as_ref().and_then(|p| p.runtime),
+        );
+        let has_pool_slot = !project_key.is_empty() && req.workspace_dir.is_empty();
+        crate::launch_runtime::validate_launch_runtime(
+            runtime,
+            agent,
+            project
+                .as_ref()
+                .is_some_and(ur_config::ProjectConfig::is_local),
+            has_pool_slot,
+        )?;
+        Ok(runtime)
     }
 
     /// Extracted from `launch` to keep method body within the line limit.
@@ -678,6 +730,7 @@ impl LaunchManager {
         model: String,
         effort: String,
         agent: ur_config::AgentType,
+        runtime: ur_config::WorkerRuntime,
         workspace_dir: Option<PathBuf>,
         context_mounts: Vec<(String, std::path::PathBuf)>,
     ) -> Result<crate::WorkerConfig, CoreError> {
@@ -731,6 +784,7 @@ impl LaunchManager {
             brain_dir: fields.brain_dir,
             workspace_brain_dir: self.workspace_brain_dir.clone(),
             forge: fields.forge,
+            runtime,
         })
     }
 
@@ -749,6 +803,7 @@ impl LaunchManager {
             model,
             effort,
             agent,
+            runtime,
             generated_process_id,
         } = self.resolve_launch_workspace(&req).await?;
         let slot_id = slot_claim.as_ref().map(|claim| claim.slot_id().to_owned());
@@ -790,6 +845,7 @@ impl LaunchManager {
             model,
             effort,
             agent,
+            runtime,
             workspace_dir,
             context_mounts,
         )?;
@@ -857,6 +913,8 @@ pub struct CoreServiceHandler {
     pub network_config: ur_config::NetworkConfig,
     pub builderd_addr: String,
     pub config_dir: PathBuf,
+    /// Resolves a worker row to its daemon address (`send_worker_message`).
+    pub workerd_resolver: crate::WorkerdAddressResolver,
 }
 
 #[tonic::async_trait]
@@ -920,10 +978,13 @@ impl CoreService for CoreServiceHandler {
             .get_worker(&req.worker_id)
             .await
             .map_err(|e| Status::internal(format!("failed to get worker: {e}")))?;
-        let agent_status = worker.map(|w| w.agent_status).unwrap_or_default();
+        let (agent_status, runtime) = worker
+            .map(|w| (w.agent_status, w.runtime.as_str().to_owned()))
+            .unwrap_or_default();
         Ok(Response::new(WorkerInfoResponse {
             workspace_dir,
             agent_status,
+            runtime,
         }))
     }
 
@@ -988,6 +1049,7 @@ impl CoreService for CoreServiceHandler {
                 workflow_stalled,
                 workflow_stall_reason,
                 agent_type: s.agent_type,
+                runtime: s.runtime.as_str().to_owned(),
             });
         }
         Ok(Response::new(WorkerListResponse { workers }))
@@ -1018,17 +1080,10 @@ impl CoreService for CoreServiceHandler {
                 worker_id: req.worker_id.clone(),
             })?;
 
-        // Derive the workerd gRPC address from container name + fixed port.
-        // Container name = worker_prefix + process_id (same as at creation time).
-        let container_name = format!("{}{}", self.network_config.worker_prefix, worker.process_id);
-        let workerd_addr = format!("http://{}:{}", container_name, ur_config::WORKERD_GRPC_PORT);
-
-        // Forward the message to workerd.
-        let workerd_client = crate::WorkerdClient::with_status_tracking(
-            workerd_addr,
-            self.worker_repo.clone(),
-            worker.worker_id.clone(),
-        );
+        // Forward the message to the worker's daemon.
+        let workerd_client = self
+            .workerd_resolver
+            .tracked_client_for(&worker, self.worker_repo.clone());
         workerd_client
             // Unset means submit — see the field comment in core.proto.
             .send_message(&req.message, req.submit.unwrap_or(true))
@@ -1374,13 +1429,13 @@ async fn persist_pool_branch(
 /// Spawn a background task to dispatch the /design command once the worker is idle.
 fn spawn_design_dispatch(
     worker_repo: workflow_db::WorkerRepo,
-    network_config: ur_config::NetworkConfig,
+    workerd_resolver: crate::WorkerdAddressResolver,
     process_id: String,
     worker_id: String,
 ) {
     tokio::spawn(async move {
         if let Err(e) =
-            dispatch_design_on_ready(&worker_repo, &network_config, &process_id, &worker_id).await
+            dispatch_design_on_ready(&worker_repo, &workerd_resolver, &process_id, &worker_id).await
         {
             error!(
                 process_id = %process_id,
@@ -1657,7 +1712,7 @@ async fn send_transition(
 /// Times out after 60 seconds if the worker never becomes idle.
 async fn dispatch_design_on_ready(
     worker_repo: &WorkerRepo,
-    network_config: &ur_config::NetworkConfig,
+    workerd_resolver: &crate::WorkerdAddressResolver,
     process_id: &str,
     worker_id: &str,
 ) -> Result<(), anyhow::Error> {
@@ -1667,7 +1722,7 @@ async fn dispatch_design_on_ready(
     let poll_interval = Duration::from_millis(500);
     let start = Instant::now();
 
-    loop {
+    let worker = loop {
         if start.elapsed() > timeout {
             anyhow::bail!("timed out waiting for worker {process_id} to become idle");
         }
@@ -1678,26 +1733,19 @@ async fn dispatch_design_on_ready(
             .ok_or_else(|| anyhow::anyhow!("worker {worker_id} not found"))?;
 
         if worker.agent_status == AgentStatus::Idle.as_str() {
-            break;
+            break worker;
         }
 
         tokio::time::sleep(poll_interval).await;
-    }
-
-    let container_name = format!("{}{}", network_config.worker_prefix, process_id);
-    let workerd_addr = format!("http://{}:{}", container_name, ur_config::WORKERD_GRPC_PORT);
+    };
 
     info!(
         process_id = %process_id,
-        workerd_addr = %workerd_addr,
+        workerd_addr = %workerd_resolver.address_for(&worker),
         "design worker ready — dispatching design command"
     );
 
-    let workerd_client = crate::WorkerdClient::with_status_tracking(
-        workerd_addr,
-        worker_repo.clone(),
-        worker_id.to_owned(),
-    );
+    let workerd_client = workerd_resolver.tracked_client_for(&worker, worker_repo.clone());
     workerd_client
         .design(process_id)
         .await

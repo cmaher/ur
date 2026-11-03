@@ -181,6 +181,24 @@ enum ServerCommands {
     Stop,
 }
 
+/// `ur worker launch --runtime` values; mirrors `ur_config::WorkerRuntime`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum RuntimeArg {
+    /// Run the agent in a Docker container
+    Container,
+    /// Run the agent natively on the host in a pool slot (claude only)
+    Local,
+}
+
+impl From<RuntimeArg> for ur_config::WorkerRuntime {
+    fn from(arg: RuntimeArg) -> Self {
+        match arg {
+            RuntimeArg::Container => Self::Container,
+            RuntimeArg::Local => Self::Local,
+        }
+    }
+}
+
 #[derive(Clone, Debug, clap::ValueEnum)]
 enum Component {
     /// ur-server container
@@ -266,6 +284,10 @@ enum WorkerCommands {
         /// configured top-level agent). Overrides both.
         #[arg(long)]
         agent: Option<String>,
+        /// Where the agent runs (default: worker_modes.<mode>.runtime, then
+        /// projects.<key>.runtime, then the top-level runtime, then container)
+        #[arg(long, value_enum)]
+        runtime: Option<RuntimeArg>,
     },
     /// List all running processes
     List,
@@ -704,54 +726,42 @@ async fn process_list(
         output.print_text("No running workers.");
         return Ok(());
     }
-    output.print_items(&workers, |workers| {
-        let mut out = format!(
-            "{:<20} {:<12} {:<16} {:<8} {:<12} {:<14} {}\n",
-            "WORKER", "PROJECT", "CONTAINER", "MODE", "STATUS", "AGENT", "DIRECTORY"
-        );
-        for w in workers {
-            let container_short = if w.container_id.len() > 12 {
-                &w.container_id[..12]
-            } else {
-                &w.container_id
-            };
-            let project = if w.project_key.is_empty() {
-                "-"
-            } else {
-                &w.project_key
-            };
-            let directory = if w.directory.is_empty() {
-                "-"
-            } else {
-                &w.directory
-            };
-            let container_status = if w.container_status.is_empty() {
-                "-"
-            } else {
-                &w.container_status
-            };
-            let agent_status = if w.agent_status.is_empty() {
-                "-"
-            } else {
-                &w.agent_status
-            };
-            out.push_str(&format!(
-                "{:<20} {:<12} {:<16} {:<8} {:<12} {:<14} {}\n",
-                w.worker_id,
-                project,
-                container_short,
-                w.mode,
-                container_status,
-                agent_status,
-                directory
-            ));
-        }
-        if out.ends_with('\n') {
-            out.pop();
-        }
-        out
-    });
+    output.print_items(&workers, format_worker_list);
     Ok(())
+}
+
+/// Text table for `ur worker list` (JSON output serializes `WorkerSummary`,
+/// which carries `runtime` directly).
+fn format_worker_list(workers: &[WorkerSummary]) -> String {
+    fn dash(s: &str) -> &str {
+        if s.is_empty() { "-" } else { s }
+    }
+    let mut out = format!(
+        "{:<20} {:<12} {:<16} {:<8} {:<12} {:<14} {:<10} {}\n",
+        "WORKER", "PROJECT", "CONTAINER", "MODE", "STATUS", "AGENT", "RUNTIME", "DIRECTORY"
+    );
+    for w in workers {
+        let container_short = if w.container_id.len() > 12 {
+            &w.container_id[..12]
+        } else {
+            &w.container_id
+        };
+        out.push_str(&format!(
+            "{:<20} {:<12} {:<16} {:<8} {:<12} {:<14} {:<10} {}\n",
+            w.worker_id,
+            dash(&w.project_key),
+            container_short,
+            w.mode,
+            dash(&w.container_status),
+            dash(&w.agent_status),
+            dash(&w.runtime),
+            dash(&w.directory)
+        ));
+    }
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    out
 }
 
 #[instrument(skip(client, output))]
@@ -803,6 +813,7 @@ fn format_worker_describe(w: &WorkerSummary, out: &mut String) {
         ("Container", dash(&w.container_status)),
         ("Agent", dash(&w.agent_status)),
         ("Mode", &w.mode),
+        ("Runtime", dash(&w.runtime)),
         ("Directory", dash(&w.directory)),
         ("Workflow", dash(&w.workflow_id)),
         ("Workflow Status", dash(&w.workflow_status)),
@@ -881,6 +892,7 @@ async fn process_launch(
     output: &OutputManager,
     projects: &HashMap<String, ur_config::ProjectConfig>,
     agent_type: String,
+    runtime: String,
 ) -> Result<String> {
     info!(ticket_id, project_key, "launching worker process");
 
@@ -949,21 +961,18 @@ async fn process_launch(
         println!("Launching worker {container_name}...");
     }
     let resp = client
-        .worker_launch(WorkerLaunchRequest {
-            worker_id: ticket_id.into(),
-            image_id: image_id.into(),
-            cpus: 2,
-            memory: "8G".into(),
+        .worker_launch(worker_launch_request(
+            ticket_id,
+            image_id,
             workspace_dir,
-            mode: mode.to_owned(),
-            skills: skills.to_vec(),
-            project_key: project_key.to_owned(),
-            context_repos: context_repos.to_vec(),
+            mode,
+            skills,
+            project_key,
+            context_repos,
             dispatch,
-            // Empty means "let the server resolve it" (mode's agent, then
-            // the configured top-level default).
             agent_type,
-        })
+            runtime,
+        ))
         .await?;
 
     let inner = resp.into_inner();
@@ -988,6 +997,37 @@ async fn process_launch(
         println!("Worker {process_id} running (container {container_id})");
     }
     Ok(process_id)
+}
+
+/// The `WorkerLaunch` RPC body for `ur worker launch`. Empty `agent_type` /
+/// `runtime` mean "let the server resolve it from ur.toml".
+#[allow(clippy::too_many_arguments)]
+fn worker_launch_request(
+    ticket_id: &str,
+    image_id: &str,
+    workspace_dir: String,
+    mode: &str,
+    skills: &[String],
+    project_key: &str,
+    context_repos: &[String],
+    dispatch: bool,
+    agent_type: String,
+    runtime: String,
+) -> WorkerLaunchRequest {
+    WorkerLaunchRequest {
+        worker_id: ticket_id.into(),
+        image_id: image_id.into(),
+        cpus: 2,
+        memory: "8G".into(),
+        workspace_dir,
+        mode: mode.to_owned(),
+        skills: skills.to_vec(),
+        project_key: project_key.to_owned(),
+        context_repos: context_repos.to_vec(),
+        dispatch,
+        agent_type,
+        runtime,
+    }
 }
 
 #[instrument(skip(client, output))]
@@ -1060,6 +1100,7 @@ async fn handle_worker(
             dispatch,
             context_repos,
             agent,
+            runtime,
         } => {
             handle_worker_launch(
                 port,
@@ -1077,6 +1118,7 @@ async fn handle_worker(
                 dispatch,
                 context_repos,
                 agent,
+                runtime,
             )
             .await
         }
@@ -1279,6 +1321,7 @@ async fn handle_worker_launch(
     dispatch: bool,
     context_repos: Option<String>,
     agent: Option<String>,
+    runtime: Option<RuntimeArg>,
 ) -> Result<()> {
     let is_manual = mode == "manual";
 
@@ -1292,6 +1335,10 @@ async fn handle_worker_launch(
 
     // Validate --agent up front so a bad name fails before any RPC.
     let agent_type = resolve_launch_agent_flag(agent.as_deref())?;
+    // Empty means "let the server resolve it" from ur.toml.
+    let runtime = runtime
+        .map(|r| ur_config::WorkerRuntime::from(r).as_str().to_owned())
+        .unwrap_or_default();
 
     // Non-manual modes require a ticket_id
     let ticket_id_str: String = if is_manual {
@@ -1362,6 +1409,7 @@ async fn handle_worker_launch(
         output,
         projects,
         agent_type,
+        runtime,
     )
     .await?;
     if attach || rm {
@@ -1763,6 +1811,7 @@ mod tests {
             memory_dir: None,
             brain_dir: None,
             forge: None,
+            runtime: None,
         }
     }
 
@@ -2016,6 +2065,101 @@ mod tests {
             panic!("expected worker launch");
         };
         assert_eq!(agent, Some("codex".to_string()));
+    }
+
+    #[test]
+    fn launch_parses_runtime_flag_and_rejects_unknown() {
+        let cli =
+            Cli::try_parse_from(["ur", "worker", "launch", "ur-x", "--runtime", "local"]).unwrap();
+        let Commands::Worker {
+            command: WorkerCommands::Launch { runtime, .. },
+        } = cli.command
+        else {
+            panic!("expected worker launch");
+        };
+        assert_eq!(runtime, Some(RuntimeArg::Local));
+        assert!(
+            Cli::try_parse_from(["ur", "worker", "launch", "ur-x", "--runtime", "vm"]).is_err()
+        );
+    }
+
+    #[test]
+    fn launch_describe_lists_runtime_flag() {
+        let cmd = <Cli as clap::CommandFactory>::command();
+        let schema = describe::describe_command(&cmd);
+        let launch = schema
+            .subcommands
+            .iter()
+            .find(|c| c.name == "worker")
+            .and_then(|w| w.subcommands.iter().find(|c| c.name == "launch"))
+            .expect("worker launch in schema");
+        let runtime = launch
+            .args
+            .iter()
+            .find(|a| a.name == "runtime")
+            .expect("--runtime in schema");
+        assert_eq!(
+            runtime.possible_values.as_deref(),
+            Some(&["container".to_owned(), "local".to_owned()][..])
+        );
+    }
+
+    #[test]
+    fn launch_request_forwards_runtime_and_agent() {
+        let req = worker_launch_request(
+            "ur-x",
+            "ur-worker",
+            String::new(),
+            "code",
+            &[],
+            "ur",
+            &[],
+            false,
+            "claude".into(),
+            ur_rpc::runtime::LOCAL.into(),
+        );
+        assert_eq!(req.runtime, "local");
+        assert_eq!(req.agent_type, "claude");
+        assert_eq!(req.project_key, "ur");
+    }
+
+    #[test]
+    fn describe_output_includes_runtime_row() {
+        let w = WorkerSummary {
+            worker_id: "ur-a".into(),
+            runtime: ur_rpc::runtime::LOCAL.into(),
+            ..Default::default()
+        };
+        let mut out = String::new();
+        format_worker_describe(&w, &mut out);
+        assert!(
+            out.lines()
+                .any(|l| l.trim_start().starts_with("Runtime:") && l.ends_with("local")),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn worker_list_text_has_runtime_column() {
+        let workers = vec![
+            WorkerSummary {
+                worker_id: "ur-a".into(),
+                runtime: ur_rpc::runtime::CONTAINER.into(),
+                ..Default::default()
+            },
+            WorkerSummary {
+                worker_id: "ur-b".into(),
+                runtime: ur_rpc::runtime::LOCAL.into(),
+                ..Default::default()
+            },
+        ];
+        let text = format_worker_list(&workers);
+        let mut lines = text.lines();
+        assert!(lines.next().unwrap().contains("RUNTIME"));
+        assert!(lines.next().unwrap().contains("container"));
+        assert!(lines.next().unwrap().contains("local"));
+        let json = serde_json::to_value(&workers[1]).unwrap();
+        assert_eq!(json["runtime"], "local");
     }
 
     #[test]

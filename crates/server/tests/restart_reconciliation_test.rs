@@ -26,6 +26,7 @@ fn test_config(dir: &Path, workspace: &Path) -> ur_config::Config {
     };
     ur_config::Config {
         agent: ur_config::AgentType::Claude,
+        runtime: ur_config::WorkerRuntime::Container,
         config_dir: dir.to_path_buf(),
         logs_dir: dir.join("logs"),
         workspace: workspace.to_path_buf(),
@@ -156,6 +157,10 @@ async fn make_components_with_db(
         workspace_brain_dir: None,
         config_dir: workspace.clone(),
         worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
+        workerd_resolver: ur_server::WorkerdAddressResolver::new(
+            String::new(),
+            ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+        ),
     };
     let handler = ur_server::grpc::CoreServiceHandler {
         launch_manager,
@@ -170,6 +175,10 @@ async fn make_components_with_db(
         network_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_SERVER_PORT + 2),
         config_dir: workspace,
+        workerd_resolver: ur_server::WorkerdAddressResolver::new(
+            String::new(),
+            ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+        ),
     };
     (worker_manager, worker_repo, handler)
 }
@@ -262,6 +271,7 @@ async fn restart_reclaims_worker_with_live_container() {
         updated_at: chrono::Utc::now().to_rfc3339(),
         idle_redispatch_count: 0,
         brain_path: None,
+        runtime: workflow_db::model::WorkerRuntime::Container,
     };
     worker_repo1.insert_worker(&worker).await.unwrap();
     worker_repo1
@@ -384,6 +394,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         updated_at: chrono::Utc::now().to_rfc3339(),
         idle_redispatch_count: 0,
         brain_path: None,
+        runtime: workflow_db::model::WorkerRuntime::Container,
     };
     worker_repo1.insert_worker(&worker).await.unwrap();
     worker_repo1
@@ -483,6 +494,7 @@ async fn insert_worker_with_slot(
         updated_at: chrono::Utc::now().to_rfc3339(),
         idle_redispatch_count: 0,
         brain_path: None,
+        runtime: workflow_db::model::WorkerRuntime::Container,
     };
     worker_repo.insert_worker(&worker).await.unwrap();
     worker_repo

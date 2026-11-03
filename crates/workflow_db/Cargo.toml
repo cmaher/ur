@@ -10,6 +10,7 @@ ticket_db = { path = "../ticket_db" }
 tokio = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+ur_config = { path = "../ur_config" }
 ur_rpc = { path = "../ur_rpc" }
 uuid = { version = "1", features = ["v4"] }
 

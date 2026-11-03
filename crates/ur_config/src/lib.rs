@@ -1,6 +1,7 @@
 mod agent;
 pub mod backup;
 pub mod forge;
+mod runtime;
 mod template_path;
 
 pub use agent::{
@@ -8,6 +9,7 @@ pub use agent::{
     UnknownAliasError, credentials_file_is_seeded,
 };
 pub use forge::{ForgeType, UR_WORKER_FORGE_ENV, parse_forge_from_url};
+pub use runtime::{WorkerRuntime, resolve_worker_runtime};
 pub use template_path::{
     ResolvedTemplatePath, WORKSPACE_TEMPLATE, resolve_template_path, resolve_workspace_content,
 };
@@ -357,6 +359,8 @@ pub const DEFAULT_BACKUP_RETAIN_COUNT: u64 = 3;
 struct RawConfig {
     /// Default agent harness for every worker (e.g. "codex"). Omitted means "claude".
     agent: Option<String>,
+    /// Default worker runtime ("container" or "local"). Omitted means container.
+    runtime: Option<WorkerRuntime>,
     workspace: Option<PathBuf>,
     server_port: Option<u16>,
     worker_port: Option<u16>,
@@ -531,6 +535,8 @@ struct RawProjectConfig {
     brain_dir: Option<String>,
     /// Optional forge platform override ("github" or "gitea").
     forge: Option<ForgeType>,
+    /// Optional per-project worker runtime ("container" or "local").
+    runtime: Option<WorkerRuntime>,
 }
 
 /// Raw TOML representation for the `[proxy]` section.
@@ -1237,6 +1243,9 @@ pub struct ProjectConfig {
     pub brain_dir: Option<String>,
     /// Optional explicit forge platform override ("github" or "gitea").
     pub forge: Option<ForgeType>,
+    /// Per-project worker runtime. `None` defers to the top-level `runtime`.
+    /// See [`resolve_worker_runtime`] for the full precedence chain.
+    pub runtime: Option<WorkerRuntime>,
 }
 
 /// Convention brain directory for a project: `<config_dir>/projects/<key>/brain`.
@@ -1298,6 +1307,10 @@ pub struct Config {
     /// `worker_modes.<mode>.agent` and the `--agent` launch flag both override
     /// this per mode/launch; this is only the floor when neither is set.
     pub agent: AgentType,
+    /// Default worker runtime from the top-level `runtime` key (default: container).
+    /// `[projects.<key>].runtime`, `worker_modes.<mode>.runtime`, and
+    /// `ur worker launch --runtime` override it, in increasing priority.
+    pub runtime: WorkerRuntime,
     /// Root config directory (`$UR_CONFIG` or `~/.ur`).
     pub config_dir: PathBuf,
     /// Worker workspace directory.
@@ -1443,6 +1456,7 @@ impl Config {
 
         Ok(Config {
             agent,
+            runtime: raw.runtime.unwrap_or_default(),
             config_dir: config_dir.to_path_buf(),
             workspace,
             server_port,
@@ -1800,6 +1814,7 @@ fn resolve_project_config(
         memory_dir: raw_proj.memory_dir,
         brain_dir: raw_proj.brain_dir,
         forge: raw_proj.forge,
+        runtime: raw_proj.runtime,
     };
     Ok((key, resolved))
 }
@@ -3476,6 +3491,45 @@ image = "ur-worker"
     }
 
     #[test]
+    fn runtime_defaults_to_container_and_parses_levels() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.runtime, WorkerRuntime::Container);
+
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"runtime = "local"
+[projects.a]
+repo = "git@github.com:o/a.git"
+runtime = "container"
+[projects.b]
+repo = "git@github.com:o/b.git"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.runtime, WorkerRuntime::Local);
+        assert_eq!(cfg.projects["a"].runtime, Some(WorkerRuntime::Container));
+        assert_eq!(cfg.projects["b"].runtime, None);
+    }
+
+    #[test]
+    fn runtime_rejects_unknown_value_naming_the_key() {
+        let tmp = TempDir::new().unwrap();
+        for toml in [
+            "runtime = \"vm\"\n",
+            "[projects.a]\nrepo = \"git@github.com:o/a.git\"\nruntime = \"vm\"\n",
+        ] {
+            std::fs::write(tmp.path().join("ur.toml"), toml).unwrap();
+            let msg = Config::load_from(tmp.path()).unwrap_err().to_string();
+            assert!(msg.contains("runtime"), "{msg}");
+            assert!(msg.contains("vm"), "{msg}");
+            assert!(msg.contains("container"), "{msg}");
+        }
+    }
+
+    #[test]
     fn agent_parses_codex() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
@@ -4828,6 +4882,7 @@ quit = ["q"]
                     memory_dir: None,
                     brain_dir: None,
                     forge: None,
+                    runtime: None,
                 },
             );
             m.insert(
@@ -4857,6 +4912,7 @@ quit = ["q"]
                     memory_dir: None,
                     brain_dir: None,
                     forge: None,
+                    runtime: None,
                 },
             );
             m
@@ -4980,6 +5036,7 @@ quit = ["q"]
                     memory_dir: None,
                     brain_dir: None,
                     forge: None,
+                    runtime: None,
                 },
             );
             // If cwd dirname were "ur", it should match the "ur" key, not

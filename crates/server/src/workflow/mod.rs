@@ -37,9 +37,8 @@ pub struct WorkflowContext {
     pub ticket_repo: TicketRepo,
     pub workflow_repo: WorkflowRepo,
     pub worker_repo: WorkerRepo,
-    /// Docker container name prefix for workers (e.g., `ur-worker-`).
-    /// Used to derive workerd gRPC addresses from process IDs.
-    pub worker_prefix: String,
+    /// Resolves a worker row to its daemon address (dispatch, labels).
+    pub workerd_resolver: crate::WorkerdAddressResolver,
     /// Pre-connected builderd gRPC client for delegating operations
     /// (e.g., `gh` commands) that require host-side credentials.
     pub builderd_client: BuilderdClient,

@@ -191,7 +191,10 @@ mod tests {
             ui_event_poller: None,
             worker_manager: None,
             worker_repo: None,
-            worker_prefix: String::new(),
+            workerd_resolver: crate::WorkerdAddressResolver::new(
+                String::new(),
+                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+            ),
         };
 
         let client = TicketClient::new(handler);

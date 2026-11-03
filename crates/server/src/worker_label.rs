@@ -11,8 +11,8 @@ pub struct WorkerLabelDeps {
     pub workflow_repo: WorkflowRepo,
     pub ticket_repo: TicketRepo,
     pub worker_repo: WorkerRepo,
-    /// Docker container name prefix for workers (e.g., `ur-worker-`).
-    pub worker_prefix: String,
+    /// Resolves the worker row to its daemon address.
+    pub workerd_resolver: crate::WorkerdAddressResolver,
 }
 
 /// Build the tmux status-left label string for a worker.
@@ -54,10 +54,7 @@ pub async fn push(deps: &WorkerLabelDeps, worker_id: &str) -> anyhow::Result<()>
         .await?
         .ok_or_else(|| anyhow::anyhow!("worker {worker_id} not found in database"))?;
 
-    let container_name = format!("{}{}", deps.worker_prefix, worker.process_id);
-    let workerd_addr = format!("http://{}:{}", container_name, ur_config::WORKERD_GRPC_PORT);
-
-    let workerd_client = crate::WorkerdClient::new(workerd_addr);
+    let workerd_client = deps.workerd_resolver.client_for(&worker);
     workerd_client
         .set_status_left(&label, 50)
         .await

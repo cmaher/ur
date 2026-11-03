@@ -22,6 +22,7 @@ fn make_test_config(dir: &Path, workspace: &Path) -> (ur_config::Config, ur_conf
     };
     let config = ur_config::Config {
         agent: ur_config::AgentType::Claude,
+        runtime: ur_config::WorkerRuntime::Container,
         config_dir: dir.to_path_buf(),
         logs_dir: dir.join("logs"),
         workspace: workspace.to_path_buf(),
@@ -144,6 +145,10 @@ async fn make_test_components(
         workspace_brain_dir: None,
         config_dir: workspace.clone(),
         worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
+        workerd_resolver: ur_server::WorkerdAddressResolver::new(
+            String::new(),
+            ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+        ),
     };
     let handler = ur_server::grpc::CoreServiceHandler {
         launch_manager,
@@ -158,6 +163,10 @@ async fn make_test_components(
         network_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_SERVER_PORT + 2),
         config_dir: workspace,
+        workerd_resolver: ur_server::WorkerdAddressResolver::new(
+            String::new(),
+            ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+        ),
     };
     (worker_manager, worker_repo, handler, test_db)
 }

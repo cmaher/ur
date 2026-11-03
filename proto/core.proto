@@ -58,6 +58,9 @@ message WorkerLaunchRequest {
   bool dispatch = 11;
   // Which agent should run the worker. Empty defaults to claude server-side.
   string agent_type = 12;
+  // Worker runtime ("container" | "local"). Empty resolves from config:
+  // worker_modes.<mode>.runtime → projects.<key>.runtime → top-level runtime → container.
+  string runtime = 13;
 }
 
 message WorkerLaunchResponse {
@@ -78,6 +81,8 @@ message WorkerInfoRequest {
 message WorkerInfoResponse {
   string workspace_dir = 1;
   string agent_status = 2;
+  // Worker runtime ("container" | "local").
+  string runtime = 3;
 }
 
 message WorkerListRequest {}
@@ -130,6 +135,8 @@ message WorkerSummary {
   string workflow_stall_reason = 16;
   // Which agent is running this worker (e.g. "claude").
   string agent_type = 17;
+  // Worker runtime ("container" | "local").
+  string runtime = 18;
 }
 
 message WorkflowStepCompleteRequest {

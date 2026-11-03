@@ -386,6 +386,7 @@ mod tests {
                 memory_dir: None,
                 brain_dir: None,
                 forge: None,
+                runtime: None,
             },
         );
         ctx

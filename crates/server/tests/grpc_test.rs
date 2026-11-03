@@ -47,6 +47,7 @@ fn make_test_config(dir: &Path, workspace: &Path) -> (ur_config::Config, ur_conf
     };
     let config = ur_config::Config {
         agent: ur_config::AgentType::Claude,
+        runtime: ur_config::WorkerRuntime::Container,
         config_dir: dir.to_path_buf(),
         logs_dir: dir.join("logs"),
         workspace: workspace.to_path_buf(),
@@ -163,6 +164,10 @@ async fn make_grpc_handler(
         workspace_brain_dir: None,
         config_dir: workspace.clone(),
         worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
+        workerd_resolver: ur_server::WorkerdAddressResolver::new(
+            String::new(),
+            ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+        ),
     };
     let handler = ur_server::grpc::CoreServiceHandler {
         launch_manager,
@@ -177,6 +182,10 @@ async fn make_grpc_handler(
         network_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_SERVER_PORT + 2),
         config_dir: workspace,
+        workerd_resolver: ur_server::WorkerdAddressResolver::new(
+            String::new(),
+            ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+        ),
     };
     (handler, test_db)
 }
@@ -291,6 +300,10 @@ async fn make_worker_handler() -> (
         workspace_brain_dir: None,
         config_dir: workspace.clone(),
         worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
+        workerd_resolver: ur_server::WorkerdAddressResolver::new(
+            String::new(),
+            ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+        ),
     };
 
     let handler = ur_server::grpc::WorkerCoreServiceHandler {
@@ -430,4 +443,58 @@ async fn link_comment_ticket_missing_gh_repo_returns_not_found() {
     let err = client.link_comment_ticket(request).await.unwrap_err();
     assert_eq!(err.code(), tonic::Code::NotFound);
     assert!(err.message().contains("gh_repo"));
+}
+
+/// A Local worker row comes back as `runtime: "local"` from both the list and
+/// info RPCs.
+#[tokio::test]
+async fn worker_list_and_info_return_local_runtime() {
+    use ur_rpc::proto::core::core_service_server::CoreService;
+    use ur_rpc::proto::core::{WorkerInfoRequest, WorkerListRequest};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (handler, _test_db) = make_grpc_handler(dir.path()).await;
+    let now = chrono::Utc::now().to_rfc3339();
+    handler
+        .worker_repo
+        .insert_worker(&workflow_db::model::Worker {
+            worker_id: "local-w1".into(),
+            process_id: "local-w1".into(),
+            project_key: String::new(),
+            container_id: "cid".into(),
+            worker_secret: "secret".into(),
+            strategy: "code".into(),
+            agent_type: ur_rpc::agent::CLAUDE.into(),
+            container_status: "running".into(),
+            agent_status: "idle".into(),
+            workspace_path: None,
+            created_at: now.clone(),
+            updated_at: now,
+            idle_redispatch_count: 0,
+            brain_path: None,
+            runtime: workflow_db::model::WorkerRuntime::Local,
+        })
+        .await
+        .unwrap();
+
+    let list = handler
+        .worker_list(tonic::Request::new(WorkerListRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+    let summary = list
+        .workers
+        .iter()
+        .find(|w| w.worker_id == "local-w1")
+        .expect("worker listed");
+    assert_eq!(summary.runtime, ur_rpc::runtime::LOCAL);
+
+    let info = handler
+        .worker_info(tonic::Request::new(WorkerInfoRequest {
+            worker_id: "local-w1".into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(info.runtime, ur_rpc::runtime::LOCAL);
 }

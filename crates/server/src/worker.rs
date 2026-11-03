@@ -110,6 +110,10 @@ struct RawModeEntry {
     /// claude when omitted.
     #[serde(default)]
     agent: Option<String>,
+    /// Optional runtime override for this mode ("container" or "local").
+    /// Kept raw so the deserialization error can name `worker_modes.<mode>.runtime`.
+    #[serde(default)]
+    runtime: Option<toml::Value>,
 }
 
 /// Raw TOML representation for a strategy-keyed model table: either the flat
@@ -257,6 +261,15 @@ fn seed_strategies() -> HashMap<String, WorkerStrategy> {
         .collect()
 }
 
+/// Parse the top-level `runtime` key via serde; omitted → container. The error
+/// names the key so a typo in `ur.toml` points at the right line.
+fn parse_top_level_runtime(raw: Option<&toml::Value>) -> Result<ur_config::WorkerRuntime, String> {
+    raw.map(|v| v.clone().try_into::<ur_config::WorkerRuntime>())
+        .transpose()
+        .map(Option::unwrap_or_default)
+        .map_err(|e| format!("runtime: {e}"))
+}
+
 /// Seed the built-in agents map, one entry per [`WorkerStrategy`] — all
 /// `default_agent`, since built-in modes have no `agent` field of their own.
 fn default_agents(default_agent: ur_config::AgentType) -> HashMap<String, ur_config::AgentType> {
@@ -308,6 +321,10 @@ pub struct WorkerModesConfig {
     /// hardcoded `AgentType::Claude` — it is the floor beneath a mode's own
     /// `agent` field and an explicit `--agent`/launch-request override.
     default_agent: ur_config::AgentType,
+    /// Explicit `worker_modes.<name>.runtime` per mode; absent → project/top-level.
+    mode_runtimes: HashMap<String, ur_config::WorkerRuntime>,
+    /// The top-level `runtime` default (container when omitted).
+    default_runtime: ur_config::WorkerRuntime,
     /// Parsed `[worker_models]` section (flat + per-agent tables), kept so
     /// `resolve_mode` can compute a mode's effective model against whichever
     /// agent the launch actually resolves to.
@@ -324,6 +341,8 @@ impl Default for WorkerModesConfig {
             explicit_efforts: HashMap::new(),
             agents: default_agents(default_agent),
             default_agent,
+            mode_runtimes: HashMap::new(),
+            default_runtime: ur_config::WorkerRuntime::default(),
             model_overrides: RawWorkerModels::default(),
         }
     }
@@ -352,6 +371,7 @@ impl WorkerModesConfig {
         let default_agent =
             ur_config::resolve_top_level_agent(value.get("agent").and_then(toml::Value::as_str))
                 .map_err(|e| e.to_string())?;
+        let default_runtime = parse_top_level_runtime(value.get("runtime"))?;
 
         let model_overrides = parse_worker_models(value.get("worker_models"))?;
 
@@ -363,6 +383,8 @@ impl WorkerModesConfig {
                 explicit_efforts: HashMap::new(),
                 agents: default_agents(default_agent),
                 default_agent,
+                mode_runtimes: HashMap::new(),
+                default_runtime,
                 model_overrides,
             });
         };
@@ -376,6 +398,7 @@ impl WorkerModesConfig {
         let mut explicit_models = HashMap::new();
         let mut explicit_efforts = HashMap::new();
         let mut agents = default_agents(default_agent);
+        let mut mode_runtimes = HashMap::new();
         for (name, entry) in raw.modes {
             let strategy = WorkerStrategy::from_name(&entry.base).map_err(|_| {
                 format!(
@@ -391,6 +414,12 @@ impl WorkerModesConfig {
                 validate_effort(agent, &effort, &format!("worker mode '{name}'"))?;
                 explicit_efforts.insert(name.clone(), effort);
             }
+            if let Some(raw_runtime) = entry.runtime {
+                let runtime = raw_runtime
+                    .try_into::<ur_config::WorkerRuntime>()
+                    .map_err(|e| format!("worker_modes.{name}.runtime: {e}"))?;
+                mode_runtimes.insert(name.clone(), runtime);
+            }
             strategies.insert(name.clone(), strategy);
             agents.insert(name.clone(), agent);
             modes.insert(name, entry.skills);
@@ -402,8 +431,29 @@ impl WorkerModesConfig {
             explicit_efforts,
             agents,
             default_agent,
+            mode_runtimes,
+            default_runtime,
             model_overrides,
         })
+    }
+
+    /// Resolve the runtime for a launch: `requested` (`--runtime`) →
+    /// `worker_modes.<mode>.runtime` → `project` (`projects.<key>.runtime`) →
+    /// top-level `runtime` → container. Workflow-dispatched launches pass
+    /// `requested = None`. An empty mode name means "code".
+    pub fn resolve_runtime(
+        &self,
+        mode: &str,
+        requested: Option<ur_config::WorkerRuntime>,
+        project: Option<ur_config::WorkerRuntime>,
+    ) -> ur_config::WorkerRuntime {
+        let mode_name = if mode.is_empty() { "code" } else { mode };
+        ur_config::resolve_worker_runtime(
+            requested,
+            self.mode_runtimes.get(mode_name).copied(),
+            project,
+            self.default_runtime,
+        )
     }
 
     /// Resolve skills for a launch request.
@@ -526,6 +576,7 @@ pub struct WorkerSummary {
     pub container_status: String,
     pub agent_status: String,
     pub agent_type: String,
+    pub runtime: ur_config::WorkerRuntime,
 }
 
 /// Configuration for launching a container process.
@@ -586,6 +637,8 @@ pub struct WorkerConfig {
     pub workspace_brain_dir: Option<String>,
     /// Optional resolved forge platform for this worker's project.
     pub forge: Option<ur_config::ForgeType>,
+    /// Resolved runtime, persisted on the worker row.
+    pub runtime: ur_config::WorkerRuntime,
 }
 
 /// Orchestrates the full lifecycle of worker processes:
@@ -658,6 +711,16 @@ impl WorkerManager {
     /// Resolve skills for a launch request using the configured worker modes.
     pub fn resolve_skills(&self, mode: &str, skills: &[String]) -> Result<Vec<String>, String> {
         self.worker_modes.resolve_skills(mode, skills)
+    }
+
+    /// Resolve a launch's runtime; see [`WorkerModesConfig::resolve_runtime`].
+    pub fn resolve_runtime(
+        &self,
+        mode: &str,
+        requested: Option<ur_config::WorkerRuntime>,
+        project: Option<ur_config::WorkerRuntime>,
+    ) -> ur_config::WorkerRuntime {
+        self.worker_modes.resolve_runtime(mode, requested, project)
     }
 
     /// Resolve a mode name to its worker strategy, skill list, model alias, and agent.
@@ -822,6 +885,7 @@ impl WorkerManager {
             updated_at: now,
             idle_redispatch_count: 0,
             brain_path: brain_path.map(|p| p.display().to_string()),
+            runtime: ur_config::WorkerRuntime::Container,
         };
         self.worker_repo
             .insert_worker(&worker)
@@ -1069,6 +1133,7 @@ impl WorkerManager {
             updated_at: now,
             idle_redispatch_count: 0,
             brain_path: brain_host_path(config, &self.host_config_dir),
+            runtime: config.runtime,
         };
         self.worker_repo
             .insert_worker(&worker)
@@ -1192,6 +1257,7 @@ impl WorkerManager {
                 container_status: worker.container_status,
                 agent_status: worker.agent_status,
                 agent_type: worker.agent_type,
+                runtime: worker.runtime,
             })
             .collect();
         result.sort_by(|a, b| a.process_id.cmp(&b.process_id));
@@ -1624,6 +1690,7 @@ mod tests {
     fn test_config(workspace_path: &std::path::Path) -> ur_config::Config {
         ur_config::Config {
             agent: ur_config::AgentType::Claude,
+            runtime: ur_config::WorkerRuntime::Container,
             config_dir: workspace_path.to_path_buf(),
             logs_dir: workspace_path.join("logs"),
             workspace: workspace_path.to_path_buf(),
@@ -1747,6 +1814,25 @@ mod tests {
             builder_container_client,
         );
         (mgr, workspace, test_db)
+    }
+
+    /// The provisional row written before builderd's launch carries the
+    /// launch's resolved runtime, not a hardcoded container.
+    #[tokio::test]
+    async fn provisioning_row_persists_resolved_runtime() {
+        let (mgr, _workspace, _test_db) = test_manager().await;
+        let mut config = test_worker_config(WorkerStrategy::Code, "sonnet");
+        config.runtime = ur_config::WorkerRuntime::Local;
+        mgr.record_provisioning_worker(&config, "ur-worker-test-proc", "secret")
+            .await
+            .unwrap();
+        let row = mgr
+            .worker_repo
+            .get_worker(&config.worker_id.0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.runtime, ur_config::WorkerRuntime::Local);
     }
 
     #[tokio::test]
@@ -1941,6 +2027,7 @@ mod tests {
             brain_dir: None,
             workspace_brain_dir: None,
             forge: None,
+            runtime: ur_config::WorkerRuntime::Container,
         }
     }
 
@@ -2770,6 +2857,53 @@ agent = "bogus"
 
         let ResolvedMode { model, .. } = cfg.resolve_mode("code", None).unwrap();
         assert_eq!(model, "gpt-5.6-terra");
+    }
+
+    /// `--runtime` → `worker_modes.<mode>.runtime` → project → top-level → container.
+    #[test]
+    fn runtime_precedence_per_level() {
+        use ur_config::WorkerRuntime::{Container, Local};
+        let toml = r#"
+runtime = "local"
+
+[worker_modes.boxed]
+base = "code"
+skills = []
+runtime = "container"
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+        // CLI wins over the mode.
+        assert_eq!(cfg.resolve_runtime("boxed", Some(Local), None), Local);
+        // Mode wins over the project and top level.
+        assert_eq!(cfg.resolve_runtime("boxed", None, Some(Local)), Container);
+        // Project wins over top level (built-in mode has no runtime field).
+        assert_eq!(
+            cfg.resolve_runtime("code", None, Some(Container)),
+            Container
+        );
+        // Top level applies when nothing else is set; empty mode = code.
+        assert_eq!(cfg.resolve_runtime("", None, None), Local);
+        // Default with no runtime keys anywhere is container.
+        let bare = WorkerModesConfig::from_toml("").unwrap();
+        assert_eq!(bare.resolve_runtime("code", None, None), Container);
+        assert_eq!(
+            WorkerModesConfig::default().resolve_runtime("code", None, None),
+            Container
+        );
+    }
+
+    #[test]
+    fn runtime_rejects_unknown_values_naming_the_key() {
+        let msg = WorkerModesConfig::from_toml("runtime = \"vm\"\n").unwrap_err();
+        assert!(msg.contains("runtime") && msg.contains("vm"), "{msg}");
+        let toml = r#"
+[worker_modes.bad-runtime]
+base = "code"
+skills = []
+runtime = "vm"
+"#;
+        let msg = WorkerModesConfig::from_toml(toml).unwrap_err();
+        assert!(msg.contains("runtime") && msg.contains("vm"), "{msg}");
     }
 
     #[test]

@@ -6,6 +6,7 @@ pub mod agent_status;
 pub mod edge_relation;
 pub mod feedback_mode;
 pub mod lifecycle;
+pub mod runtime;
 pub mod ticket_meta;
 pub mod workflow_condition;
 pub mod workflow_event;

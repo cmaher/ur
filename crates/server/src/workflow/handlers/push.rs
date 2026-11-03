@@ -658,7 +658,7 @@ async fn push_worker_label(ctx: &WorkflowContext, ticket_id: &str) {
         workflow_repo: ctx.workflow_repo.clone(),
         ticket_repo: ctx.ticket_repo.clone(),
         worker_repo: ctx.worker_repo.clone(),
-        worker_prefix: ctx.worker_prefix.clone(),
+        workerd_resolver: ctx.workerd_resolver.clone(),
     };
 
     if let Err(e) = crate::worker_label::push(&deps, &worker_id).await {

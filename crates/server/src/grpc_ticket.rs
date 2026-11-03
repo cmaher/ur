@@ -188,9 +188,8 @@ pub struct TicketServiceHandler {
     /// Optional worker repo for pushing tmux status-left labels when pr_number metadata changes.
     /// None on the worker server or in tests without worker infrastructure.
     pub worker_repo: Option<workflow_db::WorkerRepo>,
-    /// Docker container name prefix for workers (e.g., `ur-worker-`).
-    /// Used with `worker_repo` to construct `WorkerLabelDeps` for label pushes.
-    pub worker_prefix: String,
+    /// Resolves worker rows to daemon addresses for label pushes.
+    pub workerd_resolver: crate::WorkerdAddressResolver,
 }
 
 impl TicketServiceHandler {
@@ -205,7 +204,7 @@ impl TicketServiceHandler {
         };
         let workflow_repo = self.workflow_repo.clone();
         let ticket_repo = self.ticket_repo.clone();
-        let worker_prefix = self.worker_prefix.clone();
+        let workerd_resolver = self.workerd_resolver.clone();
         let ticket_id = ticket_id.to_owned();
 
         tokio::spawn(async move {
@@ -227,7 +226,7 @@ impl TicketServiceHandler {
                 workflow_repo,
                 ticket_repo,
                 worker_repo,
-                worker_prefix,
+                workerd_resolver,
             };
             if let Err(e) = crate::worker_label::push(&deps, &worker_id).await {
                 tracing::warn!(
@@ -1674,7 +1673,10 @@ mod tests {
             ui_event_poller: None,
             worker_manager: None,
             worker_repo: None,
-            worker_prefix: String::new(),
+            workerd_resolver: crate::WorkerdAddressResolver::new(
+                String::new(),
+                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+            ),
         };
         (test_db, handler)
     }

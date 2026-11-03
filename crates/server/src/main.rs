@@ -281,6 +281,11 @@ async fn init_and_serve(
         fallback_interval,
     );
 
+    let workerd_resolver = ur_server::WorkerdAddressResolver::new(
+        builderd_addr.clone(),
+        cfg.network.worker_prefix.clone(),
+    );
+
     let ticket_handler = ur_server::grpc_ticket::TicketServiceHandler {
         ticket_repo: ticket_repo.clone(),
         workflow_repo: workflow_repo.clone(),
@@ -290,7 +295,7 @@ async fn init_and_serve(
         ui_event_poller: Some(ui_event_poller.clone()),
         worker_manager: Some(worker_manager.clone()),
         worker_repo: Some(worker_repo.clone()),
-        worker_prefix: cfg.network.worker_prefix.clone(),
+        workerd_resolver: workerd_resolver.clone(),
     };
 
     let launch_manager = ur_server::grpc::LaunchManager {
@@ -305,6 +310,7 @@ async fn init_and_serve(
         workspace_brain_dir: cfg.workspace_brain_dir.clone(),
         config_dir: cfg.config_dir.clone(),
         worker_image_tag: ur_config::worker_image_tag(),
+        workerd_resolver: workerd_resolver.clone(),
     };
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
@@ -320,6 +326,7 @@ async fn init_and_serve(
         network_config: cfg.network.clone(),
         builderd_addr: builderd_addr.clone(),
         config_dir: cfg.config_dir.clone(),
+        workerd_resolver: workerd_resolver.clone(),
     };
 
     serve_grpc_servers(
@@ -338,6 +345,7 @@ async fn init_and_serve(
         Arc::new(cfg.clone()),
         ui_event_poller,
         launch_manager,
+        workerd_resolver,
     )
     .await
 }
@@ -354,7 +362,7 @@ struct WorkflowServices {
 
 #[allow(clippy::too_many_arguments)]
 fn spawn_workflow_services(
-    network_prefix: &str,
+    workerd_resolver: &ur_server::WorkerdAddressResolver,
     ticket_repo: &TicketRepo,
     workflow_repo: &WorkflowRepo,
     worker_repo: &WorkerRepo,
@@ -384,7 +392,7 @@ fn spawn_workflow_services(
         ticket_repo.clone(),
         workflow_repo.clone(),
         worker_repo.clone(),
-        network_prefix.to_owned(),
+        workerd_resolver.clone(),
         workflow_builderd_client.clone(),
         config.clone(),
         handlers.clone(),
@@ -397,7 +405,7 @@ fn spawn_workflow_services(
         ticket_repo: ticket_repo.clone(),
         workflow_repo: workflow_repo.clone(),
         worker_repo: worker_repo.clone(),
-        worker_prefix: network_prefix.to_owned(),
+        workerd_resolver: workerd_resolver.clone(),
         builderd_client: workflow_builderd_client.clone(),
         config: config.clone(),
         transition_tx: transition_tx.clone(),
@@ -466,7 +474,7 @@ fn spawn_startup_label_backfill(
     worker_repo: WorkerRepo,
     ticket_repo: TicketRepo,
     workflow_repo: WorkflowRepo,
-    worker_prefix: String,
+    workerd_resolver: ur_server::WorkerdAddressResolver,
 ) {
     tokio::spawn(async move {
         let workers = match worker_repo
@@ -489,7 +497,7 @@ fn spawn_startup_label_backfill(
             workflow_repo,
             ticket_repo,
             worker_repo,
-            worker_prefix,
+            workerd_resolver,
         };
 
         let tasks: Vec<_> = workers
@@ -524,12 +532,13 @@ async fn serve_grpc_servers(
     config: Arc<ur_config::Config>,
     ui_event_poller: ur_server::UiEventPoller,
     launch_manager: ur_server::grpc::LaunchManager,
+    workerd_resolver: ur_server::WorkerdAddressResolver,
 ) -> anyhow::Result<()> {
     let host_addr = SocketAddr::from(([0, 0, 0, 0], server_port));
     let worker_addr = SocketAddr::from(([0, 0, 0, 0], worker_port));
 
     let wf = spawn_workflow_services(
-        &network_prefix,
+        &workerd_resolver,
         &ticket_repo,
         &workflow_repo,
         &worker_repo,
@@ -563,7 +572,6 @@ async fn serve_grpc_servers(
     let backfill_worker_repo = worker_repo.clone();
     let backfill_ticket_repo = ticket_repo.clone();
     let backfill_workflow_repo = workflow_repo.clone();
-    let backfill_network_prefix = network_prefix.clone();
 
     let worker_server = ur_server::grpc_server::serve_worker_grpc(
         worker_addr,
@@ -589,7 +597,7 @@ async fn serve_grpc_servers(
         backfill_worker_repo,
         backfill_ticket_repo,
         backfill_workflow_repo,
-        backfill_network_prefix,
+        workerd_resolver,
     );
 
     let server_result = tokio::try_join!(host_server, worker_server).map(|_| ());
