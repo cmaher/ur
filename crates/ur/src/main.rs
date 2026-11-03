@@ -374,6 +374,8 @@ fn start_server(
 ) -> Result<()> {
     info!("starting server");
 
+    db::validate_backup_paths(config)?;
+
     prepare_project_mounts(config);
 
     // Seed credentials for every known agent before starting anything so

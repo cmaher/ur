@@ -153,11 +153,11 @@ let workflow_ui_poller = PgEventPoller::new(workflow_db.pool().clone(), ...);
 
 // Backup subsystem — one BackupTaskManager per database
 let ticket_snapshot   = SnapshotManager::new(cmd.clone(), container_name.clone(), "ur_tickets");
-let ticket_backup     = BackupTaskManager::new(ticket_snapshot, cfg.ticket_db.backup.clone());
+let ticket_backup     = BackupTaskManager::new(ticket_snapshot, cfg.ticket_db.backup.clone(), "/backup".into());
 ticket_backup.spawn(shutdown_rx.clone())?;
 
 let workflow_snapshot = SnapshotManager::new(cmd, container_name, "ur_workflow");
-let workflow_backup   = BackupTaskManager::new(workflow_snapshot, cfg.workflow_db.backup.clone());
+let workflow_backup   = BackupTaskManager::new(workflow_snapshot, cfg.workflow_db.backup.clone(), "/backup".into());
 workflow_backup.spawn(shutdown_rx.clone())?;
 ```
 
@@ -236,17 +236,19 @@ Passwords can be supplied via environment variable instead of the config file:
 
 The backup architecture runs two independent `BackupTaskManager` instances — one per database. Each follows the same lifecycle.
 
-Each database with a backup `path` gets its own bind mount in the `ur-postgres` container at `/backup/<db_name>` (`backup_mounts` / `generate_compose`, `crates/ur/src/compose.rs`; container dir from `ur_config::backup::backup_container_dir`). The mount exists whenever `path` is set — even with `enabled = false` — so manual `ur db backup` keeps working. Both sections may point at the same host directory or different ones.
+Each database with a backup `path` gets its own bind mount at `/backup/<db_name>` in **both** the `ur-postgres` and `ur-server` containers (`backup_mounts` / `write_backup_mounts`, `crates/ur/src/compose.rs`; container dir from `ur_config::backup::backup_container_dir`). `pg_dump` (via `docker exec ur-postgres`) writes there; the server validates the directory and runs retention there. The configured `path` is a **host** path and is never read by the server — it does not exist inside the server container. The mount exists whenever `path` is set — even with `enabled = false` — so manual `ur db backup` keeps working. Both sections may point at the same host directory or different ones.
+
+`ur start` pre-flights each configured host `path` (`db::validate_backup_paths`, `crates/ur/src/db.rs`, via `ur_config::backup::validate_backup_dir`) and fails with the offending section named, so a typo is not masked by Docker auto-creating the bind source.
 
 Backup naming lives in `ur_config::backup` and is shared by the server and CLI. Filenames carry the database name — `ur-backup-<db_name>-<timestamp>.pgdump` (automatic) and `manual-ur-backup-<db_name>-<timestamp>.pgdump` (manual) — so dumps never collide even in a shared directory, and `clean_old_backups` applies `retain_count` **per database**. Legacy unnamed files (`ur-backup-<timestamp>.pgdump`) are still listed and restorable but never cleaned.
 
 ### Startup
 
-1. `BackupTaskManager::new(snapshot_manager, backup_config)` — stores config and snapshot manager
-2. `backup_task_manager.spawn(shutdown_rx)` — validates path, spawns tokio task
+1. `BackupTaskManager::new(snapshot_manager, backup_config, backup_root)` — `backup_root` is `ur_config::BACKUP_CONTAINER_PATH` (`/backup`); the DB's dir is `backup_root/<db_name>`
+2. `backup_task_manager.spawn(shutdown_rx)` — validates the container dir, spawns tokio task
    - Returns `None` if `path` is not configured (backup disabled)
    - Returns `None` if `enabled = false`
-   - Returns `None` (with warning) if path doesn't exist, isn't a directory, or isn't writable
+   - Returns **`Err`** if `/backup/<db_name>` doesn't exist, isn't a directory, or isn't writable — `init_backups` propagates it and server startup fails (never warn-and-disable)
 
 ### Backup Loop
 

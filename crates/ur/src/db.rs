@@ -7,7 +7,7 @@ use tracing::{debug, info, warn};
 use ur_config::BackupConfig;
 use ur_config::backup::{
     BACKUP_TIMESTAMP_FORMAT, MANUAL_BACKUP_PREFIX, backup_container_dir, clean_old_backups,
-    manual_backup_filename, parse_backup_filename,
+    manual_backup_filename, parse_backup_filename, validate_backup_dir,
 };
 
 /// Manages pg_dump/pg_restore via docker exec into the postgres container.
@@ -176,6 +176,34 @@ fn selected_targets(config: &ur_config::Config, db: Option<DbTarget>) -> Vec<Bac
             .map(|target| backup_target(config, target))
             .collect(),
     }
+}
+
+/// Check every configured host backup directory before `ur start` brings the
+/// stack up.
+///
+/// Each `[<db>.backup] path` is bind-mounted into `ur-postgres` and `ur-server`.
+/// A missing directory would otherwise be auto-created by Docker (masking a
+/// typo) or surface only as a server startup failure in its log, so it is
+/// reported here, at the CLI, naming the offending section. Checked whenever a
+/// path is set, even with `enabled = false`, because the mount still exists
+/// for manual `ur db backup`.
+pub fn validate_backup_paths(config: &ur_config::Config) -> Result<()> {
+    let errors: Vec<String> = selected_targets(config, None)
+        .into_iter()
+        .filter_map(|target| {
+            let path = target.backup.path.as_deref()?;
+            validate_backup_dir(path)
+                .err()
+                .map(|e| format!("{}: {e}", target.target.backup_section()))
+        })
+        .collect();
+    if errors.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "invalid backup configuration in ur.toml:\n  {}",
+        errors.join("\n  ")
+    )
 }
 
 /// Run an on-demand backup of the live databases via pg_dump into the postgres container.
@@ -571,6 +599,40 @@ mod tests {
             workflow.display()
         );
         ur_config::Config::from_toml_str(&toml, Path::new("/tmp")).unwrap()
+    }
+
+    #[test]
+    fn validate_backup_paths_accepts_existing_dirs() {
+        let tickets = TempDir::new().unwrap();
+        let workflow = TempDir::new().unwrap();
+        let config = config_with_backup_dirs(tickets.path(), workflow.path());
+        validate_backup_paths(&config).expect("both dirs exist");
+    }
+
+    #[test]
+    fn validate_backup_paths_ignores_unset_paths() {
+        let config = ur_config::Config::from_toml_str("", Path::new("/tmp")).unwrap();
+        validate_backup_paths(&config).expect("no paths configured");
+    }
+
+    #[test]
+    fn validate_backup_paths_names_each_bad_section() {
+        let tickets = TempDir::new().unwrap();
+        let config = config_with_backup_dirs(
+            &tickets.path().join("missing-tickets"),
+            Path::new("/nonexistent/workflow/backups"),
+        );
+        let err = validate_backup_paths(&config)
+            .expect_err("missing dirs")
+            .to_string();
+        assert!(
+            err.contains("[ticket_db.backup]: backup path does not exist"),
+            "{err}"
+        );
+        assert!(
+            err.contains("[workflow_db.backup]: backup path does not exist"),
+            "{err}"
+        );
     }
 
     #[test]

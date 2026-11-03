@@ -47,6 +47,31 @@ pub fn backup_container_dir(db_name: &str) -> String {
     format!("{BACKUP_CONTAINER_PATH}/{db_name}")
 }
 
+/// Check that `dir` exists, is a directory, and is writable.
+///
+/// Used on the host by `ur start` (against the configured `[<db>.backup] path`)
+/// and inside the server container (against [`backup_container_dir`]), so a
+/// misconfigured backup directory is reported before it can silently disable
+/// backups.
+pub fn validate_backup_dir(dir: &Path) -> Result<(), String> {
+    if !dir.exists() {
+        return Err(format!("backup path does not exist: {}", dir.display()));
+    }
+    if !dir.is_dir() {
+        return Err(format!("backup path is not a directory: {}", dir.display()));
+    }
+    let probe = dir.join(".ur-backup-probe");
+    std::fs::write(&probe, b"probe")
+        .map_err(|e| format!("backup path is not writable: {} ({e})", dir.display()))?;
+    std::fs::remove_file(&probe).map_err(|e| {
+        format!(
+            "failed to remove backup write probe {}: {e}",
+            probe.display()
+        )
+    })?;
+    Ok(())
+}
+
 /// Filename for an automatic backup of `db_name` taken at `timestamp`.
 pub fn automatic_backup_filename(db_name: &str, timestamp: &str) -> String {
     format!("{AUTOMATIC_BACKUP_PREFIX}{db_name}-{timestamp}{BACKUP_EXTENSION}")
@@ -322,6 +347,28 @@ mod tests {
 
         assert!(dir.join(&old).exists());
         assert!(dir.join(&current).exists());
+    }
+
+    #[test]
+    fn validate_backup_dir_rejects_nonexistent() {
+        let err = validate_backup_dir(Path::new("/nonexistent/path/abc123")).expect_err("missing");
+        assert!(err.contains("does not exist"), "{err}");
+    }
+
+    #[test]
+    fn validate_backup_dir_rejects_file() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("not-a-dir");
+        std::fs::write(&file, "data").unwrap();
+        let err = validate_backup_dir(&file).expect_err("file");
+        assert!(err.contains("not a directory"), "{err}");
+    }
+
+    #[test]
+    fn validate_backup_dir_accepts_writable_dir_and_cleans_probe() {
+        let tmp = TempDir::new().unwrap();
+        validate_backup_dir(tmp.path()).expect("writable dir");
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
     }
 
     #[test]

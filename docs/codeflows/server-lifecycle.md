@@ -81,7 +81,7 @@ The server container receives `UR_BUILDERD_ADDR=http://host.docker.internal:$UR_
 to reach builderd on the host via Docker's host gateway.
 
 The `ur-postgres` container stores data at `$UR_CONFIG/postgres` (mounted as `/var/lib/postgresql/data`).
-Each database with a backup `path` (`[ticket_db.backup]`, `[workflow_db.backup]`) has its host backup path mounted at `/backup/<db_name>` in the postgres container for `pg_dump`/`pg_restore`.
+Each database with a backup `path` (`[ticket_db.backup]`, `[workflow_db.backup]`) has its host backup path mounted at `/backup/<db_name>` in both the postgres container (for `pg_dump`/`pg_restore`) and the server container (for directory validation and retention cleanup). `ur start` fails before `compose up` if a configured backup path is missing or unwritable.
 
 ### Postgres Bootstrap Databases
 
