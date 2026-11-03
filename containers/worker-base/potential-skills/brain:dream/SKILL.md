@@ -30,7 +30,7 @@ directory is mapped to the host, and only git may run there.
 | `ur dream config` | the validated config (fails if `DREAM.md` is missing or broken) |
 | `ur dream lint` | broken links, index gaps, orphans, long index entries, empty and unlisted folders |
 | `ur dream refs` | each scratch stream: status, recorded, discovered and ignored refs, last change and quiet days (from git; `mtime` when the only commit touching it is `brain: init`) |
-| `ur dream check --write` | each active ref checked (cached done refs skipped), saved to `.dream/state.json` |
+| `ur dream check --write` | each active ref checked (cached done refs skipped), saved to `.dream/state.json`: `summary` counts (done / not done / unknown / cached), `unknown` refs with their state, and per-ref detail in `refs` with the active `streams` (and `recorded`/`discovered` source) each came from |
 | `ur dream review` | durable docs by review due date; `pick` is what to review this run |
 | `ur dream reviewed <file> unchanged\|changed --note "…"` | records a review and adapts its interval |
 
@@ -79,7 +79,11 @@ At most one edit per file per report: combine everything for a file into that ed
      frontmatter, citing the line it came from, so later runs neither report nor check it.
    - `unclassified` strings → report them and propose a `DREAM.md` ref kind.
    - A ref is unknown when `done` is `null`, whatever `state` says (`uncheckable`, `exit-1`,
-     `missing-command`, ... say why).
+     `missing-command`, ... say why). `check`'s `unknown` list has them all with their state;
+     report each.
+   - Fill the report's "Refs checked" table and its totals straight from `check`'s `refs` and
+     `summary` (one row per ref; Source is each entry of its `streams`). Don't recount or
+     re-attribute refs with your own scripts.
 3. **Promote**: a stream is a candidate when every ref is done **and** its `quiet_days` is at least
    the threshold. A stream with no refs that is quiet is reported as "possibly abandoned", never
    promoted. Any `unknown` ref → not a candidate; report it. For each candidate:
@@ -124,7 +128,8 @@ the target's date stays unchanged.
 Summary: N findings, M proposed edits.
 
 ## Refs checked
-| Ref | State | Done | Source (recorded/discovered) |
+Done: D, not done: N, unknown: U (from `ur dream check` `summary`).
+| Ref | State | Done | Stream (recorded/discovered) |
 
 ## Reviewed
 | File | Outcome | Checked against | Next due |

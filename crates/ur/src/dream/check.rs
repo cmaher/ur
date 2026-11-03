@@ -10,7 +10,7 @@ use regex::Regex;
 use serde::Serialize;
 
 use super::config::{Config, fill, fill_escaped};
-use super::refs::Ref;
+use super::refs::{Ref, RefsReport};
 use super::state::{RefState, State};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -23,6 +23,116 @@ pub struct Checked {
     pub checked_at: String,
     /// Reused from `state.json` (already done), not re-run.
     pub cached: bool,
+}
+
+/// How a ref came to belong to a stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    /// Listed in the stream's frontmatter `refs`.
+    Recorded,
+    /// Found in the stream's text.
+    Discovered,
+}
+
+/// One active stream a ref belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct StreamRef {
+    pub stream: String,
+    pub source: Source,
+}
+
+/// A checked ref and the active streams it came from.
+#[derive(Debug, Clone, Serialize)]
+pub struct RefResult {
+    #[serde(flatten)]
+    pub checked: Checked,
+    pub streams: Vec<StreamRef>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+pub struct Summary {
+    pub total: usize,
+    pub done: usize,
+    pub not_done: usize,
+    /// `done` is `null`: the check failed or the state is not declared done or not done.
+    pub unknown: usize,
+    /// Reused from `state.json` rather than re-run (counted in `done` too).
+    pub cached: usize,
+}
+
+/// A ref whose done-ness is unknown, with the state that says why.
+#[derive(Debug, Clone, Serialize)]
+pub struct UnknownRef {
+    #[serde(rename = "ref")]
+    pub key: String,
+    pub state: String,
+    pub streams: Vec<StreamRef>,
+}
+
+/// `ur dream check` output: totals, the unknown refs, and every ref's detail.
+#[derive(Debug, Serialize)]
+pub struct CheckReport {
+    pub summary: Summary,
+    pub unknown: Vec<UnknownRef>,
+    pub refs: BTreeMap<String, RefResult>,
+}
+
+/// Ref key → the active streams that record or discover it, sorted by stream.
+pub fn attribution(report: &RefsReport) -> BTreeMap<String, Vec<StreamRef>> {
+    let mut out: BTreeMap<String, Vec<StreamRef>> = BTreeMap::new();
+    for (name, stream) in report.streams.iter().filter(|(_, s)| s.is_active()) {
+        let tagged = (stream.recorded_refs.iter().map(|r| (r, Source::Recorded))).chain(
+            stream
+                .discovered_refs
+                .iter()
+                .map(|r| (r, Source::Discovered)),
+        );
+        for (r, source) in tagged {
+            out.entry(r.key()).or_default().push(StreamRef {
+                stream: name.clone(),
+                source,
+            });
+        }
+    }
+    out
+}
+
+/// Join check results with stream attribution and count them.
+pub fn summarize(
+    results: &BTreeMap<String, Checked>,
+    streams: &BTreeMap<String, Vec<StreamRef>>,
+) -> CheckReport {
+    let mut summary = Summary::default();
+    let mut unknown = Vec::new();
+    let mut refs = BTreeMap::new();
+    for (key, checked) in results {
+        let attributed = streams.get(key).cloned().unwrap_or_default();
+        summary.total += 1;
+        summary.cached += usize::from(checked.cached);
+        match checked.done {
+            Some(true) => summary.done += 1,
+            Some(false) => summary.not_done += 1,
+            None => {
+                summary.unknown += 1;
+                unknown.push(UnknownRef {
+                    key: key.clone(),
+                    state: checked.state.clone(),
+                    streams: attributed.clone(),
+                });
+            }
+        }
+        let result = RefResult {
+            checked: checked.clone(),
+            streams: attributed,
+        };
+        refs.insert(key.clone(), result);
+    }
+    CheckReport {
+        summary,
+        unknown,
+        refs,
+    }
 }
 
 /// The argv a ref's check would run, or `None` if the kind has no check or a placeholder
@@ -168,7 +278,7 @@ pub fn record(state: &mut State, results: &BTreeMap<String, Checked>) {
 mod tests {
     use super::*;
     use crate::dream::config::Config;
-    use crate::dream::refs::parse_ref;
+    use crate::dream::refs::{RefsReport, Stream, parse_ref};
 
     /// A config whose checks are `sh -c` scripts, so tests need no fake binaries.
     fn cfg() -> Config {
@@ -238,5 +348,103 @@ done = ["x"]
         assert_eq!(got["t:T-2"].checked_at, "2026-01-01");
         assert!(!got["t:T-1"].cached);
         assert_eq!(got["t:T-1"].done, Some(true));
+    }
+
+    fn stream(status: Option<&str>, recorded: Vec<Ref>, discovered: Vec<Ref>) -> Stream {
+        Stream {
+            entry: None,
+            frontmatter: status.is_some(),
+            status: status.map(str::to_string),
+            recorded_refs: recorded,
+            discovered_refs: discovered,
+            ignored_refs: Vec::new(),
+            unclassified: Vec::new(),
+            last_change: None,
+            last_change_source: "empty",
+            quiet_days: None,
+        }
+    }
+
+    fn checked(state: &str, done: Option<bool>, cached: bool) -> Checked {
+        Checked {
+            state: state.into(),
+            done,
+            checked_at: "2026-01-01".into(),
+            cached,
+        }
+    }
+
+    fn sr(stream: &str, source: Source) -> StreamRef {
+        StreamRef {
+            stream: stream.into(),
+            source,
+        }
+    }
+
+    #[test]
+    fn attribution_lists_active_streams_with_source() {
+        let c = cfg();
+        let t1 = || parse_ref(&c, "t", "T-1");
+        let t2 = || parse_ref(&c, "t", "T-2");
+        let mut streams = BTreeMap::new();
+        streams.insert("working/a".into(), stream(None, vec![t1()], vec![t2()]));
+        streams.insert(
+            "working/b".into(),
+            stream(Some("active"), vec![], vec![t1()]),
+        );
+        streams.insert("working/c".into(), stream(Some("done"), vec![t2()], vec![]));
+        let report = RefsReport {
+            streams,
+            active_refs: vec![t1(), t2()],
+        };
+        let got = attribution(&report);
+        assert_eq!(
+            got["t:T-1"],
+            vec![
+                sr("working/a", Source::Recorded),
+                sr("working/b", Source::Discovered)
+            ]
+        );
+        // The done stream's recorded T-2 is not attributed: only active streams are checked.
+        assert_eq!(got["t:T-2"], vec![sr("working/a", Source::Discovered)]);
+    }
+
+    #[test]
+    fn summarize_counts_and_lists_unknown_refs() {
+        let mut results = BTreeMap::new();
+        results.insert("t:T-1".to_string(), checked("Done", Some(true), true));
+        results.insert(
+            "t:T-2".to_string(),
+            checked("In Progress", Some(false), false),
+        );
+        results.insert("t:T-3".to_string(), checked("exit-3", None, false));
+        results.insert(
+            "plain:P-1".to_string(),
+            checked("MERGED", Some(true), false),
+        );
+        let mut streams = BTreeMap::new();
+        streams.insert("t:T-3".to_string(), vec![sr("working/a", Source::Recorded)]);
+        let report = summarize(&results, &streams);
+        assert_eq!(
+            report.summary,
+            Summary {
+                total: 4,
+                done: 2,
+                not_done: 1,
+                unknown: 1,
+                cached: 1,
+            }
+        );
+        assert_eq!(report.unknown.len(), 1);
+        assert_eq!(report.unknown[0].key, "t:T-3");
+        assert_eq!(report.unknown[0].state, "exit-3");
+        assert_eq!(report.unknown[0].streams, streams["t:T-3"]);
+        assert!(report.refs["t:T-1"].streams.is_empty());
+
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["unknown"][0]["ref"], "t:T-3");
+        assert_eq!(json["refs"]["t:T-3"]["state"], "exit-3");
+        assert_eq!(json["refs"]["t:T-3"]["streams"][0]["source"], "recorded");
+        assert_eq!(json["summary"]["not_done"], 1);
     }
 }

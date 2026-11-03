@@ -41,6 +41,13 @@ pub struct Stream {
     pub quiet_days: Option<i64>,
 }
 
+impl Stream {
+    /// Status `active` or no status at all: its refs are checked.
+    pub fn is_active(&self) -> bool {
+        matches!(self.status.as_deref(), None | Some("active"))
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct RefsReport {
     pub streams: BTreeMap<String, Stream>,
@@ -239,27 +246,25 @@ pub fn scan(brain: &Path, cfg: &Config) -> RefsReport {
             (Vec::new(), BTreeSet::new())
         };
         let status = fm.as_ref().and_then(|f| f.fields.get("status").cloned());
-        if matches!(status.as_deref(), None | Some("active")) {
-            for r in recorded.iter().chain(&discovered) {
+        let (changed, source) = last_change(brain, &rel, &init_commits);
+        let stream = Stream {
+            entry,
+            frontmatter: fm.is_some(),
+            status,
+            recorded_refs: recorded,
+            discovered_refs: discovered,
+            ignored_refs: ignored,
+            unclassified: unclassified.into_iter().collect(),
+            last_change: changed.map(|d| d.to_string()),
+            last_change_source: source,
+            quiet_days: changed.map(|d| (today - d).num_days()),
+        };
+        if stream.is_active() {
+            for r in stream.recorded_refs.iter().chain(&stream.discovered_refs) {
                 active.insert(r.key(), r.clone());
             }
         }
-        let (changed, source) = last_change(brain, &rel, &init_commits);
-        streams_out.insert(
-            rel,
-            Stream {
-                entry,
-                frontmatter: fm.is_some(),
-                status,
-                recorded_refs: recorded,
-                discovered_refs: discovered,
-                ignored_refs: ignored,
-                unclassified: unclassified.into_iter().collect(),
-                last_change: changed.map(|d| d.to_string()),
-                last_change_source: source,
-                quiet_days: changed.map(|d| (today - d).num_days()),
-            },
-        );
+        streams_out.insert(rel, stream);
     }
     RefsReport {
         streams: streams_out,

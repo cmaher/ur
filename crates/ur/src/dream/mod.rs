@@ -97,12 +97,16 @@ pub fn handle(
             let brain = existing_brain(config, target)?;
             let cfg = Config::load(&brain)?;
             let mut st = State::load(&brain)?;
-            let results = check::check_all(&cfg, &refs::scan(&brain, &cfg).active_refs, &st);
+            let scanned = refs::scan(&brain, &cfg);
+            let results = check::check_all(&cfg, &scanned.active_refs, &st);
             if write {
                 check::record(&mut st, &results);
                 st.save(&brain)?;
             }
-            emit(output, &results)
+            emit(
+                output,
+                &check::summarize(&results, &check::attribution(&scanned)),
+            )
         }
         DreamCommands::Try { target, kind, text } => {
             let brain = existing_brain(config, target)?;
