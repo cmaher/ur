@@ -26,7 +26,7 @@ layer for layer. Must work with Docker and nerdctl (containerd) runtimes.
   re-running the script *is* the update, claude's install-then-update pair would download the
   same release twice on a cold build, so this image has a single `RUN` that references
   `CACHEBUST`; with the arg defaulted the layer caches normally, and it sits above the worker
-  binary `COPY`s so a plain `cargo make image` reuses it. The install is **not** best-effort: a
+  binary `COPY`s so a plain `make image` reuses it. The install is **not** best-effort: a
   failure fails the build rather than silently shipping a stale (or missing) version
 
 ## The `potential-settings.json`-holding-TOML wrinkle

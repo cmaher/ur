@@ -36,7 +36,7 @@ mod tests {
             .max_connections(2)
             .connect_with(options)
             .await
-            .expect("Cannot connect to ci-postgres on localhost:5433. Run: cargo make test:init")
+            .expect("Cannot connect to ci-postgres on localhost:5433. Run: make test-init")
     }
 
     async fn create_test_pool(admin: &PgPool, db_name: &str) -> PgPool {

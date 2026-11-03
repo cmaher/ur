@@ -34,7 +34,7 @@ RUN chown worker:worker /home/worker/.claude.json && chown -R worker:worker /hom
 # Worker commands use these to connect back to the host's per-agent gRPC server.
 
 # Claude Code update. Pass --build-arg CACHEBUST=<timestamp> to bust the cache on
-# this layer (cargo make install-update-claude / install-nocache do this for you).
+# this layer (make install-update-claude / install-nocache do this for you).
 # CACHEBUST must be referenced in the RUN command — BuildKit only invalidates
 # cache for layers that actually use the ARG, not merely declare it.
 # A failed update fails the build on purpose: silently shipping a stale Claude Code
