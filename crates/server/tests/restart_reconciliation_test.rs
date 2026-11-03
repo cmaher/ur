@@ -261,6 +261,7 @@ async fn restart_reclaims_worker_with_live_container() {
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
         idle_redispatch_count: 0,
+        brain_path: None,
     };
     worker_repo1.insert_worker(&worker).await.unwrap();
     worker_repo1
@@ -382,6 +383,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
         idle_redispatch_count: 0,
+        brain_path: None,
     };
     worker_repo1.insert_worker(&worker).await.unwrap();
     worker_repo1
@@ -480,6 +482,7 @@ async fn insert_worker_with_slot(
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
         idle_redispatch_count: 0,
+        brain_path: None,
     };
     worker_repo.insert_worker(&worker).await.unwrap();
     worker_repo

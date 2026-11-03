@@ -327,9 +327,27 @@ impl HostExecServiceHandler {
             }
         })?;
 
-        // 2. CWD mapping
-        let slot_path = worker_context.as_ref().map(|ctx| ctx.slot_path.as_path());
-        let host_working_dir = self.map_working_dir(&host_exec_req.working_dir, slot_path)?;
+        // 2. CWD mapping. `/brain` maps to the worker's host brain dir, for git only.
+        let host_working_dir = if is_brain_dir(&host_exec_req.working_dir) {
+            if host_exec_req.command != BRAIN_HOSTEXEC_COMMAND {
+                return Err(HostExecError::InvalidWorkingDir {
+                    path: host_exec_req.working_dir.clone(),
+                    reason: format!("only {BRAIN_HOSTEXEC_COMMAND} may run in /brain"),
+                }
+                .into());
+            }
+            let brain = self
+                .brain_host_path(worker_context.as_ref())
+                .await
+                .ok_or_else(|| HostExecError::InvalidWorkingDir {
+                    path: host_exec_req.working_dir.clone(),
+                    reason: "worker has no brain mount".into(),
+                })?;
+            map_brain_working_dir_impl(&host_exec_req.working_dir, &brain)?
+        } else {
+            let slot_path = worker_context.as_ref().map(|ctx| ctx.slot_path.as_path());
+            self.map_working_dir(&host_exec_req.working_dir, slot_path)?
+        };
 
         // 3. Lua transform (if configured)
         let transform_result = if let Some(lua_source) = &cmd_config.lua_source {
@@ -568,6 +586,18 @@ impl HostExecServiceHandler {
         Ok((process_id, worker_context, config))
     }
 
+    /// Host path of the brain mounted at `/brain` for the requesting worker, if any.
+    async fn brain_host_path(
+        &self,
+        worker_context: Option<&crate::hostexec::WorkerContext>,
+    ) -> Option<std::path::PathBuf> {
+        let worker_id = crate::WorkerId::parse(&worker_context?.worker_id).ok()?;
+        self.worker_manager
+            .get_worker_context(&worker_id)
+            .await?
+            .brain_path
+    }
+
     /// Map container CWD to a `%WORKSPACE%` template path for builderd.
     ///
     /// For workspace mounts (`-w`), `/workspace/foo` maps to `%WORKSPACE%/foo`.
@@ -581,6 +611,46 @@ impl HostExecServiceHandler {
     ) -> Result<String, HostExecError> {
         map_working_dir_impl(container_dir, slot_path, &self.host_workspace)
     }
+}
+
+/// The only hostexec command allowed to run with a `/brain` working directory: brain
+/// skills commit to the brain's own git repository from inside it.
+const BRAIN_HOSTEXEC_COMMAND: &str = "git";
+
+/// Whether `container_dir` is the `/brain` mount or a directory under it.
+fn is_brain_dir(container_dir: &str) -> bool {
+    container_dir
+        .strip_prefix(ur_config::BRAIN_CONTAINER_PATH)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// Map a `/brain[/...]` container directory to the same place under the host brain dir.
+///
+/// Builderd passes absolute paths through unchanged. `..` segments are rejected so the
+/// mapping can never leave the brain.
+#[allow(clippy::result_large_err)]
+fn map_brain_working_dir_impl(
+    container_dir: &str,
+    brain_host_path: &std::path::Path,
+) -> Result<String, HostExecError> {
+    let invalid = |reason: &str| HostExecError::InvalidWorkingDir {
+        path: container_dir.to_string(),
+        reason: reason.into(),
+    };
+    let rest = container_dir
+        .strip_prefix(ur_config::BRAIN_CONTAINER_PATH)
+        .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+        .ok_or_else(|| invalid("working_dir must start with /brain"))?;
+    let rel = rest.trim_start_matches('/');
+    if rel.split('/').any(|seg| seg == "..") {
+        return Err(invalid("working_dir must not contain '..'"));
+    }
+    let mapped = if rel.is_empty() {
+        brain_host_path.to_path_buf()
+    } else {
+        brain_host_path.join(rel)
+    };
+    Ok(mapped.to_string_lossy().into_owned())
 }
 
 /// Validate a container-relative script path and return the portion after `/workspace/`.
@@ -735,6 +805,38 @@ mod tests {
         let result =
             map_working_dir_impl("/workspace/src", Some(&slot), Path::new(HOST_WS)).unwrap();
         assert_eq!(result, "/Users/foo/myproject/src");
+    }
+
+    #[test]
+    fn is_brain_dir_matches_mount_and_children_only() {
+        assert!(is_brain_dir("/brain"));
+        assert!(is_brain_dir("/brain/"));
+        assert!(is_brain_dir("/brain/working/x"));
+        assert!(!is_brain_dir("/brainfoo"));
+        assert!(!is_brain_dir("/workspace/brain"));
+        assert!(!is_brain_dir("/tmp"));
+    }
+
+    #[test]
+    fn map_brain_working_dir_maps_under_host_brain() {
+        let brain = Path::new("/host/config/projects/p/brain");
+        assert_eq!(
+            map_brain_working_dir_impl("/brain", brain).unwrap(),
+            "/host/config/projects/p/brain"
+        );
+        assert_eq!(
+            map_brain_working_dir_impl("/brain/working/s", brain).unwrap(),
+            "/host/config/projects/p/brain/working/s"
+        );
+    }
+
+    #[test]
+    fn map_brain_working_dir_rejects_escape_and_other_paths() {
+        let brain = Path::new("/host/brain");
+        assert!(map_brain_working_dir_impl("/brain/../etc", brain).is_err());
+        assert!(map_brain_working_dir_impl("/brain/a/../../x", brain).is_err());
+        assert!(map_brain_working_dir_impl("/brainfoo", brain).is_err());
+        assert!(map_brain_working_dir_impl("/workspace", brain).is_err());
     }
 
     #[test]

@@ -109,6 +109,8 @@ pub struct Worker {
     pub created_at: String,
     pub updated_at: String,
     pub idle_redispatch_count: i32,
+    /// Host path of the brain mounted at `/brain`, if the worker has one.
+    pub brain_path: Option<String>,
 }
 
 pub struct WorkerSlot {

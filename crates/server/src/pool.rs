@@ -558,6 +558,7 @@ mod tests {
             created_at: now.clone(),
             updated_at: now,
             idle_redispatch_count: 0,
+            brain_path: None,
         };
         worker_repo.insert_worker(&worker).await.unwrap();
         worker_repo
@@ -776,6 +777,7 @@ image = "ur-worker"
             created_at: now.clone(),
             updated_at: now,
             idle_redispatch_count: 0,
+            brain_path: None,
         };
         mgr.worker_repo.insert_worker(&worker).await.unwrap();
         mgr.worker_repo

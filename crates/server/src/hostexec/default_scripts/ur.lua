@@ -42,6 +42,23 @@ function transform(command, args, working_dir, worker_context)
         return { command = command, args = args, working_dir = working_dir, env = env }
     end
 
+    -- Brain consolidation helpers. Pinned to the worker's own project: `check` runs the
+    -- project's declared check commands and `check --write` / `reviewed` write its brain state.
+    if subcmd == "dream" then
+        local key = worker_context ~= nil and worker_context.project_key or ""
+        if key == "" then
+            error("ur dream: only available to workers with a project")
+        end
+        for i = 2, #args do
+            local a = args[i]
+            -- clap also accepts an attached short value (`-pother`).
+            if a:sub(1, 2) == "-p" or a == "--project" or a:sub(1, 10) == "--project=" then
+                error("ur dream: --project is not allowed from workers (pinned to this worker's project)")
+            end
+        end
+        return { command = command, args = args, working_dir = working_dir, env = { UR_PROJECT = key } }
+    end
+
     -- Readonly subcommands for management commands
     local readonly_subcommands = {
         ["worker"] = { ["list"] = true, ["describe"] = true, ["dir"] = true },

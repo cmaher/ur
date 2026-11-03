@@ -3229,6 +3229,7 @@ dependencies = [
  "fs4",
  "glob",
  "http-body",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

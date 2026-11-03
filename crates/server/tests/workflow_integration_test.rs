@@ -486,6 +486,7 @@ async fn seed_ticket_and_worker(
         created_at: now.clone(),
         updated_at: now,
         idle_redispatch_count: 0,
+        brain_path: None,
     };
     worker_repo.insert_worker(&worker).await.unwrap();
 
@@ -807,6 +808,7 @@ async fn seed_ticket_and_worker_for_project(
         created_at: now.clone(),
         updated_at: now,
         idle_redispatch_count: 0,
+        brain_path: None,
     };
     worker_repo.insert_worker(&worker).await.unwrap();
     workflow_repo

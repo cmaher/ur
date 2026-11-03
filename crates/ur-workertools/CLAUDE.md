@@ -2,7 +2,7 @@
 
 Worker toolkit binary used by agent hooks, skills, and hostexec shims.
 Installed at `/usr/local/bin/ur-workertools` in worker containers and on the host next to `ur`
-(`cargo make install` → `$UR_INSTALL_DIR`, default `~/.local/bin`), so the same binary serves
+(`make install` → `$UR_INSTALL_DIR`, default `~/.local/bin`), so the same binary serves
 container and host-local workers.
 
 - `ur-workertools host-exec <command> <args>` — forwards commands to ur-server via gRPC, streams output in real time

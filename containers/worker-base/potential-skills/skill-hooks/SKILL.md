@@ -51,7 +51,7 @@ ur-hooks/skills/
 ### Principles
 
 1. **Be specific about commands.** Name the exact command to run, not "run the linter". Agents follow instructions literally.
-2. **Use project task runners.** Prefer `cargo make clippy` over `cargo clippy --workspace --all-targets --all-features -- -D warnings`. The task runner is the source of truth for flags.
+2. **Use project task runners.** Prefer `make clippy` over `cargo clippy --workspace --all-targets --all-features -- -D warnings`. The task runner is the source of truth for flags.
 3. **Distinguish fast vs full checks.** Subtask hooks run per-commit and should be fast (seconds). Final hooks run once and can be thorough (minutes).
 4. **State the gate clearly.** End each hook with an unambiguous "do NOT proceed until X" statement.
 5. **Handle fallbacks.** If a fast check depends on a background process (like bacon), specify what to run if the process isn't available.
@@ -69,7 +69,7 @@ Before committing, verify the codebase has no compiler errors or warnings.
    - If ANY errors or warnings are present, fix ALL of them before proceeding.
    - Re-read `.bacon-locations` after fixes to confirm it is clean.
 3. If `.bacon-locations` does not exist or is empty, fall back to running:
-   `cargo make clippy`
+   `make clippy`
    Fix any errors or warnings reported, then re-run to confirm clean output.
 
 Do NOT commit until all diagnostics are clean.
@@ -82,7 +82,7 @@ Good for the end-of-epic gate where thoroughness matters more than speed:
 ```markdown
 After all subagents complete, run full CI verification:
 
-1. Run `cargo make ci-fmt-fix` (silently auto-formats, then runs clippy, build, tests).
+1. Run `make ci-fmt-fix` (silently auto-formats, then runs clippy, build, tests).
    Fix any failures and re-run until clean.
 2. `ci-fmt-fix` may have reformatted files. Check for unstaged changes and,
    if any, stage and commit them before proceeding.

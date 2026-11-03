@@ -120,6 +120,9 @@ impl WorkerStrategy {
                     "test-driven-development".into(),
                     "design".into(),
                     "dispatch".into(),
+                    // Brain consolidation: a person drives it, so manual workers only.
+                    "brain:dream".into(),
+                    "brain:dream-init".into(),
                 ]);
             }
         }
@@ -186,6 +189,15 @@ mod tests {
     }
 
     #[test]
+    fn brain_dream_skills_are_manual_only() {
+        for strategy in [WorkerStrategy::Code, WorkerStrategy::Design] {
+            let skills = strategy.skills();
+            assert!(!skills.contains(&"brain:dream".to_string()));
+            assert!(!skills.contains(&"brain:dream-init".to_string()));
+        }
+    }
+
+    #[test]
     fn manual_skills_include_all_categories() {
         let skills = WorkerStrategy::Manual.skills();
         // Code-specific skills
@@ -199,6 +211,9 @@ mod tests {
         // Design-specific skills
         assert!(skills.contains(&"design".to_string()));
         assert!(skills.contains(&"dispatch".to_string()));
+        // Brain consolidation
+        assert!(skills.contains(&"brain:dream".to_string()));
+        assert!(skills.contains(&"brain:dream-init".to_string()));
         // Common skills
         assert!(skills.contains(&"green".to_string()));
         assert!(skills.contains(&"cli-design".to_string()));

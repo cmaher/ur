@@ -136,6 +136,8 @@ mod tests {
             "code-review",
             "brain",
             "brain:init",
+            "brain:dream",
+            "brain:dream-init",
             "dispatch",
         ]
         .into_iter()
@@ -191,6 +193,16 @@ mod tests {
         assert_eq!(
             plugin(src),
             "mounted at `/brain`. Read `/brain/CLAUDE.md`. Run `/ur:brain:init`."
+        );
+    }
+
+    #[test]
+    fn plugin_rewrites_hyphenated_and_prefix_sharing_skill_names() {
+        let src =
+            "Run `/brain:dream-init`, then `/brain:dream`. State: `/brain/.dream/state.json`.";
+        assert_eq!(
+            plugin(src),
+            "Run `/ur:brain:dream-init`, then `/ur:brain:dream`. State: `/brain/.dream/state.json`."
         );
     }
 

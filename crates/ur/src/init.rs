@@ -59,6 +59,7 @@ const DEFAULT_ALLOWLIST: &str = "\
 api.anthropic.com
 platform.claude.com
 downloads.claude.ai
+.frame.claudeusercontent.com
 mcp-proxy.anthropic.com
 chatgpt.com
 api.openai.com
