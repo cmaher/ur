@@ -195,6 +195,25 @@ pub fn git(brain: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Like [`git`], but a failure is an error carrying git's stderr, and stdout is returned
+/// untrimmed (porcelain output starts with significant spaces).
+pub fn git_checked(brain: &Path, args: &[&str]) -> anyhow::Result<String> {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(brain)
+        .output()
+        .map_err(|e| anyhow::anyhow!("running git {}: {e}", args.join(" ")))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git {} failed in {}: {}",
+            args.join(" "),
+            brain.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Every file under `rel` (itself when it is a file), as absolute paths.
 pub fn files_under(brain: &Path, rel: &str) -> Vec<PathBuf> {
     let path = brain.join(rel);

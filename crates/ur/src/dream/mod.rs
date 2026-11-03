@@ -13,8 +13,10 @@ mod config;
 mod files;
 mod lint;
 mod refs;
+mod report;
 mod review;
 mod state;
+mod status;
 
 use std::path::PathBuf;
 
@@ -54,6 +56,9 @@ pub enum DreamCommands {
     /// Classify active streams for promotion from cached checks (candidate, blocked,
     /// possibly_abandoned, active); never runs checks
     Candidates(Target),
+    /// Where the last run stopped: newest report, its Applied section and apply commit,
+    /// uncommitted paths (`.dream/` vs other), and its "Not proposed" items
+    Status(Target),
     /// Parse TEXT as a ref of KIND and run its check once (for testing a ref kind)
     Try {
         #[command(flatten)]
@@ -121,6 +126,10 @@ pub fn handle(
                 output,
                 &candidates::classify(&scanned, &st, cfg.raw.thresholds.quiet_days),
             )
+        }
+        DreamCommands::Status(t) => {
+            let brain = existing_brain(config, t)?;
+            emit(output, &status::status(&brain)?)
         }
         DreamCommands::Try { target, kind, text } => {
             let brain = existing_brain(config, target)?;

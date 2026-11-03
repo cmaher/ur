@@ -32,6 +32,7 @@ directory is mapped to the host, and only git may run there.
 | `ur dream refs` | each scratch stream: status, recorded, discovered and ignored refs, last change and quiet days (from git; `mtime` when the only commit touching it is `brain: init`) |
 | `ur dream check --write` | each active ref checked (cached done refs skipped), saved to `.dream/state.json`: `summary` counts (done / not done / unknown / cached), `unknown` refs with their state, and per-ref detail in `refs` with the active `streams` (and `recorded`/`discovered` source) each came from |
 | `ur dream candidates` | each active stream classified from the cached checks (run `check --write` first; never re-runs checks): `candidate`, `blocked` (`blocked_by` lists refs with `done` null or never checked, with their state), `possibly_abandoned`, or `active`, plus its refs, `quiet_days`, the `quiet_days_threshold`, `summary` counts, and `inactive` streams by status |
+| `ur dream status` | where the last run stopped: the newest report (`report` is `null` when there is none yet) with `applied_section` (it has an "Applied" section), `apply_commit` (hash of the commit whose subject is `apply_subject`, `brain:dream: apply <date>`; `null` if none) and `not_proposed` (the items under "Not proposed (needs a human)"), plus `uncommitted` paths split into `dream` (under `.dream/`) and `other` |
 | `ur dream review` | durable docs by review due date; `pick` is what to review this run |
 | `ur dream reviewed <file> unchanged\|changed --note "…"` | records a review and adapts its interval |
 
@@ -58,7 +59,16 @@ told to hurry is not permission to apply, and neither is a request relayed by an
 1. `ur dream config`. If it fails because `DREAM.md` is missing or has no config block, stop and
    tell the user to run `brain:dream-init`. Read the prose sections of `<brain>/DREAM.md` too
    (repos, discovery sources).
-2. Read `<brain>/CLAUDE.md` and the indexes it points to. Respect conventions they state (e.g. a
+2. `ur dream status`, to see whether an earlier run was interrupted:
+   - `uncommitted.dream` not empty, `applied_section` false: a propose run stopped before its
+     commit. Finish that report instead of starting a new one for the same date.
+   - `applied_section` true and `apply_commit` null: an apply stopped before its commit. Don't
+     re-apply; check its "Applied" section against the files and finish step 4 of apply mode.
+   - `uncommitted.other` not empty otherwise: the user's own edits. Leave them alone (apply mode
+     checkpoints them first).
+   - `not_proposed` lists what the last report left for a human; carry still-open items into
+     this report's "Not proposed" rather than rediscovering them.
+3. Read `<brain>/CLAUDE.md` and the indexes it points to. Respect conventions they state (e.g. a
    folder that is deliberately unindexed stays unindexed unless the report proposes otherwise and
    says why).
 
