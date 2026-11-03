@@ -15,7 +15,7 @@ FROM ur-worker-base:${BASE_TAG}
 # unconditional install layer would just download the same release twice on a
 # cold build. Pass --build-arg CACHEBUST=<timestamp> to force a re-install
 # (UR_UPDATE_AGENT=codex / UR_FORCE_REBUILD_BASE=1 do this for you via
-# scripts/build/image.sh — see cargo make install-update-codex); with the
+# scripts/build/image.sh — see make install-update-codex); with the
 # default, this layer caches like any other, so codex stays pinned at the baked
 # version, and rebuilds that only change the worker binaries below reuse it
 # instead of re-downloading.

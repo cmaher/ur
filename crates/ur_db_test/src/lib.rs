@@ -131,6 +131,6 @@ async fn connect_admin_pool() -> PgPool {
         .connect_with(options)
         .await
         .unwrap_or_else(|_| {
-            panic!("Cannot connect to ci-postgres on localhost:5433. Run: cargo make test:init")
+            panic!("Cannot connect to ci-postgres on localhost:5433. Run: make test-init")
         })
 }

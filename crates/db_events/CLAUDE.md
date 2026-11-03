@@ -41,4 +41,4 @@ Tests connect to ci-postgres on `localhost:5433` (same as `ur_db_test`). Run:
 cargo test -p db_events
 ```
 
-Requires the test postgres to be running (`cargo make test:init`).
+Requires the test postgres to be running (`make test-init`).

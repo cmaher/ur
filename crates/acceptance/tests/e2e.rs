@@ -1010,7 +1010,7 @@ fn container_image(runtime: &str, container: &str) -> String {
 fn assert_container_image(runtime: &str, container: &str, agent: &str) {
     assert_eq!(
         container_image(runtime, container),
-        format!("ur-worker-{agent}:{}", &*IMAGE_TAG),
+        format!("ur-worker-{agent}:{}", *IMAGE_TAG),
         "container {container} should run the {agent} image at the stack's image tag"
     );
 }

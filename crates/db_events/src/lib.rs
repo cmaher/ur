@@ -261,7 +261,7 @@ mod tests {
             .max_connections(2)
             .connect_with(opts)
             .await
-            .expect("Cannot connect to ci-postgres on localhost:5433. Run: cargo make test:init")
+            .expect("Cannot connect to ci-postgres on localhost:5433. Run: make test-init")
     }
 
     /// Create an isolated test database, apply `ui_events` DDL, return (pool, db_name, db_url).

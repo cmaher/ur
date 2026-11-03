@@ -4,8 +4,8 @@
 #
 #   scripts/build/test-ci-scripts.sh [--if-changed] [TEST_NAME_REGEX]
 #
-# --if-changed (how `cargo make ci` runs it): skip, with a one-line notice,
-# unless scripts/acceptance-ci.sh, scripts/build/, ur-hooks/git/ or Makefile.toml
+# --if-changed (how `make ci` runs it): skip, with a one-line notice,
+# unless scripts/acceptance-ci.sh, scripts/build/, ur-hooks/git/ or Makefile
 # differ from the merge base with origin/master (committed, uncommitted or
 # untracked). Runs when origin/master is unknown; UR_CI_TEST_FORCE=1 forces it.
 #
@@ -36,7 +36,7 @@ STEP_TIMEOUT="${UR_CI_TEST_STEP_TIMEOUT:-120}"
 # shellcheck disable=SC2046
 unset $(git rev-parse --local-env-vars 2>/dev/null)
 
-CI_PATHS='^(scripts/acceptance-ci\.sh|scripts/build/|ur-hooks/git/|Makefile\.toml$)'
+CI_PATHS='^(scripts/acceptance-ci\.sh|scripts/build/|ur-hooks/git/|Makefile$)'
 if [ "${1:-}" = --if-changed ]; then
     shift
     if [ -z "${UR_CI_TEST_FORCE:-}" ] \
@@ -151,10 +151,14 @@ case "$1" in
         done
         mkdir -p "$t"; for b in $pkgs; do echo "bin $b via $cmd" > "$t/$b"; done ;;
   test) if [ -n "${CARGO_TEST_HOOK:-}" ]; then eval "$CARGO_TEST_HOOK"; fi; exit "${CARGO_TEST_RC:-0}" ;;
-  make) echo "make $2" >> "$DSTATE/make-calls"
-        case "$2" in ci) exit "${MAKE_CI_RC:-0}" ;; acceptance-ci) exit "${MAKE_ACC_RC:-0}" ;; esac ;;
   sweep) exit 0 ;;
 esac
+EOF
+# make: the pre-push hook's `make ci` / `make acceptance-ci` steps.
+cat > "$STUBS/make" <<'EOF'
+#!/usr/bin/env bash
+echo "make $1" >> "$DSTATE/make-calls"
+case "$1" in ci) exit "${MAKE_CI_RC:-0}" ;; acceptance-ci) exit "${MAKE_ACC_RC:-0}" ;; esac
 EOF
 # cargo-sweep: present so housekeeping's `command -v cargo-sweep` finds it; the
 # sweep itself goes through `cargo sweep`, logged by the cargo stub.
@@ -340,7 +344,7 @@ t_hash_user_cargo_config() { # ~/.cargo/config.toml (or $CARGO_HOME's, or the le
     [ "$BASE" != "$(hash_ CARGO_HOME="$S/ch")" ] && [ "$BASE" = "$(hash_ CARGO_HOME="$S/empty-cargo-home")" ]
 }
 t_hash_zigbuild_version() { [ "$BASE" != "$(hash_ ZIGBUILD_VER=9.9.9)" ]; }
-t_hash_cargo_make_env() { [ "$BASE" = "$(hash_ CARGO_MAKE_TASK=x CARGO=/x CARGO_HOME=/y)" ]; }
+t_hash_make_env() { [ "$BASE" = "$(hash_ MAKEFLAGS=x MAKELEVEL=1 CARGO=/x CARGO_HOME=/y)" ]; }
 t_hash_staged_outputs() { same 'echo b > containers/server/ur-server; echo b > containers/server/builderd;
                                 mkdir -p containers/worker-claude/bin; echo b > containers/worker-claude/bin/workerd'; }
 t_hash_unrelated()     { same 'echo y >> docs/a.md; echo y >> crates/unused/lib.rs; echo y > crates/server/ignored.txt'; }
@@ -649,7 +653,7 @@ t_housekeeping_skips_sweep_during_build() {
 t_housekeeping_warns_never_fails() { housekeeping DOCKER_PRUNE_RC=1 && grep -q "docker builder prune failed" "$S/hk.err"; }
 
 # ---------------------------------------------------------------- pre-push --
-t_hook_stale_cargo_lock() { # rejected before any `cargo make` step runs
+t_hook_stale_cargo_lock() { # rejected before any `make` step runs
     hook CARGO_LOCK_STALE=1 && return 1
     [ ! -s "$DSTATE/make-calls" ] && grep -q "Cargo.lock check" "$S/hook.out"
 }

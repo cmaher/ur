@@ -7,7 +7,7 @@ AGY-specific layer on `ur-worker-base:latest`, tagged `ur-worker-agy:latest`.
   dash. The installer resolves the architecture-specific manifest, verifies SHA-512, and a
   failed refresh fails the image build. There is no published musl build.
 - `CACHEBUST` refreshes AGY by rerunning the installer, never by calling `agy update`; use
-  `cargo make install-update-agy` to force that layer without rebuilding the base image.
+  `make install-update-agy` to force that layer without rebuilding the base image.
 - `AGY_CLI_DISABLE_AUTO_UPDATE=1` prevents runtime update traffic.
 - `BROWSER` points to the `xdg-open` shim (`open-auth-link.sh`). AGY's login screen hard-wraps plain URL text, so the shim opens a small tmux pane with a short OSC 8 sign-in link whose target is the complete URL. Close that pane after signing in.
 - The image bakes `cache/onboarding.json` and runtime `settings.json` to suppress onboarding

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Pre-push hook: run CI checks, build images, and run acceptance tests.
-# Install with: cargo make install-hooks
+# Install with: make install-hooks
 #
 # Output is captured to a stable log file. The log is removed on success
 # and preserved on failure so you can read the full output.
@@ -45,7 +45,7 @@ run_step() {
 # Fail fast on a stale Cargo.lock: nothing else in `ci` builds with --locked
 # (clippy does, but only after fmt and the script tests).
 run_step "Cargo.lock check" cargo metadata --locked --format-version 1
-run_step "CI (fmt + clippy + build + test)" cargo make ci
-run_step "image build + acceptance" cargo make acceptance-ci
+run_step "CI (fmt + clippy + build + test)" make ci
+run_step "image build + acceptance" make acceptance-ci
 
 rm -f "$LOGFILE"

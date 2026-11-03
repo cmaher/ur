@@ -66,7 +66,7 @@ build_image_no_cache() {
 # UR_FORCE_REBUILD_BASE=1 busts every agent (the base rebuild already
 # invalidates their cache, so this just makes the intent explicit).
 # UR_UPDATE_AGENT names one agent, or a comma-separated list, to bust
-# specifically — one knob for every agent (`cargo make install-update-claude`
+# specifically — one knob for every agent (`make install-update-claude`
 # and `install-update-codex` both set it).
 should_bust_agent() {
     local agent="$1"

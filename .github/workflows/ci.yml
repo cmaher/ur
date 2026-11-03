@@ -20,7 +20,7 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Run CI checks
-        run: cargo make ci
+        run: make ci
 
       - name: Check acceptance tests compile
         run: cargo check -p acceptance --features acceptance

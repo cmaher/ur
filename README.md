@@ -36,13 +36,13 @@ git clone https://github.com/cmaher/ur.git
 cd ur
 git submodule update --init --recursive
 
-# Install all project tools (Rust, protoc, zig, cargo-make, etc.)
+# Install all project tools (Rust, protoc, zig, etc.)
 mise trust
 mise install
 
 # Build and install the ur CLI + container images
 # installs binaries to ~/.local/bin
-cargo make install
+make install
 
 # Initialize the config directory (~/.ur/) with default ur.toml, squid allowlist, etc.
 ur init
@@ -137,13 +137,13 @@ Review and merge the results:
 ## Development
 
 ```sh
-cargo make ci        # Run all CI checks (fmt, clippy, build, test)
-cargo make fmt-fix   # Auto-format code
-cargo make clippy    # Run clippy lints
-cargo make audit     # Check dependency vulnerabilities
+make ci        # Run all CI checks (fmt, clippy, build, test)
+make fmt-fix   # Auto-format code
+make clippy    # Run clippy lints
+make audit     # Check dependency vulnerabilities
 ```
 
-Alternatively, run `cargo make install-hooks` and rely on pre-push hooks.
+Alternatively, run `make install-hooks` and rely on pre-push hooks.
 
 ## Project Structure
 
