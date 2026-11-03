@@ -88,7 +88,9 @@ branch = "origin/master"      # default; changes are listed up to it, never fetc
 |---|---|---|
 | `example-repo` | `example-org/example-repo` | `/workspace` |
 
-Names match `[[repos]]` in the config block, which holds each clone's host path.
+Names match `[[repos]]` in the config block, which holds each clone's host path. A repo `name`
+is letters, digits, `_` and `-` only (the key form `sources` frontmatter items take); anything
+else fails `ur dream config`.
 
 ## Discovery sources
 
@@ -159,7 +161,8 @@ there fails the command and records nothing.
 `git rev-list --count` and `git log --name-only` over `<since>..<branch>` (limited to `sources`)
 in the clone. `since` is the newest review that recorded that repo. Nothing is fetched, so fetch
 the clone first if it should be current. If a repo's diff fails (clone gone, sha no longer
-present, repo removed from the config) that repo's `commits` and `paths` are `null` and `error`
+present, repo removed from the config, a `sources` path that exists at neither `since` nor
+`branch`) that repo's `commits` and `paths` are `null` and `error`
 says why; the rest of the output is unaffected.
 
 ## `<brain>/.dream/` layout

@@ -138,6 +138,13 @@ fn diff(brain: &Path, repo: &Repo, sha: &str, sources: &[String]) -> Result<(usi
         .trim()
         .parse()
         .with_context(|| format!("git rev-list --count printed {count:?}"))?;
+    if let Some(missing) = missing_source(&dir, sha, &repo.branch, sources) {
+        bail!(
+            "repo {}: source {missing:?} exists at neither {sha} nor {}",
+            repo.name,
+            repo.branch
+        );
+    }
     let log = run(with_paths(&[
         "log",
         "--format=",
@@ -150,6 +157,23 @@ fn diff(brain: &Path, repo: &Repo, sha: &str, sources: &[String]) -> Result<(usi
         .map(str::to_string)
         .collect();
     Ok((commits, paths.into_iter().collect()))
+}
+
+/// The first of `sources` present at neither revision: a typo or a stale path would otherwise
+/// report `commits: 0` as if nothing it describes had changed.
+fn missing_source<'a>(
+    dir: &Path,
+    since: &str,
+    branch: &str,
+    sources: &'a [String],
+) -> Option<&'a str> {
+    sources.iter().map(String::as_str).find(|src| {
+        let path = src.trim_start_matches("./").trim_end_matches('/');
+        !path.is_empty()
+            && [since, branch]
+                .iter()
+                .all(|rev| files::git(dir, &["cat-file", "-e", &format!("{rev}:{path}")]).is_none())
+    })
 }
 
 #[cfg(test)]
@@ -258,6 +282,14 @@ pub(crate) mod tests {
         let narrowed = since(tmp.path(), &cfg, &rec, &[("src".into(), "src".into())]);
         assert_eq!(narrowed["src"].commits, Some(1));
         assert_eq!(narrowed["src"].sources, vec!["src"]);
+
+        // A source present at neither end is an error, not "nothing changed"; one that only
+        // exists at `since` (deleted since) is fine.
+        let typo = since(tmp.path(), &cfg, &rec, &[("src".into(), "srcc".into())]);
+        assert!(typo["src"].commits.is_none() && typo["src"].paths.is_none());
+        assert!(typo["src"].error.as_deref().unwrap().contains("srcc"));
+        let dir_slash = since(tmp.path(), &cfg, &rec, &[("src".into(), "src/".into())]);
+        assert_eq!(dir_slash["src"].commits, Some(1));
 
         let bad = since(tmp.path(), &cfg, &record(&[("src", "0000000")]), &[]);
         assert!(bad["src"].error.as_deref().unwrap().contains("failed"));

@@ -4,7 +4,7 @@
 //! doc still accurate doubles the interval; one that finds drift halves it (clamped to the
 //! config's `[min_days, max_days]`). Docs that never change are checked less and less often.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::{Result, bail};
@@ -127,7 +127,8 @@ pub struct Finding {
     pub at: BTreeMap<String, String>,
 }
 
-/// Record the same review of each of `files`; all are validated before any is recorded.
+/// Record the same review of each of `files` (once per distinct file); all are validated before
+/// any is recorded.
 pub fn record_all(
     brain: &Path,
     cfg: &Config,
@@ -139,8 +140,10 @@ pub fn record_all(
     if let Some(f) = files.iter().find(|f| !durable.contains(f)) {
         bail!("{f} is not a durable doc under review (see `ur dream review`)");
     }
-    files
-        .iter()
+    // A file named twice is one review, not two (which would double its interval twice).
+    let unique: BTreeSet<&String> = files.iter().collect();
+    unique
+        .into_iter()
         .map(|f| Ok((f.clone(), record(brain, cfg, state, f, finding)?)))
         .collect()
 }
@@ -294,5 +297,32 @@ mod tests {
         assert_eq!((c.commits, c.since.as_str()), (Some(1), first.as_str()));
         assert_eq!(c.paths.as_deref(), Some(&["src/b.rs".to_string()][..]));
         assert!(!r.changes_since.contains_key("reference/a.md"));
+    }
+
+    #[test]
+    fn record_all_records_a_repeated_file_once() {
+        let tmp = brain();
+        let cfg = Config::load(tmp.path()).unwrap();
+        let mut st = State::default();
+        let f = "reference/a.md".to_string();
+        record_all(
+            tmp.path(),
+            &cfg,
+            &mut st,
+            std::slice::from_ref(&f),
+            &finding(Outcome::Unchanged),
+        )
+        .unwrap();
+        let twice = [f.clone(), f.clone()];
+        let out = record_all(
+            tmp.path(),
+            &cfg,
+            &mut st,
+            &twice,
+            &finding(Outcome::Unchanged),
+        );
+        assert_eq!(out.unwrap().len(), 1);
+        assert_eq!(st.reviews[&f].history.len(), 2);
+        assert_eq!(st.reviews[&f].interval_days, 60);
     }
 }

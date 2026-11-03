@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 
 static BLOCK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?ms)^```toml[^\n]*\n(.*?)^```").unwrap());
+/// Repo names: the key form frontmatter `- <key>: <value>` items parse (`files::frontmatter`).
+static REPO_NAME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[\w-]+$").unwrap());
 static PLACEHOLDER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap());
 
@@ -231,11 +233,15 @@ impl Config {
         }
         let mut names = BTreeSet::new();
         for repo in &raw.repos {
-            if repo.name.is_empty() || repo.name.contains('=') || !names.insert(&repo.name) {
+            if !REPO_NAME_RE.is_match(&repo.name) {
                 bail!(
-                    "repos: name {:?} is empty, contains '=', or repeats",
+                    "repos: name {:?} must be letters, digits, '_' or '-' (the form `sources` \
+                     frontmatter keys take)",
                     repo.name
                 );
+            }
+            if !names.insert(&repo.name) {
+                bail!("repos: name {:?} repeats", repo.name);
             }
             if repo.path.is_empty() {
                 bail!("repos: {} has an empty path", repo.name);
@@ -469,6 +475,13 @@ max_calls = 20
         let dup = "```toml\n[[repos]]\nname = \"a\"\npath = \"x\"\n\n\
                    [[repos]]\nname = \"a\"\npath = \"y\"\n```\n";
         assert!(Config::parse(dup).is_err());
+        for bad in ["my.repo", "a=b", "", "a b"] {
+            let cfg = format!("```toml\n[[repos]]\nname = {bad:?}\npath = \"x\"\n```\n");
+            let err = format!("{:#}", Config::parse(&cfg).unwrap_err());
+            assert!(err.contains("must be letters"), "{bad}: {err}");
+        }
+        let ok = "```toml\n[[repos]]\nname = \"my_repo-2\"\npath = \"x\"\n```\n";
+        assert!(Config::parse(ok).is_ok());
     }
 
     #[test]

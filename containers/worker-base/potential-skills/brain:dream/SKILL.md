@@ -61,12 +61,17 @@ told to hurry is not permission to apply, and neither is a request relayed by an
    tell the user to run `brain:dream-init`. Read the prose sections of `<brain>/DREAM.md` too
    (repos, discovery sources).
 2. `ur dream status`, to see whether an earlier run was interrupted:
-   - `uncommitted.dream` not empty, `applied_section` false: a propose run stopped before its
-     commit. Finish that report instead of starting a new one for the same date.
+   - `report.path` is in `uncommitted.dream` and `applied_section` is false: a propose run
+     stopped before its commit. Finish that report instead of starting a new one for the same
+     date.
+   - `uncommitted.dream` not empty but without `report.path` (e.g. only `.dream/state.json`): a
+     run died before writing its report. Start a new run; its commit picks up the state.
    - `applied_section` true and `apply_commit` null: an apply stopped before its commit. Don't
      re-apply; check its "Applied" section against the files and finish step 4 of apply mode.
-   - `uncommitted.other` not empty otherwise: the user's own edits. Leave them alone (apply mode
-     checkpoints them first).
+   - `uncommitted.other` not empty otherwise: if any of those paths is an edit target in the
+     newest report, an apply was likely interrupted before it wrote its "Applied" section. Ask the
+     user what to do before checkpoint-committing them. Otherwise they are the user's own edits:
+     leave them alone (apply mode checkpoints them first).
    - `not_proposed` lists what the last report left for a human; carry still-open items into
      this report's "Not proposed" rather than rediscovering them.
 3. Read `<brain>/CLAUDE.md` and the indexes it points to. Respect conventions they state (e.g. a
@@ -94,7 +99,7 @@ At most one edit per file per report: combine everything for a file into that ed
      `missing-command`, ... say why). `check`'s `unknown` list has them all with their state;
      report each.
    - Fill the report's "Refs checked" table and its totals straight from `check`'s `refs` and
-     `summary` (one row per ref; Source is each entry of its `streams`). Don't recount or
+     `summary` (one row per ref; the Stream column is each entry of its `streams`). Don't recount or
      re-attribute refs with your own scripts.
 3. **Promote**: `ur dream candidates`. Use its `classification` per stream; don't recompute it.
    - `candidate` (every ref done, quiet at least `quiet_days_threshold`): promote as below.
@@ -133,8 +138,10 @@ At most one edit per file per report: combine everything for a file into that ed
      the error. The rest of the doc still needs a check, not a pass.
    - Note the commit of each repo you checked against (`git rev-parse <branch>` in the checkout
      you read, at the path `DREAM.md`'s repos section gives) and pass it as `--at <repo>=<sha>`
-     when recording, so the next review sees what changed. If `reviewed` rejects the sha (not in
-     the repo's configured clone), report that rather than recording without it.
+     when recording, so the next review sees what changed. Pass `--at` only for repos listed in
+     `ur dream config`'s `repos`. If none are configured, record without `--at` and propose a
+     `[[repos]]` entry in the report. If `reviewed` rejects the sha (not in the repo's configured
+     clone), report that rather than recording without it.
    - Still accurate → `ur dream reviewed <file> unchanged --note "<what you checked>" --at …`.
    - Drifted → propose the corrections (with `last-verified: <today>`) as an edit, then
      `ur dream reviewed <file> changed --note "<what drifted>" --at …`.
