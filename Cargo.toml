@@ -72,3 +72,9 @@ debug = false
 [workspace.lints.clippy]
 too_many_lines = "warn"
 excessive_nesting = "warn"
+# tonic::Status (~176 bytes) is the gRPC error type across the codebase, in
+# generated and hand-written code alike; boxing it would break `?` conversion.
+result_large_err = "allow"
+# Fires on every #[async_trait] expansion (it adds #[must_use] to methods that
+# return an already-#[must_use] boxed future), not on anything we write.
+double_must_use = "allow"
