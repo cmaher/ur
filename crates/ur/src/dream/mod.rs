@@ -18,6 +18,7 @@ mod report;
 mod review;
 mod state;
 mod status;
+mod verify;
 
 use std::path::PathBuf;
 
@@ -60,6 +61,14 @@ pub enum DreamCommands {
     /// Where the last run stopped: newest report, its Applied section and apply commit,
     /// uncommitted paths (`.dream/` vs other), and its "Not proposed" items
     Status(Target),
+    /// Pre-check a report's proposed edits for apply mode (read-only): per edit `ok`,
+    /// `blob-mismatch`, `off-limits`, `outside-folders`, `missing` or `malformed`, plus counts
+    VerifyReport {
+        #[command(flatten)]
+        target: Target,
+        /// Report date (YYYY-MM-DD), filename, or `.dream/reports/<date>.md` path (default: newest)
+        report: Option<String>,
+    },
     /// Parse TEXT as a ref of KIND and run its check once (for testing a ref kind)
     Try {
         #[command(flatten)]
@@ -136,6 +145,12 @@ pub fn handle(
         DreamCommands::Status(t) => {
             let brain = existing_brain(config, t)?;
             emit(output, &status::status(&brain)?)
+        }
+        DreamCommands::VerifyReport { target, report } => {
+            let brain = existing_brain(config, target)?;
+            let cfg = Config::load(&brain)?;
+            let r = report::Report::resolve(&brain, report.as_deref())?;
+            emit(output, &verify::verify(&brain, &cfg, &r)?)
         }
         DreamCommands::Try { target, kind, text } => {
             let brain = existing_brain(config, target)?;

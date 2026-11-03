@@ -34,6 +34,7 @@ directory is mapped to the host, and only git may run there.
 | `ur dream candidates` | each active stream classified from the cached checks (run `check --write` first; never re-runs checks): `candidate`, `blocked` (`blocked_by` lists refs with `done` null or never checked, with their state), `possibly_abandoned`, or `active`, plus its refs, `quiet_days`, the `quiet_days_threshold`, `summary` counts, and `inactive` streams by status |
 | `ur dream status` | where the last run stopped: the newest report (`report` is `null` when there is none yet) with `applied_section` (it has an "Applied" section), `apply_commit` (hash of the commit whose subject is `apply_subject`, `brain:dream: apply <date>`; `null` if none) and `not_proposed` (the items under "Not proposed (needs a human)"), plus `uncommitted` paths split into `dream` (under `.dream/`) and `other` |
 | `ur dream review` | durable docs by review due date; `pick` is what to review this run; `changes_since.<file>.<repo>` is, for a picked doc reviewed with `--at` before, the `commits` count and changed `paths` in that repo since the recorded commit (narrowed by the doc's `sources`; on failure both are `null` and `error` says why) |
+| `ur dream verify-report [report]` | read-only pre-check of a report's proposed edits (default: newest report; or a date, `YYYY-MM-DD.md`, or `.dream/reports/<date>.md`): per `### E<n> <path>` edit a `verdict` — `ok`, `blob-mismatch` (file changed since its `Target blob`, or `new` but it exists), `off-limits`, `outside-folders` (not under a configured folder, under `.git/`/`.dream/`, absolute, or `..`), `missing` (recorded hash but no file), `malformed` (no `E<n> <path>` heading or no usable `Target blob:` line) — with `detail`, `target_blob`, `current_blob`, and `summary` counts. Fails when there are no reports |
 | `ur dream reviewed <file>... unchanged\|changed --note "…" --at <repo>=<sha>` | records a review of each file and adapts its interval; `--at` (repeatable, repo names from `DREAM.md` `[[repos]]`) records the commit each repo was checked at |
 
 Use their output as evidence; don't redo their work by hand, and never edit `.dream/state.json`
@@ -179,10 +180,10 @@ then `git commit -m "brain:dream: report YYYY-MM-DD"`. Never stage other paths.
 1. **Checkpoint.** `git status --porcelain`. If anything outside `.dream/` is
    uncommitted, stop and ask the user whether to commit it as `brain: checkpoint before dream`.
    Never stash, reset, or discard their changes.
-2. Apply edits in numbered order. Skip and list an edit when: the target's blob hash differs from
-   the report's (and no earlier edit in this report produced that change), the diff doesn't apply
-   cleanly, or the path is now off limits or outside the configured folders. Never improvise a fix
-   for a skipped edit.
+2. `ur dream verify-report [report]` (the same report). Apply only edits whose `verdict` is
+   `ok`, in numbered order; skip and list every other edit with its verdict and `detail` (don't
+   re-check blobs, paths or folders by hand). Also skip and list an edit whose diff doesn't apply
+   cleanly. Never improvise a fix for a skipped edit.
 3. Append an "Applied" section to the report: applied, skipped with reason, and the checkpoint
    commit. That is the only change to the report; `state.json` is left alone.
 4. Stage only the files the edits touched plus the report, and commit once:
