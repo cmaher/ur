@@ -4,12 +4,14 @@
 //! doc still accurate doubles the interval; one that finds drift halves it (clamped to the
 //! config's `[min_days, max_days]`). Docs that never change are checked less and less often.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Result, bail};
 use chrono::{Local, NaiveDate};
 use serde::Serialize;
 
+use super::changes::{self, RepoChanges};
 use super::config::{Config, Role};
 use super::state::{Outcome, ReviewEntry, ReviewRecord, State};
 use super::{files, refs};
@@ -20,6 +22,9 @@ const HISTORY_LIMIT: usize = 20;
 pub struct ReviewReport {
     /// The docs to review this run: most overdue first, at most `review.per_run`.
     pub pick: Vec<String>,
+    /// For each picked doc with commits recorded by `reviewed --at`: per repo, what changed
+    /// since the most recent recorded commit (narrowed by the doc's `sources` frontmatter).
+    pub changes_since: BTreeMap<String, BTreeMap<String, RepoChanges>>,
     pub docs: Vec<DocReview>,
 }
 
@@ -89,13 +94,55 @@ pub fn schedule(brain: &Path, cfg: &Config, state: &State) -> ReviewReport {
             .cmp(&a.overdue_days)
             .then(a.file.cmp(&b.file))
     });
-    let pick = docs
+    let pick: Vec<String> = docs
         .iter()
         .filter(|d| d.overdue_days >= 0)
         .take(cfg.raw.review.per_run)
         .map(|d| d.file.clone())
         .collect();
-    ReviewReport { pick, docs }
+    let changes_since = pick
+        .iter()
+        .filter_map(|file| {
+            let rec = state.reviews.get(file)?;
+            let text = files::read(brain, file);
+            let sources = files::frontmatter(&text)
+                .map(|f| f.sources)
+                .unwrap_or_default();
+            let changes = changes::since(brain, cfg, rec, &sources);
+            (!changes.is_empty()).then(|| (file.clone(), changes))
+        })
+        .collect();
+    ReviewReport {
+        pick,
+        changes_since,
+        docs,
+    }
+}
+
+/// What a review found, and the source commits (resolved by [`changes::resolve_at`]) it was
+/// checked against.
+pub struct Finding {
+    pub outcome: Outcome,
+    pub note: Option<String>,
+    pub at: BTreeMap<String, String>,
+}
+
+/// Record the same review of each of `files`; all are validated before any is recorded.
+pub fn record_all(
+    brain: &Path,
+    cfg: &Config,
+    state: &mut State,
+    files: &[String],
+    finding: &Finding,
+) -> Result<BTreeMap<String, ReviewRecord>> {
+    let durable = durable_docs(brain, cfg);
+    if let Some(f) = files.iter().find(|f| !durable.contains(f)) {
+        bail!("{f} is not a durable doc under review (see `ur dream review`)");
+    }
+    files
+        .iter()
+        .map(|f| Ok((f.clone(), record(brain, cfg, state, f, finding)?)))
+        .collect()
 }
 
 /// Record a review of `file` and adapt its interval.
@@ -104,9 +151,9 @@ pub fn record(
     cfg: &Config,
     state: &mut State,
     file: &str,
-    outcome: Outcome,
-    note: Option<String>,
+    finding: &Finding,
 ) -> Result<ReviewRecord> {
+    let outcome = finding.outcome;
     if !durable_docs(brain, cfg).iter().any(|f| f == file) {
         bail!("{file} is not a durable doc under review (see `ur dream review`)");
     }
@@ -125,7 +172,8 @@ pub fn record(
     history.push(ReviewEntry {
         date: today.clone(),
         outcome,
-        note,
+        note: finding.note.clone(),
+        at: finding.at.clone(),
     });
     let excess = history.len().saturating_sub(HISTORY_LIMIT);
     history.drain(..excess);
@@ -141,7 +189,16 @@ pub fn record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dream::changes::tests::source_repo;
     use crate::dream::config::tests::SAMPLE;
+
+    fn finding(outcome: Outcome) -> Finding {
+        Finding {
+            outcome,
+            note: None,
+            at: BTreeMap::new(),
+        }
+    }
 
     fn brain() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().unwrap();
@@ -172,7 +229,7 @@ mod tests {
         let mut st = State::default();
         let f = "reference/a.md";
         let step = |st: &mut State, o| {
-            record(tmp.path(), &cfg, st, f, o, None)
+            record(tmp.path(), &cfg, st, f, &finding(o))
                 .unwrap()
                 .interval_days
         };
@@ -191,10 +248,51 @@ mod tests {
                 &cfg,
                 &mut st,
                 "reference/CLAUDE.md",
-                Outcome::Changed,
-                None
+                &finding(Outcome::Changed)
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn reviewed_at_is_stored_and_review_lists_changes_for_picked_docs() {
+        let tmp = brain();
+        let b = tmp.path();
+        let first = source_repo(&b.join("src-clone"));
+        let repos = "[[repos]]\nname = \"src\"\npath = \"src-clone\"\n\n[discovery]";
+        std::fs::write(b.join("DREAM.md"), SAMPLE.replace("[discovery]", repos)).unwrap();
+        std::fs::write(
+            b.join("reference/b.md"),
+            "---\nsources:\n  - src: src\n---\nLast verified: 2000-01-01\n",
+        )
+        .unwrap();
+        let cfg = Config::load(b).unwrap();
+        let mut st = State::default();
+        let at = changes::resolve_at(b, &cfg, &[("src".into(), first[..10].into())]).unwrap();
+        let files = vec!["reference/a.md".to_string(), "reference/b.md".to_string()];
+        let f = Finding {
+            outcome: Outcome::Unchanged,
+            note: Some("n".into()),
+            at,
+        };
+        let out = record_all(b, &cfg, &mut st, &files, &f).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(st.reviews["reference/b.md"].history[0].at["src"], first);
+        let bad = vec![
+            "reference/a.md".to_string(),
+            "reference/CLAUDE.md".to_string(),
+        ];
+        let before = st.reviews["reference/a.md"].history.len();
+        assert!(record_all(b, &cfg, &mut st, &bad, &f).is_err());
+        assert_eq!(st.reviews["reference/a.md"].history.len(), before);
+
+        // Make b.md due now so it is picked; its `sources` narrow the diff to `src/`.
+        st.reviews.get_mut("reference/b.md").unwrap().last_reviewed = "2000-01-01".into();
+        let r = schedule(b, &cfg, &st);
+        assert_eq!(r.pick, vec!["reference/b.md"]);
+        let c = &r.changes_since["reference/b.md"]["src"];
+        assert_eq!((c.commits, c.since.as_str()), (Some(1), first.as_str()));
+        assert_eq!(c.paths.as_deref(), Some(&["src/b.rs".to_string()][..]));
+        assert!(!r.changes_since.contains_key("reference/a.md"));
     }
 }

@@ -8,6 +8,7 @@
 //! brain path and check commands resolve on the host.
 
 mod candidates;
+mod changes;
 mod check;
 mod config;
 mod files;
@@ -66,17 +67,22 @@ pub enum DreamCommands {
         kind: String,
         text: String,
     },
-    /// Durable docs by review due date; `pick` is what to review this run
+    /// Durable docs by review due date; `pick` is what to review this run, `changes_since` what
+    /// changed in each repo since a picked doc's last `reviewed --at`
     Review(Target),
-    /// Record a review of FILE (brain-relative) and adapt its review interval
+    /// Record a review of each FILE (brain-relative) and adapt its review interval
     Reviewed {
         #[command(flatten)]
         target: Target,
-        file: String,
+        #[arg(required = true, num_args = 1..)]
+        files: Vec<String>,
         outcome: Outcome,
         /// What the review found or changed
         #[arg(long)]
         note: Option<String>,
+        /// REPO=SHA: the commit of a DREAM.md repo the docs were checked against (repeatable)
+        #[arg(long = "at", value_name = "REPO=SHA", value_parser = changes::parse_at)]
+        at: Vec<(String, String)>,
     },
 }
 
@@ -152,23 +158,26 @@ pub fn handle(
         }
         DreamCommands::Reviewed {
             target,
-            file,
+            files,
             outcome,
             note,
+            at,
         } => {
             let brain = existing_brain(config, target)?;
             let cfg = Config::load(&brain)?;
             let mut st = State::load(&brain)?;
-            let rec = review::record(
-                &brain,
-                &cfg,
-                &mut st,
-                file.trim_start_matches("./"),
+            let finding = review::Finding {
                 outcome,
                 note,
-            )?;
+                at: changes::resolve_at(&brain, &cfg, &at)?,
+            };
+            let files: Vec<String> = files
+                .iter()
+                .map(|f| f.trim_start_matches("./").to_string())
+                .collect();
+            let recs = review::record_all(&brain, &cfg, &mut st, &files, &finding)?;
             st.save(&brain)?;
-            emit(output, &rec)
+            emit(output, &recs)
         }
     }
 }
@@ -203,4 +212,38 @@ fn emit<T: Serialize>(output: &OutputManager, value: &T) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(value)?);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        cmd: DreamCommands,
+    }
+
+    #[test]
+    fn reviewed_takes_several_files_then_outcome_and_repeated_at() {
+        let cli = Cli::try_parse_from([
+            "x", "reviewed", "a.md", "b.md", "changed", "--at", "r=abc", "--at", "s=def",
+        ])
+        .unwrap();
+        let DreamCommands::Reviewed {
+            files, outcome, at, ..
+        } = cli.cmd
+        else {
+            panic!("not reviewed");
+        };
+        assert_eq!(files, vec!["a.md", "b.md"]);
+        assert_eq!(outcome, Outcome::Changed);
+        assert_eq!(
+            at,
+            vec![("r".into(), "abc".into()), ("s".into(), "def".into())]
+        );
+        assert!(Cli::try_parse_from(["x", "reviewed", "a.md", "changed", "--at", "r"]).is_err());
+        assert!(Cli::try_parse_from(["x", "reviewed", "changed"]).is_err());
+    }
 }

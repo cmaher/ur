@@ -4,7 +4,7 @@
 //! typo or an unfillable template fails loudly instead of silently turning refs `unknown`.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use anyhow::{Context, Result, bail};
@@ -33,6 +33,24 @@ pub struct RawConfig {
     pub thresholds: Thresholds,
     #[serde(default)]
     pub review: Review,
+    #[serde(default)]
+    pub repos: Vec<Repo>,
+}
+
+/// A source repo a durable doc can be reviewed against (`ur dream reviewed --at <name>=<sha>`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Repo {
+    pub name: String,
+    /// Host path of a clone: absolute, `~/`-relative, or relative to the brain directory.
+    pub path: String,
+    /// Revision changes are listed up to. Never fetched: it is as fresh as the clone.
+    #[serde(default = "default_branch")]
+    pub branch: String,
+}
+
+fn default_branch() -> String {
+    "origin/master".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -211,6 +229,18 @@ impl Config {
         if !(r.min_days <= r.initial_days && r.initial_days <= r.max_days && r.min_days > 0) {
             bail!("review: need 0 < min_days <= initial_days <= max_days");
         }
+        let mut names = BTreeSet::new();
+        for repo in &raw.repos {
+            if repo.name.is_empty() || repo.name.contains('=') || !names.insert(&repo.name) {
+                bail!(
+                    "repos: name {:?} is empty, contains '=', or repeats",
+                    repo.name
+                );
+            }
+            if repo.path.is_empty() {
+                bail!("repos: {} has an empty path", repo.name);
+            }
+        }
         let kinds = raw
             .ref_kinds
             .iter()
@@ -240,6 +270,10 @@ impl Config {
         self.kinds.iter().find(|k| k.kind == name)
     }
 
+    pub fn repo(&self, name: &str) -> Option<&Repo> {
+        self.raw.repos.iter().find(|r| r.name == name)
+    }
+
     pub fn is_off_limits(&self, rel: &str) -> bool {
         self.off_limits.iter().any(|p| p.matches(rel))
     }
@@ -260,6 +294,17 @@ impl Config {
             .ignore
             .iter()
             .any(|p| text.starts_with(p.as_str()))
+    }
+}
+
+impl Repo {
+    /// The clone's directory: `~/` expands to the home directory, a relative path is under
+    /// `brain`.
+    pub fn dir(&self, brain: &Path) -> PathBuf {
+        match self.path.strip_prefix("~/").zip(dirs::home_dir()) {
+            Some((rest, home)) => home.join(rest),
+            None => brain.join(&self.path),
+        }
     }
 }
 
@@ -405,6 +450,25 @@ max_calls = 20
         assert!(!cfg.is_off_limits("reference/x.md"));
         assert_eq!(cfg.raw.review.per_run, 1);
         assert_eq!(cfg.raw.thresholds.quiet_days, 14);
+        assert!(cfg.raw.repos.is_empty());
+    }
+
+    #[test]
+    fn repos_default_branch_resolve_paths_and_reject_duplicates() {
+        let cfg = "```toml\n[[repos]]\nname = \"a\"\npath = \"../a\"\n\n\
+                   [[repos]]\nname = \"b\"\npath = \"/src/b\"\nbranch = \"origin/main\"\n```\n";
+        let cfg = Config::parse(cfg).unwrap();
+        let a = cfg.repo("a").unwrap();
+        assert_eq!(a.branch, "origin/master");
+        assert_eq!(a.dir(Path::new("/brain")), Path::new("/brain/../a"));
+        assert_eq!(
+            cfg.repo("b").unwrap().dir(Path::new("/brain")),
+            Path::new("/src/b")
+        );
+        assert!(cfg.repo("c").is_none());
+        let dup = "```toml\n[[repos]]\nname = \"a\"\npath = \"x\"\n\n\
+                   [[repos]]\nname = \"a\"\npath = \"y\"\n```\n";
+        assert!(Config::parse(dup).is_err());
     }
 
     #[test]

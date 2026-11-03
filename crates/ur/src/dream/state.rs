@@ -42,6 +42,23 @@ pub struct ReviewEntry {
     pub outcome: Outcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Repo name → full commit the doc was checked against (`reviewed --at`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub at: BTreeMap<String, String>,
+}
+
+impl ReviewRecord {
+    /// Per repo, the commit from the most recent review that recorded one, with its date.
+    pub fn latest_at(&self) -> BTreeMap<String, (String, String)> {
+        let mut out = BTreeMap::new();
+        for e in self.history.iter().rev() {
+            for (repo, sha) in &e.at {
+                out.entry(repo.clone())
+                    .or_insert_with(|| (sha.clone(), e.date.clone()));
+            }
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, clap::ValueEnum)]
@@ -73,5 +90,43 @@ impl State {
         let mut text = serde_json::to_string_pretty(self)?;
         text.push('\n');
         std::fs::write(&p, text).with_context(|| format!("{}", p.display()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_state_without_at_loads_and_latest_at_prefers_newest() {
+        let old = r#"{"reviews": {"r/a.md": {"last_reviewed": "2026-01-02", "interval_days": 30,
+            "history": [{"date": "2026-01-01", "outcome": "unchanged"}]}}}"#;
+        let st: State = serde_json::from_str(old).unwrap();
+        let rec = &st.reviews["r/a.md"];
+        assert!(rec.history[0].at.is_empty());
+        assert!(rec.latest_at().is_empty());
+        assert!(!serde_json::to_string(&st).unwrap().contains("\"at\""));
+
+        let entry = |date: &str, at: &[(&str, &str)]| ReviewEntry {
+            date: date.into(),
+            outcome: Outcome::Unchanged,
+            note: None,
+            at: at
+                .iter()
+                .map(|(r, s)| (r.to_string(), s.to_string()))
+                .collect(),
+        };
+        let rec = ReviewRecord {
+            last_reviewed: "2026-03-01".into(),
+            interval_days: 30,
+            history: vec![
+                entry("2026-01-01", &[("x", "old"), ("y", "y1")]),
+                entry("2026-02-01", &[("x", "new")]),
+                entry("2026-03-01", &[]),
+            ],
+        };
+        let got = rec.latest_at();
+        assert_eq!(got["x"], ("new".into(), "2026-02-01".into()));
+        assert_eq!(got["y"], ("y1".into(), "2026-01-01".into()));
     }
 }

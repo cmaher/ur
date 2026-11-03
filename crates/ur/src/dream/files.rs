@@ -132,7 +132,7 @@ fn normalize(path: &Path) -> Option<String> {
     Some(parts.join("/"))
 }
 
-/// Minimal YAML frontmatter: scalar `key: value` lines, and `refs:` / `ignore_refs:` as
+/// Minimal YAML frontmatter: scalar `key: value` lines, and `refs:` / `ignore_refs:` / `sources:` as
 /// `- kind: value` items.
 #[derive(Debug, Default)]
 pub struct Frontmatter {
@@ -140,6 +140,8 @@ pub struct Frontmatter {
     pub refs: Vec<(String, String)>,
     /// Ref-shaped strings in the stream that are not refs: never discovered, never checked.
     pub ignore_refs: Vec<(String, String)>,
+    /// Durable docs: `- <repo>: <path>` items narrowing `ur dream review`'s `changes_since`.
+    pub sources: Vec<(String, String)>,
 }
 
 pub fn frontmatter(text: &str) -> Option<Frontmatter> {
@@ -155,6 +157,7 @@ pub fn frontmatter(text: &str) -> Option<Frontmatter> {
         let list = match key.as_str() {
             "refs" => Some(&mut fm.refs),
             "ignore_refs" => Some(&mut fm.ignore_refs),
+            "sources" => Some(&mut fm.sources),
             _ => None,
         };
         if let Some(list) = list

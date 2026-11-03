@@ -75,13 +75,20 @@ per_run = 1          # durable docs reviewed per dream run
 initial_days = 30
 min_days = 7
 max_days = 180
+
+[[repos]]             # source repos durable docs are reviewed against
+name = "example-repo"
+path = "~/src/example-repo"   # host path of a clone: absolute, ~/, or relative to the brain
+branch = "origin/master"      # default; changes are listed up to it, never fetched
 ```
 
 ## Repos
 
-| Name | Remote | Local path |
+| Name | Remote | Worker path |
 |---|---|---|
 | `example-repo` | `example-org/example-repo` | `/workspace` |
+
+Names match `[[repos]]` in the config block, which holds each clone's host path.
 
 ## Discovery sources
 
@@ -129,7 +136,31 @@ Recorded ref values are parsed with the kind's patterns, so any form a pattern m
 `ignore_refs` entries use the same form; a matching discovered ref is left out of
 `discovered_refs` (listed under `ignored_refs` instead) and is never checked. Ignoring is per
 stream: the same ref discovered in another stream is still reported there.
-Durable docs may carry `last-verified` and `canonical-for`.
+Durable docs may carry `last-verified` and `canonical-for`, and `sources`: the paths in each repo
+the doc describes, so `ur dream review`'s `changes_since` lists only changes under them.
+
+```yaml
+---
+sources:              # optional; a repo with no entries is diffed whole
+  - example-repo: crates/server
+  - example-repo: docs/architecture.md
+---
+```
+
+## Repos and review commits
+
+`ur dream reviewed <file>... unchanged|changed --at <repo>=<sha>` records the commit of each
+`[[repos]]` entry the docs were checked against. Each `--at` is resolved to a full commit in the
+repo's `path` when recorded; an unknown repo name, a missing clone, or a sha that isn't a commit
+there fails the command and records nothing.
+
+`ur dream review` then gives, for each picked doc with a recorded commit, per repo:
+`changes_since.<file>.<repo> = { since, reviewed_on, branch, sources, commits, paths }`, from
+`git rev-list --count` and `git log --name-only` over `<since>..<branch>` (limited to `sources`)
+in the clone. `since` is the newest review that recorded that repo. Nothing is fetched, so fetch
+the clone first if it should be current. If a repo's diff fails (clone gone, sha no longer
+present, repo removed from the config) that repo's `commits` and `paths` are `null` and `error`
+says why; the rest of the output is unaffected.
 
 ## `<brain>/.dream/` layout
 
@@ -141,7 +172,8 @@ checkpoint.
   state.json              written by `ur dream check --write` and `ur dream reviewed`:
                             refs:    { "<kind>:<id>": { state, done, checked_at } }
                             reviews: { "<path>": { last_reviewed, interval_days,
-                                                   history: [{ date, outcome, note }] } }
+                                                   history: [{ date, outcome, note,
+                                                              at: { <repo>: <sha> } }] } }
                             last_run
   reports/YYYY-MM-DD.md   proposed change sets, plus an "Applied" section once applied
 ```

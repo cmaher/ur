@@ -33,8 +33,8 @@ directory is mapped to the host, and only git may run there.
 | `ur dream check --write` | each active ref checked (cached done refs skipped), saved to `.dream/state.json`: `summary` counts (done / not done / unknown / cached), `unknown` refs with their state, and per-ref detail in `refs` with the active `streams` (and `recorded`/`discovered` source) each came from |
 | `ur dream candidates` | each active stream classified from the cached checks (run `check --write` first; never re-runs checks): `candidate`, `blocked` (`blocked_by` lists refs with `done` null or never checked, with their state), `possibly_abandoned`, or `active`, plus its refs, `quiet_days`, the `quiet_days_threshold`, `summary` counts, and `inactive` streams by status |
 | `ur dream status` | where the last run stopped: the newest report (`report` is `null` when there is none yet) with `applied_section` (it has an "Applied" section), `apply_commit` (hash of the commit whose subject is `apply_subject`, `brain:dream: apply <date>`; `null` if none) and `not_proposed` (the items under "Not proposed (needs a human)"), plus `uncommitted` paths split into `dream` (under `.dream/`) and `other` |
-| `ur dream review` | durable docs by review due date; `pick` is what to review this run |
-| `ur dream reviewed <file> unchanged\|changed --note "…"` | records a review and adapts its interval |
+| `ur dream review` | durable docs by review due date; `pick` is what to review this run; `changes_since.<file>.<repo>` is, for a picked doc reviewed with `--at` before, the `commits` count and changed `paths` in that repo since the recorded commit (narrowed by the doc's `sources`; on failure both are `null` and `error` says why) |
+| `ur dream reviewed <file>... unchanged\|changed --note "…" --at <repo>=<sha>` | records a review of each file and adapts its interval; `--at` (repeatable, repo names from `DREAM.md` `[[repos]]`) records the commit each repo was checked at |
 
 Use their output as evidence; don't redo their work by hand, and never edit `.dream/state.json`
 yourself. If a command's output looks wrong, report that in the report rather than working around it.
@@ -126,9 +126,18 @@ At most one edit per file per report: combine everything for a file into that ed
 7. **Review**: `ur dream review`; review each doc in `pick` (not more).
    - Check its claims against the same sources as Promote. Don't trust the doc's own
      `last-verified`.
-   - Still accurate → `ur dream reviewed <file> unchanged --note "<what you checked>"`.
+   - If `changes_since` has the doc, start from it: the listed `paths` are what changed since the
+     last review, so check the claims that depend on them first; with `commits: 0` everywhere the
+     sources haven't moved. A repo with an `error` gives you nothing: check it in full, and report
+     the error. The rest of the doc still needs a check, not a pass.
+   - Note the commit of each repo you checked against (`git rev-parse <branch>` in the checkout
+     you read, at the path `DREAM.md`'s repos section gives) and pass it as `--at <repo>=<sha>`
+     when recording, so the next review sees what changed. If `reviewed` rejects the sha (not in
+     the repo's configured clone), report that rather than recording without it.
+   - Still accurate → `ur dream reviewed <file> unchanged --note "<what you checked>" --at …`.
    - Drifted → propose the corrections (with `last-verified: <today>`) as an edit, then
-     `ur dream reviewed <file> changed --note "<what drifted>"`.
+     `ur dream reviewed <file> changed --note "<what drifted>" --at …`.
+   - A doc that describes specific paths and has no `sources` → propose adding them.
    - Can't check (no source available) → record nothing; report it under "Not proposed".
 
 Never propose edits to `off_limits` paths, and never propose a folder that isn't in the config
