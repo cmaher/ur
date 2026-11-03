@@ -11,6 +11,11 @@ use ur_rpc::proto::builder_pool::builder_pool_service_server::BuilderPoolService
 
 mod container_handler;
 mod handler;
+// Wired into BuilderLocalWorkerService by ur-4p34c.
+#[allow(dead_code)]
+mod local_settings;
+#[allow(dead_code)]
+mod local_workspace;
 mod logging;
 mod overlay;
 mod pool_handler;

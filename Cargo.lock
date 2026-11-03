@@ -215,6 +215,7 @@ dependencies = [
  "clap",
  "container",
  "prost",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -225,6 +226,7 @@ dependencies = [
  "ur_config",
  "ur_rpc",
  "ur_utils",
+ "workerd",
 ]
 
 [[package]]
