@@ -12,6 +12,17 @@
 //!
 //! Data safety: teardown only ever removes links and the drive itself
 //! (`remove_dir_all` does not follow symlinks), never a link target.
+//!
+//! # Known limits
+//!
+//! - Teardown, including the cleanup after a failed build, removes whatever
+//!   symlink is at the slot memory path, even one this build did not create.
+//!   It removes links only, never data.
+//! - A mount dest under `.ur/` makes the generated files write through into
+//!   the mount source. Dests are trusted config.
+//! - With no `instruction_strategy`, the project `instruction_md` and the
+//!   skill-precedence fragment are left out, mirroring the container
+//!   `InitInstructionsManager`.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -279,6 +290,11 @@ impl LocalWorkspaceManager {
         ) else {
             return Ok(None);
         };
+        // Like the container mount: a configured memory dir that does not
+        // exist yet is created, so the link never dangles.
+        tokio::fs::create_dir_all(target)
+            .await
+            .map_err(io(format!("create memory dir {}", target.display())))?;
         let ctx = format!("link memory {}", link.display());
         match tokio::fs::symlink_metadata(&link).await {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -702,6 +718,50 @@ mod tests {
             fs::read_link(f.memory_link()).unwrap(),
             f.path("src/memory")
         );
+    }
+
+    #[tokio::test]
+    async fn memory_dir_missing_is_created_and_linked() {
+        let f = Fixture::new();
+        let target = f.path("src/new-memory");
+        let req = LocalWorkspaceRequest {
+            memory_dir: Some(target.clone()),
+            ..f.request()
+        };
+        f.manager.build(&req).await.unwrap();
+        assert!(target.is_dir());
+        assert_eq!(fs::read_link(f.memory_link()).unwrap(), target);
+        assert_eq!(
+            fs::canonicalize(f.memory_link()).unwrap(),
+            fs::canonicalize(&target).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn late_build_failure_removes_links_and_keeps_targets() {
+        let f = Fixture::new();
+        // A missing project instruction file fails in instruction composition,
+        // after every link has been created.
+        let req = LocalWorkspaceRequest {
+            mounts: vec![mount(f.path("src/ctx"), "/a/ctx", false)],
+            brain_dir: Some(f.path("src/brain")),
+            instruction_strategy: Some("code".into()),
+            project_instruction_path: Some(f.path("slot/MISSING.md")),
+            skills: vec!["implement".into()],
+            ..f.with_memory()
+        };
+        let err = f.manager.build(&req).await.unwrap_err();
+        assert!(matches!(err, LocalWorkspaceError::Io { .. }), "{err}");
+        assert!(!f.path("workspace/drive/w1").exists());
+        assert!(fs::symlink_metadata(f.memory_link()).is_err());
+        for (dir, file, body) in [
+            ("src/ctx", "keep.txt", "ctx"),
+            ("src/brain", "notes.md", "brain"),
+            ("src/memory", "MEMORY.md", "mem"),
+        ] {
+            assert_eq!(fs::read_to_string(f.path(dir).join(file)).unwrap(), body);
+            assert_eq!(fs::read_dir(f.path(dir)).unwrap().count(), 1, "{dir}");
+        }
     }
 
     #[tokio::test]
