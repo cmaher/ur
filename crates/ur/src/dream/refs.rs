@@ -32,6 +32,8 @@ pub struct Stream {
     pub status: Option<String>,
     pub recorded_refs: Vec<Ref>,
     pub discovered_refs: Vec<Ref>,
+    /// Frontmatter `ignore_refs`: kept out of `discovered_refs` and never checked.
+    pub ignored_refs: Vec<Ref>,
     pub unclassified: Vec<String>,
     pub last_change: Option<String>,
     /// `git`, `uncommitted`, `mtime` (no history beyond `brain: init`), or `empty`.
@@ -220,12 +222,17 @@ pub fn scan(brain: &Path, cfg: &Config) -> RefsReport {
         let fm = entry
             .as_deref()
             .and_then(|e| files::frontmatter(&files::read(brain, e)));
-        let recorded: Vec<Ref> = fm
-            .iter()
-            .flat_map(|f| f.refs.iter())
-            .map(|(k, v)| parse_ref(cfg, k, v))
-            .collect();
-        let skip = recorded.iter().map(Ref::key).collect();
+        let parse_all = |list: Option<&Vec<(String, String)>>| -> Vec<Ref> {
+            list.into_iter()
+                .flatten()
+                .map(|(k, v)| parse_ref(cfg, k, v))
+                .collect()
+        };
+        let recorded = parse_all(fm.as_ref().map(|f| &f.refs));
+        let ignored = parse_all(fm.as_ref().map(|f| &f.ignore_refs));
+        // An ignore entry that parses has its canonical key; one that does not keeps `kind:value`,
+        // which still matches a discovered ref whose canonical id is that value.
+        let skip = recorded.iter().chain(&ignored).map(Ref::key).collect();
         let (discovered, unclassified) = if cfg.raw.discovery.allowed {
             discover(brain, cfg, &rel, &skip)
         } else {
@@ -246,6 +253,7 @@ pub fn scan(brain: &Path, cfg: &Config) -> RefsReport {
                 status,
                 recorded_refs: recorded,
                 discovered_refs: discovered,
+                ignored_refs: ignored,
                 unclassified: unclassified.into_iter().collect(),
                 last_change: changed.map(|d| d.to_string()),
                 last_change_source: source,
@@ -275,6 +283,34 @@ mod tests {
             vec!["ticket:EXAMPLE-7", "pr:api#12", "pr:example-repo#3"]
         );
         assert_eq!(unc.into_iter().collect::<Vec<_>>(), vec!["OTHER-4"]);
+    }
+
+    #[test]
+    fn scan_skips_ignored_refs_in_discovery_and_active_refs() {
+        let cfg = Config::parse(SAMPLE).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let b = tmp.path();
+        std::fs::create_dir_all(b.join("working/s")).unwrap();
+        std::fs::write(
+            b.join("working/s/README.md"),
+            "---\nstatus: active\nrefs:\n  - ticket: EXAMPLE-1\nignore_refs:\n  - ticket: EXAMPLE-2\n\
+             \x20 - pr: api#12\n---\nEXAMPLE-1 EXAMPLE-2 EXAMPLE-3\n",
+        )
+        .unwrap();
+        std::fs::write(
+            b.join("working/s/notes.md"),
+            "// TODO - EXAMPLE-2, see example-org/api#12\n",
+        )
+        .unwrap();
+        let report = scan(b, &cfg);
+        let s = &report.streams["working/s"];
+        let keys = |v: &[Ref]| v.iter().map(Ref::key).collect::<Vec<_>>();
+        assert_eq!(keys(&s.discovered_refs), vec!["ticket:EXAMPLE-3"]);
+        assert_eq!(keys(&s.ignored_refs), vec!["ticket:EXAMPLE-2", "pr:api#12"]);
+        assert_eq!(
+            keys(&report.active_refs),
+            vec!["ticket:EXAMPLE-1", "ticket:EXAMPLE-3"]
+        );
     }
 
     #[test]

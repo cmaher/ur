@@ -118,12 +118,17 @@ status: active        # active | done | archived
 refs:
   - ticket: EXAMPLE-123
   - pr: example-org/example-repo#45
+ignore_refs:          # optional: ref-shaped text here that is not a ref
+  - ticket: EXAMPLE-999
 last-verified: 2026-01-15
 canonical-for: [example-topic]   # optional
 ---
 ```
 
 Recorded ref values are parsed with the kind's patterns, so any form a pattern matches works.
+`ignore_refs` entries use the same form; a matching discovered ref is left out of
+`discovered_refs` (listed under `ignored_refs` instead) and is never checked. Ignoring is per
+stream: the same ref discovered in another stream is still reported there.
 Durable docs may carry `last-verified` and `canonical-for`.
 
 ## `<brain>/.dream/` layout

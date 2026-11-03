@@ -132,11 +132,14 @@ fn normalize(path: &Path) -> Option<String> {
     Some(parts.join("/"))
 }
 
-/// Minimal YAML frontmatter: scalar `key: value` lines, and `refs:` as `- kind: value` items.
+/// Minimal YAML frontmatter: scalar `key: value` lines, and `refs:` / `ignore_refs:` as
+/// `- kind: value` items.
 #[derive(Debug, Default)]
 pub struct Frontmatter {
     pub fields: BTreeMap<String, String>,
     pub refs: Vec<(String, String)>,
+    /// Ref-shaped strings in the stream that are not refs: never discovered, never checked.
+    pub ignore_refs: Vec<(String, String)>,
 }
 
 pub fn frontmatter(text: &str) -> Option<Frontmatter> {
@@ -149,10 +152,15 @@ pub fn frontmatter(text: &str) -> Option<Frontmatter> {
         if line.trim().is_empty() {
             continue;
         }
-        if key == "refs"
+        let list = match key.as_str() {
+            "refs" => Some(&mut fm.refs),
+            "ignore_refs" => Some(&mut fm.ignore_refs),
+            _ => None,
+        };
+        if let Some(list) = list
             && let Some(c) = FM_REF_RE.captures(line)
         {
-            fm.refs.push((c[1].to_string(), unquote(&c[2])));
+            list.push((c[1].to_string(), unquote(&c[2])));
             continue;
         }
         if let Some(c) = FM_KEY_RE.captures(line) {
@@ -233,6 +241,16 @@ mod tests {
     }
 
     #[test]
+    fn frontmatter_reads_ignore_refs_separately() {
+        let text = "---\nrefs:\n  - ticket: EXAMPLE-1\nignore_refs:\n  - ticket: EXAMPLE-2\n\
+                    status: active\n---\n";
+        let fm = frontmatter(text).unwrap();
+        assert_eq!(fm.refs, vec![("ticket".into(), "EXAMPLE-1".into())]);
+        assert_eq!(fm.ignore_refs, vec![("ticket".into(), "EXAMPLE-2".into())]);
+        assert_eq!(fm.fields["status"], "active");
+    }
+
+    #[test]
     fn frontmatter_reads_scalars_and_refs() {
         let text = "---\nstatus: active  # note\nrefs:\n  - ticket: EXAMPLE-1\n  - pr: 'o/r#2'\n\
                     last-verified: 2026-01-15\n---\nbody\n";
@@ -249,6 +267,7 @@ mod tests {
             last_verified(text, Some(&fm)),
             NaiveDate::from_ymd_opt(2026, 1, 15)
         );
+        assert!(fm.ignore_refs.is_empty());
         assert!(frontmatter("no frontmatter").is_none());
         assert_eq!(
             last_verified("x\nLast verified: 2025-02-03\n", None),

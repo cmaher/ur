@@ -29,7 +29,7 @@ directory is mapped to the host, and only git may run there.
 |---|---|
 | `ur dream config` | the validated config (fails if `DREAM.md` is missing or broken) |
 | `ur dream lint` | broken links, index gaps, orphans, long index entries, empty and unlisted folders |
-| `ur dream refs` | each scratch stream: status, recorded and discovered refs, last change and quiet days (from git; `mtime` when the only commit touching it is `brain: init`) |
+| `ur dream refs` | each scratch stream: status, recorded, discovered and ignored refs, last change and quiet days (from git; `mtime` when the only commit touching it is `brain: init`) |
 | `ur dream check --write` | each active ref checked (cached done refs skipped), saved to `.dream/state.json` |
 | `ur dream review` | durable docs by review due date; `pick` is what to review this run |
 | `ur dream reviewed <file> unchanged\|changed --note "…"` | records a review and adapts its interval |
@@ -74,6 +74,9 @@ At most one edit per file per report: combine everything for a file into that ed
      never repeats. Include `last-verified` only when the stream states a date for it.
    - If the config allows discovery from other sources (commit-message search, the tracker), use
      them only for streams that still have no refs, within `max_calls`.
+   - A discovered ref that is not a real ref of the stream (quoted code, an example, someone
+     else's ticket mentioned in passing) → propose an `ignore_refs` entry in that stream's
+     frontmatter, citing the line it came from, so later runs neither report nor check it.
    - `unclassified` strings → report them and propose a `DREAM.md` ref kind.
    - A ref is unknown when `done` is `null`, whatever `state` says (`uncheckable`, `exit-1`,
      `missing-command`, ... say why).
