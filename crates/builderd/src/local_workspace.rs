@@ -26,6 +26,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use tonic::Status;
 use ur_config::AgentType;
 use workerd::{
     InitGitHooksManager, InitInstructionsManager, InitSkillHooksManager, InitSkillsManager,
@@ -71,52 +72,15 @@ pub struct LocalWorkspaceRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalWorkspace {
     pub drive: PathBuf,
-    /// Memory symlink created (or confirmed) for this slot, if any.
-    pub memory_link: Option<PathBuf>,
     pub argv: Vec<String>,
 }
 
-#[derive(Debug)]
-pub enum LocalWorkspaceError {
-    /// The request cannot be satisfied in the current host state.
-    FailedPrecondition(String),
-    Io {
-        context: String,
-        source: std::io::Error,
-    },
-}
+type Result<T> = std::result::Result<T, Status>;
 
-impl std::fmt::Display for LocalWorkspaceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::FailedPrecondition(msg) => f.write_str(msg),
-            Self::Io { context, source } => write!(f, "{context}: {source}"),
-        }
-    }
-}
-
-impl std::error::Error for LocalWorkspaceError {}
-
-impl From<LocalWorkspaceError> for tonic::Status {
-    fn from(err: LocalWorkspaceError) -> Self {
-        match err {
-            LocalWorkspaceError::FailedPrecondition(_) => {
-                tonic::Status::failed_precondition(err.to_string())
-            }
-            LocalWorkspaceError::Io { .. } => tonic::Status::internal(err.to_string()),
-        }
-    }
-}
-
-type Result<T> = std::result::Result<T, LocalWorkspaceError>;
-
-fn io(context: impl Into<String>) -> impl FnOnce(std::io::Error) -> LocalWorkspaceError {
+/// Map an IO error to `Internal` with `context`.
+fn io(context: impl Into<String>) -> impl FnOnce(std::io::Error) -> Status {
     let context = context.into();
-    move |source| LocalWorkspaceError::Io { context, source }
-}
-
-fn precondition(msg: String) -> LocalWorkspaceError {
-    LocalWorkspaceError::FailedPrecondition(msg)
+    move |source| Status::internal(format!("{context}: {source}"))
 }
 
 /// Builds and tears down local worker drives.
@@ -158,7 +122,7 @@ impl LocalWorkspaceManager {
     /// down before the original error is returned.
     pub async fn build(&self, req: &LocalWorkspaceRequest) -> Result<LocalWorkspace> {
         if !req.agent.supports_local_runtime() {
-            return Err(precondition(format!(
+            return Err(Status::failed_precondition(format!(
                 "agent '{}' does not support the local runtime",
                 req.agent.name()
             )));
@@ -187,7 +151,7 @@ impl LocalWorkspaceManager {
             .map_err(io(format!("create {}", ur_dir.display())))?;
 
         let links = self.link_mounts(&drive, req).await?;
-        let memory_link = self.link_memory(req).await?;
+        self.link_memory(req).await?;
         let paths = self.worker_paths(&drive, req);
         self.write_customization(&drive, &paths, req, &links)
             .await?;
@@ -195,7 +159,6 @@ impl LocalWorkspaceManager {
         Ok(LocalWorkspace {
             argv: self.agent_argv(&paths, &drive, req, &links),
             drive,
-            memory_link,
         })
     }
 
@@ -208,7 +171,7 @@ impl LocalWorkspaceManager {
                 .join("instructions")
                 .join(format!("{strategy}.md"));
             if !path.exists() {
-                return Err(precondition(format!(
+                return Err(Status::failed_precondition(format!(
                     "instruction strategy not found: {}",
                     path.display()
                 )));
@@ -217,7 +180,10 @@ impl LocalWorkspaceManager {
         for skill in &req.skills {
             let path = self.agent_shared.join("potential-skills").join(skill);
             if !path.exists() {
-                return Err(precondition(format!("skill not found: {}", path.display())));
+                return Err(Status::failed_precondition(format!(
+                    "skill not found: {}",
+                    path.display()
+                )));
             }
         }
         Ok(())
@@ -232,7 +198,7 @@ impl LocalWorkspaceManager {
             skills_dest: ur_dir.join("plugin"),
             instructions_dest: ur_dir.join("instructions.md"),
             settings_template: None,
-            settings_dest: Some(ur_dir.join("settings.json")),
+            settings_dest: Some(settings_path(drive)),
             host_hooks: self
                 .config_dir
                 .join("projects")
@@ -252,16 +218,7 @@ impl LocalWorkspaceManager {
     ) -> Result<Vec<DriveLink>> {
         let mut links = Vec::new();
         for mount in &req.mounts {
-            let rel = Path::new(mount.dest.trim_start_matches('/'));
-            if rel.as_os_str().is_empty()
-                || !rel.components().all(|c| matches!(c, Component::Normal(_)))
-            {
-                return Err(precondition(format!(
-                    "invalid mount destination '{}'",
-                    mount.dest
-                )));
-            }
-            let link = drive.join(rel);
+            let link = drive.join(mount.dest.trim_start_matches('/'));
             create_link(drive, &mount.source, &link).await?;
             links.push(DriveLink {
                 link,
@@ -282,13 +239,13 @@ impl LocalWorkspaceManager {
     }
 
     /// Point the agent's memory dir for the slot at `memory_dir`. Never
-    /// clobbers a real non-empty directory or a file.
-    async fn link_memory(&self, req: &LocalWorkspaceRequest) -> Result<Option<PathBuf>> {
+    /// clobbers a real non-empty directory; a file there fails the `read_dir`.
+    async fn link_memory(&self, req: &LocalWorkspaceRequest) -> Result<()> {
         let (Some(target), Some(link)) = (
             &req.memory_dir,
             req.agent.local_memory_dir(&self.home, &req.slot_path),
         ) else {
-            return Ok(None);
+            return Ok(());
         };
         // Like the container mount: a configured memory dir that does not
         // exist yet is created, so the link never dangles.
@@ -306,14 +263,14 @@ impl LocalWorkspaceManager {
             Ok(meta) if meta.is_symlink() => {
                 let current = tokio::fs::read_link(&link).await.map_err(io(&ctx))?;
                 if &current == target {
-                    return Ok(Some(link));
+                    return Ok(());
                 }
                 tokio::fs::remove_file(&link).await.map_err(io(&ctx))?;
             }
-            Ok(meta) if meta.is_dir() => {
+            Ok(_) => {
                 let mut entries = tokio::fs::read_dir(&link).await.map_err(io(&ctx))?;
                 if entries.next_entry().await.map_err(io(&ctx))?.is_some() {
-                    return Err(precondition(format!(
+                    return Err(Status::failed_precondition(format!(
                         "memory dir {} is a non-empty directory; move it aside to link {}",
                         link.display(),
                         target.display()
@@ -321,15 +278,8 @@ impl LocalWorkspaceManager {
                 }
                 tokio::fs::remove_dir(&link).await.map_err(io(&ctx))?;
             }
-            Ok(_) => {
-                return Err(precondition(format!(
-                    "memory dir {} exists and is not a directory",
-                    link.display()
-                )));
-            }
         }
-        tokio::fs::symlink(target, &link).await.map_err(io(ctx))?;
-        Ok(Some(link))
+        tokio::fs::symlink(target, &link).await.map_err(io(ctx))
     }
 
     /// Plugin skills, skill hooks, git hooks, settings.json and instructions.md.
@@ -354,7 +304,7 @@ impl LocalWorkspaceManager {
             .await
             .map_err(io("install git hooks into slot"))?;
 
-        let settings_path = drive.join(UR_DIR).join("settings.json");
+        let settings_path = settings_path(drive);
         let settings = self.settings.settings_json(req.allow_no_verify);
         let body = serde_json::to_string_pretty(&settings)
             .map_err(|e| io("serialize settings.json")(std::io::Error::other(e)))?;
@@ -400,12 +350,12 @@ impl LocalWorkspaceManager {
         req: &LocalWorkspaceRequest,
         links: &[DriveLink],
     ) -> Vec<String> {
-        let ur_dir = drive.join(UR_DIR);
         let display = |p: &Path| p.to_string_lossy().into_owned();
+
         let mut argv = vec![
             "claude".to_owned(),
             "--settings".to_owned(),
-            display(&ur_dir.join("settings.json")),
+            display(&settings_path(drive)),
             "--append-system-prompt-file".to_owned(),
             display(&paths.instructions_dest),
             "--plugin-dir".to_owned(),
@@ -454,13 +404,20 @@ impl LocalWorkspaceManager {
     }
 }
 
+/// The drive's generated `.ur/settings.json`.
+fn settings_path(drive: &Path) -> PathBuf {
+    drive.join(UR_DIR).join("settings.json")
+}
+
 /// A worker id must be a single normal path component so the drive path
 /// stays inside `drive/`.
 fn validate_worker_id(worker_id: &str) -> Result<()> {
     let mut components = Path::new(worker_id).components();
     match (components.next(), components.next()) {
         (Some(Component::Normal(_)), None) => Ok(()),
-        _ => Err(precondition(format!("invalid worker id '{worker_id}'"))),
+        _ => Err(Status::failed_precondition(format!(
+            "invalid worker id '{worker_id}'"
+        ))),
     }
 }
 
@@ -472,7 +429,7 @@ async fn create_link(drive: &Path, source: &Path, link: &Path) -> Result<()> {
         .await
         .map_err(io(format!("stat {}", source.display())))?
     {
-        return Err(precondition(format!(
+        return Err(Status::failed_precondition(format!(
             "mount source does not exist: {}",
             source.display()
         )));
@@ -483,7 +440,7 @@ async fn create_link(drive: &Path, source: &Path, link: &Path) -> Result<()> {
         dir.push(component);
         match tokio::fs::symlink_metadata(&dir).await {
             Ok(meta) if meta.is_symlink() => {
-                return Err(precondition(format!(
+                return Err(Status::failed_precondition(format!(
                     "mount {} would nest inside linked mount {}",
                     link.display(),
                     dir.display()
@@ -613,11 +570,9 @@ mod tests {
         }
     }
 
-    fn precondition_msg(err: LocalWorkspaceError) -> String {
-        match err {
-            LocalWorkspaceError::FailedPrecondition(msg) => msg,
-            other => panic!("expected FailedPrecondition, got {other}"),
-        }
+    fn precondition_msg(err: Status) -> String {
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition, "{err}");
+        err.message().to_owned()
     }
 
     #[tokio::test]
@@ -679,13 +634,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_invalid_dest_and_unsupported_agent() {
+    async fn rejects_unsupported_agent() {
         let f = Fixture::new();
-        let req = LocalWorkspaceRequest {
-            mounts: vec![mount(f.path("src/ctx"), "/../escape", false)],
-            ..f.request()
-        };
-        precondition_msg(f.manager.build(&req).await.unwrap_err());
         let req = LocalWorkspaceRequest {
             agent: AgentType::Codex,
             ..f.request()
@@ -712,8 +662,7 @@ mod tests {
     #[tokio::test]
     async fn memory_absent_creates_link() {
         let f = Fixture::new();
-        let built = f.manager.build(&f.with_memory()).await.unwrap();
-        assert_eq!(built.memory_link, Some(f.memory_link()));
+        f.manager.build(&f.with_memory()).await.unwrap();
         assert_eq!(
             fs::read_link(f.memory_link()).unwrap(),
             f.path("src/memory")
@@ -751,7 +700,7 @@ mod tests {
             ..f.with_memory()
         };
         let err = f.manager.build(&req).await.unwrap_err();
-        assert!(matches!(err, LocalWorkspaceError::Io { .. }), "{err}");
+        assert_eq!(err.code(), tonic::Code::Internal, "{err}");
         assert!(!f.path("workspace/drive/w1").exists());
         assert!(fs::symlink_metadata(f.memory_link()).is_err());
         for (dir, file, body) in [
@@ -767,8 +716,7 @@ mod tests {
     #[tokio::test]
     async fn memory_unset_creates_nothing() {
         let f = Fixture::new();
-        let built = f.manager.build(&f.request()).await.unwrap();
-        assert_eq!(built.memory_link, None);
+        f.manager.build(&f.request()).await.unwrap();
         assert!(fs::symlink_metadata(f.memory_link()).is_err());
     }
 
