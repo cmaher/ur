@@ -183,11 +183,13 @@ stopper never resets a slot that now serves another worker. Client: `BuilderLoca
 
 ### Termination paths and reconciliation (ur-j5puq)
 
-Invariant (builderd): after startup a `ur-<id>` session exists only while `<id>` is
-registered, so `ListLocalWorkers` never omits a live session. Wrongly releasing a live
-worker's slot would let the next worker reset it and destroy uncommitted work, so the server
-releases a local slot only when builderd confirmed the id absent or `StopLocalWorker`
-succeeded.
+Invariant (builderd): after startup, for sessions whose `UR_DRIVE` is under this builderd's
+workspace (`<workspace>/drive/`), a `ur-<id>` session exists only while `<id>` is registered,
+so `ListLocalWorkers` never omits one of its live sessions. Every ur instance on the host
+shares the `ur` socket; a session whose drive is elsewhere belongs to another instance and is
+never adopted, killed or listed. Wrongly releasing a live worker's slot would let the next
+worker reset it and destroy uncommitted work, so the server releases a local slot only after
+`StopLocalWorker` succeeded (also when builderd no longer lists the id).
 
 Teardown (stop, failed launch, agent exit, external kill): kill the session (abort the exit
 watcher unless it is the caller) → `LocalWorkspaceManager.teardown` → deregister. A failed
@@ -197,7 +199,7 @@ so the server's retried Stop runs teardown again.
 | Trigger | Path |
 |---|---|
 | Agent exit, external `kill-session` | workerd `ExitWatcherManager` (`PaneDead` / `AgentReturnedToShell`) → exit sink → teardown; the server sees the id leave the list on its next pass |
-| builderd restart / host reboot | `LocalWorkerManager::adopt_existing` in `main.rs` **before** `serve`: each `ur-<id>` session is re-registered from its env (`UR_WORKER_ID` must match, `UR_SERVER_ADDR`, `UR_WORKER_SECRET`, a local-capable `UR_AGENT_TYPE`, `UR_DRIVE` = this builderd's drive) and start dir (`#{session_path}` = slot), with a new exit watcher; a session with unusable env (missing/mismatched vars, unsupported agent, foreign `UR_DRIVE`) is killed (a failed kill aborts startup); a tmux error reading a live session's env or start dir aborts startup (a session that ended meanwhile is skipped); then every `drive/<id>` without a registered worker gets `teardown_orphan` (links only). Session listing failure aborts startup; tmux not installed means no sessions. Orphan drive list/teardown failures are logged only (known limit: drives hold only links; the next startup retries) |
+| builderd restart / host reboot | `LocalWorkerManager::adopt_existing` in `main.rs` **before** `serve`: each `ur-<id>` session is re-registered from its env (`UR_WORKER_ID` must match, `UR_SERVER_ADDR`, `UR_WORKER_SECRET`, a local-capable `UR_AGENT_TYPE`, `UR_DRIVE` = this builderd's drive) and start dir (`#{session_path}` = slot), with a new exit watcher; a session whose `UR_DRIVE` is outside this builderd's drive root is another instance's and is skipped entirely; one of ours with unusable env (missing/mismatched vars including a missing `UR_DRIVE`, unsupported agent, `UR_DRIVE` not equal to `drive/<id>`) is killed (a failed kill aborts startup); a tmux error reading a live session's env or start dir aborts startup (a session that ended meanwhile is skipped); then every `drive/<id>` without a registered worker gets `teardown_orphan` (links only). Session listing failure aborts startup; tmux not installed means no sessions. Orphan drive list/teardown failures are logged only (known limit: drives hold only links; the next startup retries) |
 | Server start (before serving or dispatching) | `LocalWorkerReconcileManager::startup` in `main.rs`: every local `provisioning` row is a launch the previous server never finished, so its slot (by `workspace_path`) is linked to it and it becomes `stopping`; then one pass as below. DB errors abort server start; a list error is left to the loop |
 | Every 15s | `LocalWorkerReconcileManager` (`crates/server/src/local_reconcile.rs`): reads active local rows, then `ListLocalWorkers`. List error → no change. `running` + listed alive → none; `running` not listed, `running` + session dead, or `stopping` → `stop_by_worker_id` (StopLocalWorker, then slot release + `stopped`; failure leaves `stopping` for the next pass); `provisioning` → none; listed id with no active row (re-read first) → `StopLocalWorker`. `WorkerRepo::reconcile_workers` skips local rows |
 | `ur stop` | after the server's `WorkerStop` pass, `ListLocalWorkers` → `StopLocalWorker` each straight from the host, before `compose down` and builderd shutdown; a list or stop failure aborts `ur stop`; no builderd running → warning only |

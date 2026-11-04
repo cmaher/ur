@@ -8,8 +8,10 @@
 //! full teardown before the error is returned.
 //!
 //! Invariant (ur-j5puq): once [`LocalWorkerManager::adopt_existing`] has
-//! run, a `ur-<id>` session on the socket exists only while `<id>` is
-//! registered. Teardown kills the session first and deregisters last, so a
+//! run, a `ur-<id>` session on the socket whose `UR_DRIVE` is under this
+//! builderd's drive root exists only while `<id>` is registered. Every ur
+//! instance on the host shares the socket; sessions with a drive elsewhere
+//! belong to another instance and are never adopted, killed or listed. Teardown kills the session first and deregisters last, so a
 //! failed kill or drive removal leaves the worker listed for a retried Stop.
 //!
 //! # Known limits
@@ -420,7 +422,10 @@ impl LocalWorkerManager {
     }
 
     /// Adopt `ur-<worker_id>`, or kill it when its env is unusable. A tmux
-    /// error reading a live session is fatal, not a reason to kill it.
+    /// error reading a live session is fatal, not a reason to kill it. A
+    /// session whose `UR_DRIVE` is outside this builderd's drive root is
+    /// another ur instance's and is left alone (a missing `UR_DRIVE` counts
+    /// as ours and unusable).
     async fn adopt_or_kill(&self, worker_id: &str) -> Result<()> {
         let session = self.session(worker_id);
         let read = async {
@@ -436,6 +441,14 @@ impl LocalWorkerManager {
                 return session_read_failure(worker_id, &e, alive);
             }
         };
+        let drive = env_value(&env, UR_DRIVE_ENV);
+        if !drive.is_empty() && !Path::new(drive).starts_with(self.workspace.drive_root()) {
+            info!(
+                worker_id,
+                drive, "session belongs to another ur instance; leaving it"
+            );
+            return Ok(());
+        }
         let agent = match adoptable(worker_id, &env, &self.workspace.drive_path(worker_id)) {
             Ok(agent) => agent,
             Err(reason) => {

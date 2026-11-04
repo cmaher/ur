@@ -124,6 +124,11 @@ impl LocalWorkspaceManager {
         }
     }
 
+    /// `<workspace>/drive`, the parent of every drive this builderd owns.
+    pub fn drive_root(&self) -> PathBuf {
+        self.workspace_root.join(DRIVE_DIR)
+    }
+
     pub fn drive_path(&self, worker_id: &str) -> PathBuf {
         self.workspace_root.join(DRIVE_DIR).join(worker_id)
     }

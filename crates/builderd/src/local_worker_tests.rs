@@ -786,3 +786,42 @@ async fn stop_after_failed_launch_never_ok_while_session_lives() {
     f.manager.stop("w1").await.unwrap();
     assert!(!f.session("w1").exists().await.unwrap(), "Stop kills it");
 }
+
+/// Every ur instance shares the `ur` socket: a builderd with another
+/// workspace must leave instance A's live worker alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn adoption_leaves_other_instances_sessions_alone() {
+    let f = Fixture::new("otherinst", Duration::from_secs(3600));
+    let slot = f.slot("slot");
+    f.manager
+        .launch(&f.request("w1", &slot), f.env())
+        .await
+        .unwrap();
+    fs::create_dir_all(f.path("workspace-b")).unwrap();
+    let registry_b = LocalWorkerRegistry::default();
+    let manager_b = LocalWorkerManager {
+        workspace: LocalWorkspaceManager::new(
+            f.path("config"),
+            f.path("workspace-b"),
+            f.path("home"),
+            f.path("shared"),
+            LocalSettingsManager,
+        ),
+        registry: registry_b.clone(),
+        ..f.manager.clone()
+    };
+
+    manager_b.adopt_existing().await.unwrap();
+    assert!(f.session("w1").exists().await.unwrap(), "A's session alive");
+    assert!(f.drive("w1").join("ctx").is_symlink(), "A's drive intact");
+    assert_eq!(
+        f.manager.list().await.unwrap(),
+        vec![("w1".to_owned(), true)]
+    );
+    assert!(
+        manager_b.list().await.unwrap().is_empty(),
+        "B lists nothing"
+    );
+    assert!(!registry_b.contains("w1"));
+    f.manager.stop("w1").await.unwrap();
+}
