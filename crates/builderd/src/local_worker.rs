@@ -325,9 +325,20 @@ impl LocalWorkerManager {
         .abort_handle()
     }
 
-    /// Stop a worker. Unknown or already-stopped ids succeed.
+    /// Stop a worker. Unknown or already-stopped ids succeed once their
+    /// session is gone.
+    ///
+    /// An unregistered id still has its `ur-<id>` session killed (a failed
+    /// launch whose own cleanup kill failed can leave one): Stop never
+    /// succeeds while that session may be alive.
     pub async fn stop(&self, worker_id: &str) -> Result<()> {
-        self.teardown_known(worker_id, TeardownCaller::Stop).await
+        if self.registry.contains(worker_id) {
+            return self.teardown_known(worker_id, TeardownCaller::Stop).await;
+        }
+        self.session(worker_id)
+            .kill()
+            .await
+            .map_err(|e| Status::internal(format!("kill tmux session: {e:#}")))
     }
 
     async fn teardown_known(&self, worker_id: &str, caller: TeardownCaller) -> Result<()> {

@@ -662,11 +662,41 @@ enum TmuxOutput {
     Failed(String),
 }
 
+/// Per-socket replacement for the `tmux` program (test seam, see
+/// [`override_program_for_socket`]). Never set in production.
+static PROGRAM_OVERRIDES: std::sync::LazyLock<
+    std::sync::RwLock<std::collections::HashMap<String, PathBuf>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Run `program` instead of `tmux` for every invocation on `socket` (`-L`).
+/// A test seam for fault injection that leaves other sockets (and the
+/// process environment) untouched.
+pub fn override_program_for_socket(socket: &str, program: PathBuf) {
+    PROGRAM_OVERRIDES
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(socket.to_owned(), program);
+}
+
+/// The program for an invocation: the override for its `-L` socket, if any.
+fn tmux_program(args: &[&str]) -> PathBuf {
+    let socket = match args {
+        ["-L", socket, ..] => *socket,
+        _ => return PathBuf::from("tmux"),
+    };
+    PROGRAM_OVERRIDES
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(socket)
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from("tmux"))
+}
+
 /// Run a tmux command and return its stdout on success or trimmed stderr on failure.
 async fn run_tmux_output(args: &[impl AsRef<str>]) -> Result<TmuxOutput> {
     let str_args: Vec<&str> = args.iter().map(|a| a.as_ref()).collect();
 
-    let output = tokio::process::Command::new("tmux")
+    let output = tokio::process::Command::new(tmux_program(&str_args))
         .args(&str_args)
         .output()
         .await

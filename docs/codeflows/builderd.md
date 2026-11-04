@@ -76,11 +76,10 @@ cloning, resetting, and cleaning on the host filesystem.
 | `RecycleSlot` | Fetch + reset an existing slot (reclone on failure) | `crates/builderd/src/pool_handler.rs` |
 | `PrepareSharedSlot` | Clone or refresh the shared (read-only) slot | `crates/builderd/src/pool_handler.rs` |
 | `CheckoutBranch` | Create a worker-specific branch in a slot | `crates/builderd/src/pool_handler.rs` |
-| `CleanSlot` | Fetch + reset a slot (without local overlay) before reuse | `crates/builderd/src/pool_handler.rs` |
 
 `PrepareNewSlot` and `RecycleSlot` both apply local overlay files from
 `<config_dir>/projects/<project>/local/` after each git operation.
-`CleanSlot` does not apply local overlays — it only resets to clean state.
+Releasing a slot is DB-only (unlink); the next acquire's `RecycleSlot` resets it.
 
 Pool slots live at `<workspace>/pool/<project-key>/<slot-name>/`.
 The `shared` slot is a special non-numeric slot for read-only multi-worker mounts.
@@ -177,8 +176,9 @@ paths (templates resolve against the host config dir). Stop moves the row to `st
 from an active status (`WorkerRepo::begin_stopping`; an already `stopped` or deleted row
 makes the stop a no-op that releases nothing), calls `StopLocalWorker`, and only on success
 releases the slot and marks it `stopped`; on failure the row stays `stopping`.
-`RepoPoolManager::release_slot(W, S)` cleans and unlinks S only while S is still linked to W
-(both runtimes), so a stale stopper never resets a slot that now serves another worker. Client: `BuilderLocalWorkerClient`
+`RepoPoolManager::release_slot(W, S)` only deletes W's own `worker_slot` link (both
+runtimes); slot contents are reset by the next owner's `RecycleSlot`, so a stale or concurrent
+stopper never resets a slot that now serves another worker. Client: `BuilderLocalWorkerClient`
 (`crates/server/src/builder_local_worker_client.rs`).
 
 ### Termination paths and reconciliation (ur-j5puq)
@@ -226,8 +226,8 @@ Builderd has three clients in the server, serving different use cases:
 
 ### 2. BuilderPoolClient (server-internal → builderd)
 
-- **Purpose**: Pool slot lifecycle (clone, fetch/reset, clean, branch checkout)
-- **Client**: Shared `BuilderPoolClient` wrapper with six typed async methods, one per RPC
+- **Purpose**: Pool slot lifecycle (clone, fetch/reset, branch checkout)
+- **Client**: Shared `BuilderPoolClient` wrapper with five typed async methods, one per RPC
 - **Used by**: `RepoPoolManager` in `crates/server/src/pool.rs`
 - **File**: `crates/server/src/builder_pool_client.rs`
 
@@ -282,7 +282,6 @@ service BuilderPoolService {
   rpc RecycleSlot(RecycleSlotRequest) returns (RecycleSlotResponse);
   rpc PrepareSharedSlot(PrepareSharedSlotRequest) returns (PrepareSharedSlotResponse);
   rpc CheckoutBranch(CheckoutBranchRequest) returns (CheckoutBranchResponse);
-  rpc CleanSlot(CleanSlotRequest) returns (CleanSlotResponse);
 }
 ```
 

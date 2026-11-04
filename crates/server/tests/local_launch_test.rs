@@ -20,10 +20,9 @@ use ur_rpc::proto::builder_pool::builder_pool_service_server::{
     BuilderPoolService, BuilderPoolServiceServer,
 };
 use ur_rpc::proto::builder_pool::{
-    CheckoutBranchRequest, CheckoutBranchResponse, CleanSlotRequest, CleanSlotResponse,
-    PrepareNewSlotRequest, PrepareNewSlotResponse, PrepareSharedSlotRequest,
-    PrepareSharedSlotResponse, RecycleSlotRequest, RecycleSlotResponse, ScanSlotsRequest,
-    ScanSlotsResponse,
+    CheckoutBranchRequest, CheckoutBranchResponse, PrepareNewSlotRequest, PrepareNewSlotResponse,
+    PrepareSharedSlotRequest, PrepareSharedSlotResponse, RecycleSlotRequest, RecycleSlotResponse,
+    ScanSlotsRequest, ScanSlotsResponse,
 };
 use ur_server::builder_local_worker_client::BuilderLocalWorkerClient;
 use ur_server::local_reconcile::LocalWorkerReconcileManager;
@@ -42,52 +41,52 @@ struct FakeBuilderd {
     list_error: Arc<Mutex<Option<Status>>>,
     /// Inserted while `ListLocalWorkers` runs: a launch racing a pass.
     insert_on_list: Arc<Mutex<Option<(workflow_db::WorkerRepo, workflow_db::model::Worker)>>>,
-    /// `CleanSlot` calls as `project/slot`.
-    cleans: Arc<Mutex<Vec<String>>>,
+    /// When set, the first StopLocalWorker waits for a second to arrive, and
+    /// every later one waits for this.
+    hold_later_stops: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
+    /// Every `BuilderPoolService` call: releasing a slot must issue none.
+    pool_calls: Arc<Mutex<Vec<&'static str>>>,
 }
 
+impl FakeBuilderd {
+    fn pool_call<T>(&self, rpc: &'static str) -> Result<Response<T>, Status> {
+        self.pool_calls.lock().unwrap().push(rpc);
+        Err(Status::unimplemented(rpc))
+    }
+}
+
+/// Records and refuses every pool RPC (none of these tests acquire slots).
 #[tonic::async_trait]
 impl BuilderPoolService for FakeBuilderd {
     async fn scan_slots(
         &self,
         _: Request<ScanSlotsRequest>,
     ) -> Result<Response<ScanSlotsResponse>, Status> {
-        Err(Status::unimplemented("scan_slots"))
+        self.pool_call("scan_slots")
     }
     async fn prepare_new_slot(
         &self,
         _: Request<PrepareNewSlotRequest>,
     ) -> Result<Response<PrepareNewSlotResponse>, Status> {
-        Err(Status::unimplemented("prepare_new_slot"))
+        self.pool_call("prepare_new_slot")
     }
     async fn recycle_slot(
         &self,
         _: Request<RecycleSlotRequest>,
     ) -> Result<Response<RecycleSlotResponse>, Status> {
-        Err(Status::unimplemented("recycle_slot"))
+        self.pool_call("recycle_slot")
     }
     async fn prepare_shared_slot(
         &self,
         _: Request<PrepareSharedSlotRequest>,
     ) -> Result<Response<PrepareSharedSlotResponse>, Status> {
-        Err(Status::unimplemented("prepare_shared_slot"))
+        self.pool_call("prepare_shared_slot")
     }
     async fn checkout_branch(
         &self,
         _: Request<CheckoutBranchRequest>,
     ) -> Result<Response<CheckoutBranchResponse>, Status> {
-        Err(Status::unimplemented("checkout_branch"))
-    }
-    async fn clean_slot(
-        &self,
-        request: Request<CleanSlotRequest>,
-    ) -> Result<Response<CleanSlotResponse>, Status> {
-        let req = request.into_inner();
-        self.cleans
-            .lock()
-            .unwrap()
-            .push(format!("{}/{}", req.project_key, req.slot_name));
-        Ok(Response::new(CleanSlotResponse::default()))
+        self.pool_call("checkout_branch")
     }
 }
 
@@ -108,10 +107,25 @@ impl BuilderLocalWorkerService for FakeBuilderd {
         &self,
         request: Request<StopLocalWorkerRequest>,
     ) -> Result<Response<StopLocalWorkerResponse>, Status> {
-        self.stops
-            .lock()
-            .unwrap()
-            .push(request.into_inner().worker_id);
+        let earlier = {
+            let mut stops = self.stops.lock().unwrap();
+            stops.push(request.into_inner().worker_id);
+            stops.len() > 1
+        };
+        let hold = self.hold_later_stops.lock().unwrap().clone();
+        if let Some(hold) = hold {
+            if earlier {
+                hold.notified().await;
+            } else {
+                // Let a second stopper get past begin_stopping first.
+                for _ in 0..100 {
+                    if self.stops.lock().unwrap().len() > 1 {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            }
+        }
         match self.stop_error.lock().unwrap().clone() {
             Some(status) => Err(status),
             None => Ok(Response::new(StopLocalWorkerResponse {})),
@@ -182,7 +196,7 @@ async fn harness() -> Harness {
     // Container builderd is unreachable: a local launch must never touch it.
     let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
     let builder_container_client =
-        ur_server::builder_container_client::BuilderContainerClient::new(channel.clone());
+        ur_server::builder_container_client::BuilderContainerClient::new(channel);
     let project_registry = ur_server::ProjectRegistry::new(
         config.projects.clone(),
         ur_server::hostexec::HostExecConfigManager::empty(),
@@ -501,10 +515,11 @@ async fn pool_slot(h: &Harness) -> String {
         updated_at: now,
     };
     h.worker_repo.insert_slot(&slot).await.unwrap();
+    std::fs::write(h.slot.join("uncommitted.txt"), "work").unwrap();
     slot.id
 }
 
-/// A Manual pool launch in `h.slot`, so a stop releases (cleans + unlinks) it.
+/// A Manual pool launch in `h.slot`, so a stop releases (unlinks) it.
 fn pool_config(h: &Harness, worker_id: &str, slot_id: &str) -> ur_server::WorkerConfig {
     ur_server::WorkerConfig {
         project_key: PROJECT.into(),
@@ -521,8 +536,17 @@ async fn slot_owner(h: &Harness, worker_id: &str) -> Option<String> {
         .map(|l| l.slot_id)
 }
 
-fn cleans(h: &Harness) -> usize {
-    h.fake.cleans.lock().unwrap().len()
+/// Release is DB-only: no pool RPC was issued and the uncommitted work in
+/// `h.slot` (written by `pool_slot`) is still there.
+fn assert_slot_intact(h: &Harness) {
+    assert!(
+        h.fake.pool_calls.lock().unwrap().is_empty(),
+        "release issued a pool RPC"
+    );
+    assert!(
+        h.slot.join("uncommitted.txt").exists(),
+        "slot contents touched"
+    );
 }
 
 /// The slot stays linked while a stop keeps failing and is released only
@@ -541,14 +565,14 @@ async fn reconcile_releases_slot_only_after_confirmed_stop() {
     reconciler(&h).reconcile_once().await.unwrap();
     assert_eq!(status_of(&h, "local-1-dead").await, "stopping");
     assert_eq!(slot_owner(&h, "local-1-dead").await, Some(slot.clone()));
-    assert_eq!(cleans(&h), 0, "never cleaned while the stop is unconfirmed");
+    assert_slot_intact(&h);
 
     *h.fake.stop_error.lock().unwrap() = None;
     set_listed(&h, &[]);
     reconciler(&h).reconcile_once().await.unwrap();
     assert_eq!(status_of(&h, "local-1-dead").await, "stopped");
     assert_eq!(slot_owner(&h, "local-1-dead").await, None);
-    assert_eq!(*h.fake.cleans.lock().unwrap(), vec!["proj/0"]);
+    assert_slot_intact(&h);
 }
 
 /// A1: a stale stopper (snapshot taken before W1 was stopped and its slot
@@ -563,7 +587,7 @@ async fn stale_stop_leaves_the_slots_new_owner_untouched() {
         .await
         .unwrap();
     h.worker_manager.stop_by_worker_id(&w1).await.unwrap();
-    assert_eq!(cleans(&h), 1);
+    assert_slot_intact(&h);
     h.worker_manager
         .run_and_record(pool_config(&h, "local-1-new2", &slot))
         .await
@@ -581,7 +605,7 @@ async fn stale_stop_leaves_the_slots_new_owner_untouched() {
         .await
         .unwrap();
     h.worker_manager.stop_by_worker_id(&w1).await.unwrap();
-    assert_eq!(cleans(&h), 1, "W2's slot was not cleaned");
+    assert_slot_intact(&h);
     assert_eq!(slot_owner(&h, "local-1-new2").await, Some(slot));
     assert_eq!(status_of(&h, "local-1-new2").await, "running");
 }
@@ -634,7 +658,7 @@ async fn failed_launch_keeps_slot_until_cleanup_is_confirmed() {
     reconciler(&h).reconcile_once().await.unwrap();
     assert_eq!(status_of(&h, "local-1-lfno").await, "stopped");
     assert_eq!(slot_owner(&h, "local-1-lfno").await, None);
-    assert_eq!(cleans(&h), 1);
+    assert_slot_intact(&h);
 }
 
 /// A3: at startup a local `provisioning` row is a launch the previous
@@ -663,12 +687,12 @@ async fn startup_stops_stale_provisioning_rows_holding_their_slot() {
     assert_eq!(status_of(&h, "local-1-prov").await, "stopping");
     assert_eq!(slot_owner(&h, "local-1-prov").await, Some(slot));
     assert_eq!(*h.fake.stops.lock().unwrap(), vec!["local-1-prov"]);
-    assert_eq!(cleans(&h), 0);
+    assert_slot_intact(&h);
 
     *h.fake.stop_error.lock().unwrap() = None;
     reconciler(&h).reconcile_once().await.unwrap();
     assert_eq!(status_of(&h, "local-1-prov").await, "stopped");
-    assert_eq!(cleans(&h), 1);
+    assert_slot_intact(&h);
 }
 
 /// A row that appears while the pass lists builderd (a launch registering)
@@ -693,4 +717,133 @@ async fn reconcile_rereads_unknown_listed_ids_before_stopping() {
     reconciler(&h).reconcile_once().await.unwrap();
     assert!(h.fake.stops.lock().unwrap().is_empty());
     assert_eq!(status_of(&h, "local-1-race").await, "provisioning");
+}
+
+/// Two stoppers of W1 race: one finishes and the slot goes to W2, which has
+/// uncommitted work; the other completes afterwards. W2's link and files
+/// survive (release only deletes W1's own link).
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_stoppers_leave_a_reacquired_slot_alone() {
+    let h = harness().await;
+    let slot = pool_slot(&h).await;
+    h.worker_manager
+        .run_and_record(pool_config(&h, "local-1-old1", &slot))
+        .await
+        .unwrap();
+    let hold = Arc::new(tokio::sync::Notify::new());
+    *h.fake.hold_later_stops.lock().unwrap() = Some(hold.clone());
+    let w1 = ur_server::WorkerId("local-1-old1".into());
+    let (a, b) = (h.worker_manager.clone(), h.worker_manager.clone());
+    let (wa, wb) = (w1.clone(), w1.clone());
+    let stop_a = tokio::spawn(async move { a.stop_by_worker_id(&wa).await });
+    let stop_b = tokio::spawn(async move { b.stop_by_worker_id(&wb).await });
+
+    for _ in 0..250 {
+        if status_of(&h, "local-1-old1").await == "stopped" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(status_of(&h, "local-1-old1").await, "stopped");
+    assert_eq!(h.fake.stops.lock().unwrap().len(), 2, "second stopper held");
+    assert_eq!(
+        h.worker_repo
+            .find_available_slots(PROJECT)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "the slot is back in the pool"
+    );
+    h.worker_manager
+        .run_and_record(pool_config(&h, "local-1-new2", &slot))
+        .await
+        .unwrap();
+    std::fs::write(h.slot.join("w2-work.txt"), "work").unwrap();
+
+    hold.notify_one();
+    let results = (stop_a.await.unwrap(), stop_b.await.unwrap());
+    assert!(results.0.is_ok() && results.1.is_ok(), "{results:?}");
+    assert_eq!(slot_owner(&h, "local-1-new2").await, Some(slot));
+    assert!(h.slot.join("w2-work.txt").exists());
+    assert_slot_intact(&h);
+}
+
+/// M7: a stale stop of a `stopped` local row with a lingering slot link
+/// calls no StopLocalWorker and releases nothing.
+#[tokio::test]
+async fn stale_stop_of_stopped_row_with_lingering_link_releases_nothing() {
+    let h = harness().await;
+    let slot = pool_slot(&h).await;
+    h.worker_manager
+        .run_and_record(pool_config(&h, "local-1-lngr", &slot))
+        .await
+        .unwrap();
+    h.worker_repo
+        .update_worker_container_status("local-1-lngr", "stopped")
+        .await
+        .unwrap();
+
+    h.worker_manager
+        .stop_by_worker_id(&ur_server::WorkerId("local-1-lngr".into()))
+        .await
+        .unwrap();
+    assert!(h.fake.stops.lock().unwrap().is_empty());
+    assert_eq!(slot_owner(&h, "local-1-lngr").await, Some(slot));
+}
+
+/// A stale provisioning row whose recorded slot W2 now holds: startup links
+/// and stops the stale row, and W2's slot, link and files stay untouched.
+#[tokio::test]
+async fn startup_stop_of_a_stale_row_leaves_the_live_slot_owner_alone() {
+    let h = harness().await;
+    let slot = pool_slot(&h).await;
+    h.worker_manager
+        .run_and_record(pool_config(&h, "local-1-stal", &slot))
+        .await
+        .unwrap();
+    h.worker_repo
+        .update_worker_container_status("local-1-stal", "provisioning")
+        .await
+        .unwrap();
+    h.worker_repo
+        .unlink_worker_slot("local-1-stal")
+        .await
+        .unwrap();
+    h.worker_manager
+        .run_and_record(pool_config(&h, "local-1-live", &slot))
+        .await
+        .unwrap();
+    set_listed(&h, &[("local-1-live", true)]);
+
+    reconciler(&h).startup().await.unwrap();
+    reconciler(&h).reconcile_once().await.unwrap();
+    assert_eq!(status_of(&h, "local-1-stal").await, "stopped");
+    assert_eq!(status_of(&h, "local-1-live").await, "running");
+    assert_eq!(slot_owner(&h, "local-1-live").await, Some(slot));
+    assert_eq!(*h.fake.stops.lock().unwrap(), vec!["local-1-stal"]);
+    assert_slot_intact(&h);
+}
+
+/// M26: rows are read before the list, so a launch that finalizes to
+/// `running` while the pass lists builderd is not taken for "gone".
+#[tokio::test]
+async fn reconcile_never_stops_a_launch_that_finished_during_the_list() {
+    let h = harness().await;
+    local_row(&h, "local-1-tmpl", "running").await;
+    let mut racing = h
+        .worker_repo
+        .get_worker("local-1-tmpl")
+        .await
+        .unwrap()
+        .unwrap();
+    h.worker_repo.delete_worker("local-1-tmpl").await.unwrap();
+    racing.worker_id = "local-1-fin1".into();
+    *h.fake.insert_on_list.lock().unwrap() = Some((h.worker_repo.clone(), racing));
+    // The list predates builderd registering it.
+    set_listed(&h, &[]);
+
+    reconciler(&h).reconcile_once().await.unwrap();
+    assert!(h.fake.stops.lock().unwrap().is_empty());
+    assert_eq!(status_of(&h, "local-1-fin1").await, "running");
 }

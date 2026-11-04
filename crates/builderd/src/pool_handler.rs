@@ -9,10 +9,9 @@ use tracing::{info, warn};
 
 use ur_rpc::proto::builder_pool::builder_pool_service_server::BuilderPoolService;
 use ur_rpc::proto::builder_pool::{
-    CheckoutBranchRequest, CheckoutBranchResponse, CleanSlotRequest, CleanSlotResponse,
-    PrepareNewSlotRequest, PrepareNewSlotResponse, PrepareSharedSlotRequest,
-    PrepareSharedSlotResponse, RecycleSlotRequest, RecycleSlotResponse, ScanSlotsRequest,
-    ScanSlotsResponse,
+    CheckoutBranchRequest, CheckoutBranchResponse, PrepareNewSlotRequest, PrepareNewSlotResponse,
+    PrepareSharedSlotRequest, PrepareSharedSlotResponse, RecycleSlotRequest, RecycleSlotResponse,
+    ScanSlotsRequest, ScanSlotsResponse,
 };
 
 use crate::overlay::LocalOverlayManager;
@@ -233,8 +232,8 @@ impl BuilderPoolHandler {
             })?;
         }
 
-        // Drop the overlay copy so a slot cleaned without re-applying (clean_slot) is not
-        // handed overlays by the next bracketed git command.
+        // Drop the overlay copy so a reset slot is not handed stale overlays by the next
+        // bracketed git command (callers re-apply the current ones).
         self.overlays.discard(&slot)?;
 
         self.git(&["fetch", "--no-tags", "origin"], &slot)
@@ -518,36 +517,6 @@ impl BuilderPoolService for BuilderPoolHandler {
 
         Ok(Response::new(CheckoutBranchResponse {}))
     }
-
-    async fn clean_slot(
-        &self,
-        req: Request<CleanSlotRequest>,
-    ) -> Result<Response<CleanSlotResponse>, Status> {
-        let req = req.into_inner();
-        info!(
-            project_key = %req.project_key,
-            slot_name = %req.slot_name,
-            "CleanSlot request received"
-        );
-
-        let slot_mutex = self.slot_lock(&req.project_key, &req.slot_name);
-        let _slot_guard = slot_mutex.lock().await;
-
-        let slot = self.slot_path(&req.project_key, &req.slot_name);
-        if !slot.is_dir() {
-            return Err(Status::not_found(format!(
-                "slot not found: {}/{}",
-                req.project_key, req.slot_name
-            )));
-        }
-
-        // Reset without applying local files (clean state only).
-        self.reset_slot(&req.project_key, &req.slot_name)
-            .await
-            .map_err(internal)?;
-
-        Ok(Response::new(CleanSlotResponse {}))
-    }
 }
 
 #[cfg(test)]
@@ -829,20 +798,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clean_slot_not_found_returns_error() {
-        let tmp = tempfile::tempdir().unwrap();
-        let h = make_handler(tmp.path());
-
-        let req = Request::new(CleanSlotRequest {
-            project_key: "proj".into(),
-            slot_name: "99".into(),
-        });
-        let result = h.clean_slot(req).await;
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().code(), tonic::Code::NotFound);
-    }
-
-    #[tokio::test]
     async fn checkout_branch_not_found_returns_error() {
         let tmp = tempfile::tempdir().unwrap();
         let h = make_handler(tmp.path());
@@ -1036,47 +991,6 @@ mod tests {
         });
         let resp = h.scan_slots(req).await.unwrap().into_inner();
         assert_eq!(resp.slot_indices, vec![0, 2, 5]);
-    }
-
-    #[tokio::test]
-    async fn clean_slot_resets_without_local_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bare = tmp.path().join("bare.git");
-        init_bare_repo(&bare);
-
-        let h = make_handler(tmp.path());
-        let repo_url = bare.display().to_string();
-
-        h.clone_slot("proj", "0", &repo_url).await.unwrap();
-        let slot = h.slot_path("proj", "0");
-
-        // Dirty the slot.
-        std::fs::write(slot.join("junk.txt"), "junk").unwrap();
-
-        // Set up local overlay — it should NOT be applied by clean_slot.
-        let src = h
-            .overlays
-            .config_dir
-            .join("projects")
-            .join("proj")
-            .join("local");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("local.txt"), "should-not-appear").unwrap();
-
-        let req = Request::new(CleanSlotRequest {
-            project_key: "proj".into(),
-            slot_name: "0".into(),
-        });
-        h.clean_slot(req).await.unwrap();
-
-        assert!(
-            !slot.join("junk.txt").exists(),
-            "junk file removed after clean"
-        );
-        assert!(
-            !slot.join("local.txt").exists(),
-            "local overlay must NOT be applied by clean_slot"
-        );
     }
 
     // ── skip-worktree tests ───────────────────────────────────────────────────

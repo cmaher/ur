@@ -228,57 +228,16 @@ impl RepoPoolManager {
         Ok((host_path, claim))
     }
 
-    /// Release a previously acquired slot by cleaning it and unlinking from the worker.
-    ///
-    /// Delegates the filesystem/git cleanup to builderd via `BuilderPoolClient::clean_slot`.
-    /// Unlinks the worker from the slot in the worker_slot join table.
-    /// `slot_path` is a host-side path used to look up the slot_name.
+    /// Release a slot: delete only this worker's `worker_slot` link. Release
+    /// never touches the slot's contents; `acquire_slot` recycles (fetch +
+    /// reset) a slot under the next owner's claim, so a stale or concurrent
+    /// release can never reset a slot another worker now uses.
     pub async fn release_slot(
         &self,
         worker_id: &str,
         slot_path: &std::path::Path,
     ) -> Result<(), String> {
         info!(worker_id, path = %slot_path.display(), "releasing pool slot");
-
-        // Extract slot name and project key from DB using the host path
-        let slot = self
-            .worker_repo
-            .get_slot_by_host_path(&slot_path.display().to_string())
-            .await
-            .map_err(|e| format!("db error looking up slot by host path: {e}"))?;
-
-        // Only the slot's current owner may clean it: a stale stopper whose
-        // link is gone (the slot may already serve another worker) must not
-        // reset it.
-        if let Some(slot) = &slot {
-            let link = self
-                .worker_repo
-                .get_worker_slot(worker_id)
-                .await
-                .map_err(|e| format!("db error reading worker slot link: {e}"))?;
-            if link.is_none_or(|l| l.slot_id != slot.id) {
-                tracing::warn!(
-                    worker_id,
-                    path = %slot_path.display(),
-                    "slot is not linked to this worker; leaving it untouched"
-                );
-                return Ok(());
-            }
-        }
-
-        if let Some(slot) = slot
-            && let Err(e) = self
-                .builder_pool_client
-                .clean_slot(slot.project_key.clone(), slot.slot_name.clone())
-                .await
-        {
-            // Log but don't fail — unlink anyway so the next acquire can reclone.
-            tracing::warn!(
-                path = %slot_path.display(),
-                error = %e,
-                "clean_slot failed during release, slot will be recloned on next acquire"
-            );
-        }
 
         self.worker_repo
             .unlink_worker_slot(worker_id)

@@ -82,13 +82,12 @@ For read-only multi-worker mounts (no pool-limit counting, no DB tracking):
 ### Release Slot
 
 1. Process stops -> `RepoPoolManager::release_slot(worker_id, slot_path)`
-2. Looks up slot in DB by host path to get `project_key` and `slot_name`
-3. Calls `BuilderPoolClient::clean_slot(project_key, slot_name)`:
-   a. `BuilderPoolHandler::clean_slot()` on builderd runs `reset_slot()` (fetch + checkout
-      master + reset --hard + clean -fdx + submodule update) without applying local overlays
-   b. On failure, logs a warning but does not block the unlink
-4. `worker_repo.unlink_worker_slot(worker_id)` removes the worker-slot join row
-5. Slot is now available for the next `find_available_slot` query
+2. `worker_repo.unlink_worker_slot(worker_id)` removes only this worker's worker-slot join row
+3. Slot is now available for the next `find_available_slot` query
+
+Release never touches the slot's contents (ur-j5puq): the next `acquire_slot` recycles it
+(`RecycleSlot`: fetch + reset) under the new owner's claim. A stale or concurrent release can
+therefore never reset a slot another worker already holds.
 
 ## Slot Layout
 
@@ -103,7 +102,7 @@ For read-only multi-worker mounts (no pool-limit counting, no DB tracking):
 ## Key Files
 
 - `crates/server/src/pool.rs` — `RepoPoolManager` (DB orchestration: acquire, release, slot linking)
-- `crates/server/src/builder_pool_client.rs` — `BuilderPoolClient` (typed wrappers for 6 RPCs)
+- `crates/server/src/builder_pool_client.rs` — `BuilderPoolClient` (typed wrappers for 5 RPCs)
 - `crates/builderd/src/pool_handler.rs` — `BuilderPoolHandler` (all filesystem/git operations)
 - `proto/builder_pool.proto` — `BuilderPoolService` proto definition
 - `crates/server/src/grpc_hostexec.rs` — `HostExecServiceHandler` (separate path: worker -> server -> builderd)

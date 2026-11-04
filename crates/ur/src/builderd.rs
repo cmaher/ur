@@ -100,30 +100,23 @@ pub fn start_builderd(config: &ur_config::Config, output: &OutputManager) -> Res
     let args = builderd_args(config);
     let addr = builderd_dial_addr(&args, config.builderd_port);
 
-    let mut child = std::process::Command::new(&bin)
+    let mut command = std::process::Command::new(&bin);
+    command
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(stderr_file))
         // Put builderd in its own process group so signals sent to the ur CLI
         // (e.g. Ctrl-C) don't propagate to the daemon.
-        .process_group(0)
-        .spawn()
-        .context("failed to spawn builderd — is it installed and on PATH?")?;
-
-    let pid = child.id();
-    std::fs::write(&pid_file, pid.to_string())?;
-    // builderd adopts surviving local workers before it listens, and exits
-    // if it cannot; only a listening port means it is up.
-    if let Err(e) = wait_for_builderd(&mut child, addr, BUILDERD_START_TIMEOUT) {
-        let _ = child.kill();
-        let _ = std::fs::remove_file(&pid_file);
-        anyhow::bail!(
-            "builderd failed to start: {e}; see {} and {}",
-            config.logs_dir.join("builderd.log*").display(),
-            stderr_path.display()
-        );
-    }
+        .process_group(0);
+    let pid = spawn_until_listening(&mut command, &pid_file, addr, BUILDERD_START_TIMEOUT)
+        .with_context(|| {
+            format!(
+                "builderd failed to start; see {} and {}",
+                config.logs_dir.join("builderd.log*").display(),
+                stderr_path.display()
+            )
+        })?;
     info!(pid, "builderd started");
     output.print_text(&format!("builderd started (pid {pid})"));
 
@@ -133,6 +126,29 @@ pub fn start_builderd(config: &ur_config::Config, output: &OutputManager) -> Res
 
 /// How long `ur start` waits for builderd to listen.
 const BUILDERD_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Spawn `command`, record its PID in `pid_file`, and wait until it listens
+/// on `addr`. builderd adopts surviving local workers before it listens and
+/// exits if it cannot, so only a listening port means it is up. On failure
+/// the child is killed and the PID file removed.
+fn spawn_until_listening(
+    command: &mut std::process::Command,
+    pid_file: &std::path::Path,
+    addr: std::net::SocketAddr,
+    timeout: std::time::Duration,
+) -> Result<u32> {
+    let mut child = command
+        .spawn()
+        .context("failed to spawn builderd — is it installed and on PATH?")?;
+    let pid = child.id();
+    std::fs::write(pid_file, pid.to_string())?;
+    if let Err(e) = wait_for_builderd(&mut child, addr, timeout) {
+        let _ = child.kill();
+        let _ = std::fs::remove_file(pid_file);
+        return Err(e);
+    }
+    Ok(pid)
+}
 
 /// Where the host dials builderd: its `--bind` address, else loopback.
 fn builderd_dial_addr(args: &[String], port: u16) -> std::net::SocketAddr {
@@ -168,18 +184,31 @@ fn wait_for_builderd(
     }
 }
 
-/// Whether a live builderd owns the PID file.
-pub fn builderd_running(config: &ur_config::Config) -> bool {
-    std::fs::read_to_string(config.config_dir.join(ur_config::BUILDERD_PID_FILE))
+/// Whether a live builderd owns the PID file in `config_dir`.
+fn builderd_running(config_dir: &std::path::Path) -> bool {
+    std::fs::read_to_string(config_dir.join(ur_config::BUILDERD_PID_FILE))
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
         .is_some_and(is_builderd_running)
 }
 
-/// builderd's gRPC endpoint as the host dials it.
-pub fn builderd_endpoint(config: &ur_config::Config) -> String {
-    let addr = builderd_dial_addr(&builderd_args(config), config.builderd_port);
-    format!("http://{addr}")
+/// The builderd endpoint `ur stop` tears local workers down through, or
+/// `None` when no builderd is running.
+pub fn local_stop_endpoint(config: &ur_config::Config) -> Option<String> {
+    builderd_running(&config.config_dir).then(|| {
+        let addr = builderd_dial_addr(&builderd_args(config), config.builderd_port);
+        format!("http://{addr}")
+    })
+}
+
+/// `ur stop`'s gate: `shutdown` (compose down, builderd stop) runs only once
+/// `stop_local` succeeded, so no local worker is left in a stopped builderd.
+pub async fn after_local_workers_stopped<T>(
+    stop_local: impl std::future::Future<Output = Result<()>>,
+    shutdown: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    stop_local.await?;
+    shutdown()
 }
 
 /// `ur stop`: tear down every local worker builderd hosts, whatever its row
@@ -362,6 +391,100 @@ mod tests {
         wait_for_builderd(&mut child, addr, timeout).unwrap();
         drop(listener);
         let _ = child.kill();
+    }
+
+    /// U4: `start_builderd`'s spawn waits for the port; an exiting child is
+    /// an error and leaves no PID file.
+    #[test]
+    fn spawn_until_listening_fails_on_exit_and_records_pid_when_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pid_file = tmp.path().join("builderd.pid");
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = free.local_addr().unwrap();
+        drop(free);
+        let timeout = std::time::Duration::from_secs(5);
+
+        let mut exits = std::process::Command::new("sh");
+        exits.args(["-c", "exit 3"]);
+        let err = spawn_until_listening(&mut exits, &pid_file, addr, timeout).unwrap_err();
+        assert!(err.to_string().contains("exited"), "{err}");
+        assert!(!pid_file.exists(), "PID file removed");
+
+        let listener = std::net::TcpListener::bind(addr).unwrap();
+        let mut up = std::process::Command::new("sleep");
+        up.arg("5");
+        let pid = spawn_until_listening(&mut up, &pid_file, addr, timeout).unwrap();
+        assert_eq!(std::fs::read_to_string(&pid_file).unwrap(), pid.to_string());
+        drop(listener);
+        let _ = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .output();
+    }
+
+    /// U5: compose down and the builderd stop run only after every local
+    /// worker stopped.
+    #[tokio::test]
+    async fn shutdown_runs_only_after_local_workers_stopped() {
+        let ran = std::cell::Cell::new(false);
+        let err = after_local_workers_stopped(async { anyhow::bail!("w1: boom") }, || {
+            ran.set(true);
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("w1: boom"));
+        assert!(!ran.get(), "shutdown must not run");
+
+        after_local_workers_stopped(async { Ok(()) }, || {
+            ran.set(true);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(ran.get());
+    }
+
+    /// U6: only a live process named `builderd` owning the PID file counts.
+    #[test]
+    fn builderd_running_requires_a_live_builderd_process() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let pid_file = dir.join(ur_config::BUILDERD_PID_FILE);
+        assert!(!builderd_running(dir), "no PID file");
+        std::fs::write(&pid_file, "garbage").unwrap();
+        assert!(!builderd_running(dir), "unparseable");
+        std::fs::write(&pid_file, std::process::id().to_string()).unwrap();
+        assert!(
+            !builderd_running(dir),
+            "a live process that is not builderd"
+        );
+
+        // A real binary named `builderd`: tmux, run as a foreground server
+        // on a throwaway socket.
+        let out = std::process::Command::new("sh")
+            .args(["-c", "command -v tmux"])
+            .output()
+            .unwrap();
+        let fake = dir.join("builderd");
+        std::fs::copy(String::from_utf8(out.stdout).unwrap().trim(), &fake).unwrap();
+        let socket = format!("ur-test-bdrun-{}", std::process::id());
+        let mut child = std::process::Command::new(&fake)
+            .args(["-L", &socket, "-f", "/dev/null", "-D"])
+            .spawn()
+            .unwrap();
+        std::fs::write(&pid_file, child.id().to_string()).unwrap();
+        let mut seen = false;
+        for _ in 0..50 {
+            if builderd_running(dir) {
+                seen = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(seen, "live builderd detected");
+        assert!(!builderd_running(dir), "exited builderd is not running");
     }
 
     #[test]

@@ -348,7 +348,7 @@ Drop a project-specific CLAUDE.md at:
 
 Workers on that project will read your local CLAUDE.md instead of the repo's version, with no `ur.toml` change required and no risk of accidentally committing the override.
 
-**Reverting:** Removing the file from `local/` reverts the slot's working copy to repo HEAD on the next recycle. `reset_slot()` clears all `skip-worktree` bits and discards `.git/ur-overlay/` before resetting, so `git reset --hard` and `git clean -fdx` operate normally and a slot cleaned by `CleanSlot` gets no overlays back.
+**Reverting:** Removing the file from `local/` reverts the slot's working copy to repo HEAD on the next recycle. `reset_slot()` clears all `skip-worktree` bits and discards `.git/ur-overlay/` before resetting, so `git reset --hard` and `git clean -fdx` operate normally before the current overlays are re-applied.
 
 **Pool mode only.** This mechanism is exclusive to pool slots. Workers launched with `-w` (workspace mode) mount the caller's working directory directly and do not use the `local/` overlay.
 
@@ -365,7 +365,7 @@ The copy runs **after** clone/reset and **before** container launch:
 3. Worker branch checkout (`git checkout -b <worker_id>`)
 4. Container launched with the slot as `/workspace`
 
-On slot release, `reset_slot()` first clears all `skip-worktree` bits (`git update-index --no-skip-worktree`) and discards `.git/ur-overlay/` so that `git reset --hard origin/master` and `git clean -fdx` can restore every file to repo HEAD. Local files are re-copied on the next acquire.
+Release does not touch the slot. On the next acquire (`RecycleSlot`), `reset_slot()` first clears all `skip-worktree` bits (`git update-index --no-skip-worktree`) and discards `.git/ur-overlay/` so that `git reset --hard origin/master` and `git clean -fdx` can restore every file to repo HEAD. Local files are re-copied on the next acquire.
 
 ### Error Behavior
 

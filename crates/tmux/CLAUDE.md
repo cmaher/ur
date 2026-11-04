@@ -28,6 +28,8 @@ the host CLI (attach command generation), and host-local worker management (dedi
   (`#{session_path}`) read a session back; builderd uses them to adopt sessions after a restart.
 - A server that is exiting (after its last session was killed) answers "no current target" or
   "server exited unexpectedly"; both count as no session / no server.
+- `override_program_for_socket(socket, program)` runs `program` instead of `tmux` for every
+  invocation on that `-L` socket (test seam for fault injection; never used in production).
 - `kill()` is idempotent (missing session/server is `Ok`); `exists()` uses `has-session`;
   `Session::list_sessions(socket)` returns an empty list when the server is not running.
 - **Every** op uses an exact-match target so `ur-w1` never prefix-matches `ur-w10`:

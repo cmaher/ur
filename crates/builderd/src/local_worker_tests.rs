@@ -657,3 +657,132 @@ fn adoptable_rejects_only_bad_env_and_unsupported_agents() {
         );
     }
 }
+
+// ---- tmux fault injection ----
+//
+// `fail_tmux` routes this fixture's socket (only) through a wrapper that
+// fails the listed tmux subcommands and passes everything else to the real
+// tmux (`tmux::override_program_for_socket`; no PATH or env mutation).
+
+impl Fixture {
+    fn fail_tmux(&self, ops: &[&str]) {
+        let wrapper = self.path("bin/tmux-faults");
+        let fail_list = self.path("tmux-fail");
+        if !wrapper.exists() {
+            let out = std::process::Command::new("sh")
+                .args(["-c", "command -v tmux"])
+                .output()
+                .unwrap();
+            let real = String::from_utf8(out.stdout).unwrap().trim().to_owned();
+            write_exec(
+                &wrapper,
+                &format!(
+                    "#!/bin/sh\nfor op in $(cat '{list}' 2>/dev/null); do\n  for a in \"$@\"; do\n    \
+                     [ \"$a\" = \"$op\" ] && {{ echo \"error connecting to /tmp/x (Permission denied)\" >&2; exit 1; }}\n  \
+                     done\ndone\nexec '{real}' \"$@\"\n",
+                    list = fail_list.display()
+                ),
+            );
+            tmux::override_program_for_socket(&self.socket, wrapper);
+        }
+        fs::write(fail_list, ops.join("\n")).unwrap();
+    }
+}
+
+/// A failed session list aborts adoption: builderd must not serve an
+/// under-reported ListLocalWorkers.
+#[tokio::test(flavor = "multi_thread")]
+async fn adopt_aborts_when_sessions_cannot_be_listed() {
+    let f = Fixture::new("faillist", Duration::from_secs(3600));
+    let slot = f.slot("slot");
+    f.manager
+        .launch(&f.request("w1", &slot), f.env())
+        .await
+        .unwrap();
+    let (manager, registry) = f.restarted();
+    f.fail_tmux(&["list-sessions"]);
+    let res = manager.adopt_existing().await;
+    f.fail_tmux(&[]);
+    assert!(res.is_err(), "adoption must fail closed on a list error");
+    assert!(f.session("w1").exists().await.unwrap());
+    assert!(f.drive("w1").exists(), "live worker's drive kept");
+    assert!(!registry.contains("w1"));
+    f.manager.stop("w1").await.unwrap();
+}
+
+/// A tmux error reading a live session's env aborts adoption and spares it.
+#[tokio::test(flavor = "multi_thread")]
+async fn adopt_aborts_and_spares_session_on_env_read_error() {
+    let f = Fixture::new("failenv", Duration::from_secs(3600));
+    let slot = f.slot("slot");
+    f.manager
+        .launch(&f.request("w1", &slot), f.env())
+        .await
+        .unwrap();
+    let (manager, registry) = f.restarted();
+    f.fail_tmux(&["show-environment"]);
+    let res = manager.adopt_existing().await;
+    f.fail_tmux(&[]);
+    assert!(res.is_err(), "a transient read error must be fatal");
+    assert!(
+        f.session("w1").exists().await.unwrap(),
+        "live session spared"
+    );
+    assert!(f.drive("w1").exists());
+    assert!(!registry.contains("w1"));
+    f.manager.stop("w1").await.unwrap();
+}
+
+/// A failed kill keeps the worker registered (listed alive) and Stop
+/// returns the error; a later Stop succeeds.
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_kill_keeps_worker_listed() {
+    let f = Fixture::new("failkill", Duration::from_secs(3600));
+    let slot = f.slot("slot");
+    f.manager
+        .launch(&f.request("w1", &slot), f.env())
+        .await
+        .unwrap();
+    f.fail_tmux(&["kill-session"]);
+    let res = f.manager.stop("w1").await;
+    f.fail_tmux(&[]);
+    assert!(res.is_err());
+    assert!(f.session("w1").exists().await.unwrap());
+    assert_eq!(
+        f.manager.list().await.unwrap(),
+        vec![("w1".to_owned(), true)]
+    );
+    assert!(f.drive("w1").exists(), "drive kept while the session lives");
+    f.manager.stop("w1").await.unwrap();
+    f.assert_gone("w1").await;
+}
+
+/// A launch that fails after its session exists but before it is
+/// registered, whose cleanup kill also fails, leaves a live unregistered
+/// session. The server's cleanup StopLocalWorker must not report success
+/// while it lives (the server would then drop the row and the slot).
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_after_failed_launch_never_ok_while_session_lives() {
+    let f = Fixture::new("faillaunch", Duration::from_secs(3600));
+    let slot = f.slot("slot");
+    write_exec(&slot.join("ur-hooks/startup-bg/10-bg"), "#!/bin/sh\ntrue\n");
+    f.fail_tmux(&["new-window", "kill-session"]);
+    let launch = f.manager.launch(&f.request("w1", &slot), f.env()).await;
+    f.fail_tmux(&["kill-session"]);
+    assert!(launch.is_err());
+    assert!(
+        f.session("w1").exists().await.unwrap(),
+        "session left alive"
+    );
+    assert!(!f.registry.contains("w1"), "and unregistered");
+
+    assert!(
+        f.manager.stop("w1").await.is_err(),
+        "Stop while ur-w1 lives"
+    );
+    assert!(f.session("w1").exists().await.unwrap());
+
+    f.fail_tmux(&[]);
+    f.manager.stop("w1").await.unwrap();
+    assert!(!f.session("w1").exists().await.unwrap(), "Stop kills it");
+}
