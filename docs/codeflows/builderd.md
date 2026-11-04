@@ -170,7 +170,10 @@ skill to its resolved source, and `check_assets` checks the same resolution.
 or credential gate. Mounts, memory/brain dirs, instruction file and host skills are host
 paths (templates resolve against the host config dir). Stop marks the row `stopping`, calls
 `StopLocalWorker`, and only on success releases the slot and marks it `stopped`; on failure
-the row stays `stopping` (retry is ur-j5puq). Client: `BuilderLocalWorkerClient`
+the row stays `stopping` (retry is ur-j5puq). On server restart, `WorkerRepo::reconcile_workers`
+reports `runtime = local` rows as indeterminate and leaves them unchanged instead of
+Docker-inspecting `ur-<id>` (which would mark a live worker stopped and free its slot); this
+is a stopgap until reconciliation against `ListLocalWorkers` (ur-j5puq). Client: `BuilderLocalWorkerClient`
 (`crates/server/src/builder_local_worker_client.rs`).
 
 Teardown (stop, failed launch, agent exit): kill the session → deregister (abort the exit
