@@ -1,7 +1,8 @@
 // `runtime = local` launch/stop through `WorkerManager` against a fake
 // builderd serving only `BuilderLocalWorkerService`: builderd errors reach the
 // caller, a failed launch deletes the provisional row, and a failed stop
-// leaves the row `stopping`.
+// leaves the row `stopping`. Also `LocalWorkerReconcileManager` passes
+// against the fake's `ListLocalWorkers`.
 
 use std::sync::{Arc, Mutex};
 
@@ -13,8 +14,10 @@ use ur_rpc::proto::builder_local_worker::builder_local_worker_service_server::{
 };
 use ur_rpc::proto::builder_local_worker::{
     LaunchLocalWorkerRequest, LaunchLocalWorkerResponse, ListLocalWorkersRequest,
-    ListLocalWorkersResponse, StopLocalWorkerRequest, StopLocalWorkerResponse,
+    ListLocalWorkersResponse, LocalWorkerStatus, StopLocalWorkerRequest, StopLocalWorkerResponse,
 };
+use ur_server::builder_local_worker_client::BuilderLocalWorkerClient;
+use ur_server::local_reconcile::LocalWorkerReconcileManager;
 
 const WORKER_PORT: u16 = 23456;
 
@@ -25,6 +28,9 @@ struct FakeBuilderd {
     stops: Arc<Mutex<Vec<String>>>,
     launch_error: Arc<Mutex<Option<Status>>>,
     stop_error: Arc<Mutex<Option<Status>>>,
+    /// `ListLocalWorkers` answer: `(worker_id, session_alive)`.
+    listed: Arc<Mutex<Vec<(String, bool)>>>,
+    list_error: Arc<Mutex<Option<Status>>>,
 }
 
 #[tonic::async_trait]
@@ -58,7 +64,20 @@ impl BuilderLocalWorkerService for FakeBuilderd {
         &self,
         _request: Request<ListLocalWorkersRequest>,
     ) -> Result<Response<ListLocalWorkersResponse>, Status> {
-        Ok(Response::new(ListLocalWorkersResponse::default()))
+        if let Some(status) = self.list_error.lock().unwrap().clone() {
+            return Err(status);
+        }
+        let workers = self
+            .listed
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(worker_id, session_alive)| LocalWorkerStatus {
+                worker_id: worker_id.clone(),
+                session_alive: *session_alive,
+            })
+            .collect();
+        Ok(Response::new(ListLocalWorkersResponse { workers }))
     }
 }
 
@@ -67,6 +86,7 @@ struct Harness {
     worker_manager: ur_server::WorkerManager,
     launch_manager: ur_server::grpc::LaunchManager,
     worker_repo: workflow_db::WorkerRepo,
+    local_client: BuilderLocalWorkerClient,
     slot: std::path::PathBuf,
     _tmp: tempfile::TempDir,
     _test_db: ur_db_test::TestDb,
@@ -126,7 +146,7 @@ async fn harness() -> Harness {
         worker_repo.clone(),
         config.global_skills.clone(),
         builder_container_client,
-        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(local_channel),
+        BuilderLocalWorkerClient::new(local_channel.clone()),
     );
     let ticket_pool = test_db.ticket_pool().clone();
     let launch_manager = ur_server::grpc::LaunchManager {
@@ -154,6 +174,7 @@ async fn harness() -> Harness {
         worker_manager,
         launch_manager,
         worker_repo,
+        local_client: BuilderLocalWorkerClient::new(local_channel),
         slot,
         _tmp: tmp,
         _test_db: test_db,
@@ -290,4 +311,114 @@ async fn local_launch_runs_then_stop_keeps_stopping_until_builderd_succeeds() {
         *h.fake.stops.lock().unwrap(),
         vec!["local-1-bbbb".to_owned(), "local-1-bbbb".to_owned()]
     );
+}
+
+fn reconciler(h: &Harness) -> LocalWorkerReconcileManager {
+    LocalWorkerReconcileManager::new(
+        h.worker_manager.clone(),
+        h.worker_repo.clone(),
+        h.local_client.clone(),
+        std::time::Duration::from_secs(3600),
+    )
+}
+
+/// A `running` local row (launched through the fake), optionally moved to `status`.
+async fn local_row(h: &Harness, worker_id: &str, status: &str) {
+    h.worker_manager
+        .run_and_record(local_config(h, worker_id))
+        .await
+        .unwrap();
+    if status != "running" {
+        h.worker_repo
+            .update_worker_container_status(worker_id, status)
+            .await
+            .unwrap();
+    }
+}
+
+async fn status_of(h: &Harness, worker_id: &str) -> String {
+    h.worker_repo
+        .get_worker(worker_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .container_status
+}
+
+fn set_listed(h: &Harness, listed: &[(&str, bool)]) {
+    *h.fake.listed.lock().unwrap() = listed.iter().map(|(id, a)| (id.to_string(), *a)).collect();
+}
+
+#[tokio::test]
+async fn reconcile_list_error_changes_nothing() {
+    let h = harness().await;
+    local_row(&h, "local-1-gone", "running").await;
+    local_row(&h, "local-1-stop", "stopping").await;
+    *h.fake.list_error.lock().unwrap() = Some(Status::unavailable("builderd restarting"));
+
+    let err = reconciler(&h).reconcile_once().await.unwrap_err();
+    assert!(err.contains("builderd restarting"), "{err}");
+    assert_eq!(status_of(&h, "local-1-gone").await, "running");
+    assert_eq!(status_of(&h, "local-1-stop").await, "stopping");
+    assert!(h.fake.stops.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn reconcile_leaves_live_and_provisioning_workers_alone() {
+    let h = harness().await;
+    local_row(&h, "local-1-live", "running").await;
+    local_row(&h, "local-1-prov", "provisioning").await;
+    local_row(&h, "local-1-prv2", "provisioning").await;
+    // A provisioning worker builderd already registered is a launch in flight.
+    set_listed(&h, &[("local-1-live", true), ("local-1-prv2", true)]);
+
+    reconciler(&h).reconcile_once().await.unwrap();
+    assert_eq!(status_of(&h, "local-1-live").await, "running");
+    assert_eq!(status_of(&h, "local-1-prov").await, "provisioning");
+    assert_eq!(status_of(&h, "local-1-prv2").await, "provisioning");
+    assert!(h.fake.stops.lock().unwrap().is_empty());
+}
+
+/// External kill: builderd tore the worker down (unlisted), or its session is
+/// dead but still registered. One pass stops both; a failing builderd stop
+/// leaves them `stopping` until a later pass succeeds.
+#[tokio::test]
+async fn reconcile_stops_gone_and_dead_workers_retrying_failed_stops() {
+    let h = harness().await;
+    local_row(&h, "local-1-gone", "running").await;
+    local_row(&h, "local-1-dead", "running").await;
+    set_listed(&h, &[("local-1-dead", false)]);
+    *h.fake.stop_error.lock().unwrap() = Some(Status::internal("remove drive: busy"));
+
+    reconciler(&h).reconcile_once().await.unwrap();
+    assert_eq!(status_of(&h, "local-1-gone").await, "stopping");
+    assert_eq!(status_of(&h, "local-1-dead").await, "stopping");
+
+    reconciler(&h).reconcile_once().await.unwrap();
+    assert_eq!(
+        status_of(&h, "local-1-dead").await,
+        "stopping",
+        "still failing"
+    );
+
+    *h.fake.stop_error.lock().unwrap() = None;
+    set_listed(&h, &[]);
+    reconciler(&h).reconcile_once().await.unwrap();
+    assert_eq!(status_of(&h, "local-1-gone").await, "stopped");
+    assert_eq!(status_of(&h, "local-1-dead").await, "stopped");
+    let stops = h.fake.stops.lock().unwrap().clone();
+    assert_eq!(stops.len(), 6, "{stops:?}");
+}
+
+#[tokio::test]
+async fn reconcile_stops_listed_workers_without_an_active_row() {
+    let h = harness().await;
+    local_row(&h, "local-1-done", "stopped").await;
+    set_listed(&h, &[("local-1-done", true), ("local-1-ghst", true)]);
+
+    reconciler(&h).reconcile_once().await.unwrap();
+    let mut stops = h.fake.stops.lock().unwrap().clone();
+    stops.sort();
+    assert_eq!(stops, vec!["local-1-done", "local-1-ghst"]);
+    assert_eq!(status_of(&h, "local-1-done").await, "stopped");
 }

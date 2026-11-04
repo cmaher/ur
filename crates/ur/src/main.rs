@@ -443,7 +443,10 @@ async fn stop_server(
     if let Some(channel) = connection::try_connect(port) {
         let mut client = CoreServiceClient::new(channel);
         info!("server reachable — stopping workers via gRPC");
-        stop_workers_via_grpc(&mut client, output).await;
+        let failed = stop_workers_via_grpc(&mut client, output).await;
+        // builderd hosts local workers' sessions and drives: stopping it (or
+        // the server) with one still running would strand it.
+        check_local_workers_stopped(&failed)?;
     } else {
         info!("server unreachable — stopping workers via Docker");
         kill_all_containers(&config.network.worker_prefix, output)?;
@@ -503,22 +506,49 @@ fn redeploy_component(
     Ok(())
 }
 
+/// A worker `ur stop` could not stop.
+struct FailedStop {
+    worker_id: String,
+    runtime: String,
+    error: String,
+}
+
+/// Fail `ur stop` before the server and builderd go down if a local worker
+/// could not be stopped; container worker failures stay warnings.
+fn check_local_workers_stopped(failed: &[FailedStop]) -> Result<()> {
+    let local: Vec<String> = failed
+        .iter()
+        .filter(|f| f.runtime == ur_config::WorkerRuntime::Local.as_str())
+        .map(|f| format!("{}: {}", f.worker_id, f.error))
+        .collect();
+    if local.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "failed to stop local workers; server and builderd left running so they can be retried:\n{}",
+        local.join("\n")
+    )
+}
+
 /// Stop all running workers via the server's gRPC API in parallel.
 ///
-/// Best-effort: logs warnings for individual failures but does not propagate errors,
-/// since the server is about to be stopped anyway.
-async fn stop_workers_via_grpc(client: &mut CoreServiceClient<Channel>, output: &OutputManager) {
+/// Logs and prints a warning per failure and returns the failures; the
+/// caller decides which ones block shutdown.
+async fn stop_workers_via_grpc(
+    client: &mut CoreServiceClient<Channel>,
+    output: &OutputManager,
+) -> Vec<FailedStop> {
     let workers = match client.worker_list(WorkerListRequest {}).await {
         Ok(resp) => resp.into_inner().workers,
         Err(e) => {
             warn!(error = %e, "failed to list workers via gRPC");
-            return;
+            return Vec::new();
         }
     };
 
     if workers.is_empty() {
         output.print_text("No workers running");
-        return;
+        return Vec::new();
     }
 
     info!(
@@ -530,18 +560,20 @@ async fn stop_workers_via_grpc(client: &mut CoreServiceClient<Channel>, output: 
     for w in &workers {
         let mut c = client.clone();
         let wid = w.worker_id.clone();
+        let runtime = w.runtime.clone();
         set.spawn(async move {
             let result = c
                 .worker_stop(WorkerStopRequest {
                     worker_id: wid.clone(),
                 })
                 .await;
-            (wid, result)
+            (wid, runtime, result)
         });
     }
 
+    let mut failed = Vec::new();
     while let Some(join_result) = set.join_next().await {
-        let (wid, result) = join_result.expect("worker stop task panicked");
+        let (wid, runtime, result) = join_result.expect("worker stop task panicked");
         let result: Result<(), tonic::Status> = result.map(|_| ());
         match result {
             Ok(_) => {
@@ -557,9 +589,15 @@ async fn stop_workers_via_grpc(client: &mut CoreServiceClient<Channel>, output: 
             Err(e) => {
                 warn!(worker_id = %wid, error = %e, "failed to stop worker via gRPC");
                 eprintln!("Warning: failed to stop {wid}: {e}");
+                failed.push(FailedStop {
+                    worker_id: wid,
+                    runtime,
+                    error: e.message().to_owned(),
+                });
             }
         }
     }
+    failed
 }
 
 async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
@@ -1779,6 +1817,30 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn failed_stop(worker_id: &str, runtime: &str) -> FailedStop {
+        FailedStop {
+            worker_id: worker_id.to_owned(),
+            runtime: runtime.to_owned(),
+            error: format!("{worker_id} boom"),
+        }
+    }
+
+    /// `ur stop` must not take down the server and builderd while a local
+    /// worker's session may still be alive; container failures stay warnings.
+    #[test]
+    fn ur_stop_blocks_shutdown_only_on_local_worker_failures() {
+        assert!(check_local_workers_stopped(&[]).is_ok());
+        assert!(check_local_workers_stopped(&[failed_stop("c1", "container")]).is_ok());
+        let err = check_local_workers_stopped(&[
+            failed_stop("c1", "container"),
+            failed_stop("l1", "local"),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("l1: l1 boom"), "{err}");
+        assert!(!err.contains("c1"), "{err}");
+    }
 
     fn project_keys() -> Vec<String> {
         vec!["ur".to_owned(), "myproj".to_owned()]

@@ -1,7 +1,9 @@
 use tonic::Status;
 
 use ur_rpc::proto::builder_local_worker::builder_local_worker_service_client::BuilderLocalWorkerServiceClient;
-use ur_rpc::proto::builder_local_worker::{LaunchLocalWorkerRequest, StopLocalWorkerRequest};
+use ur_rpc::proto::builder_local_worker::{
+    LaunchLocalWorkerRequest, ListLocalWorkersRequest, LocalWorkerStatus, StopLocalWorkerRequest,
+};
 
 /// Clone-able wrapper around the generated `BuilderLocalWorkerServiceClient`,
 /// sharing builderd's retry channel with the other builderd clients.
@@ -38,5 +40,16 @@ impl BuilderLocalWorkerClient {
             })
             .await?;
         Ok(())
+    }
+
+    /// builderd's registered local workers and whether each session is alive.
+    pub async fn list_local_workers(&self) -> Result<Vec<LocalWorkerStatus>, Status> {
+        Ok(self
+            .inner
+            .clone()
+            .list_local_workers(ListLocalWorkersRequest {})
+            .await?
+            .into_inner()
+            .workers)
     }
 }

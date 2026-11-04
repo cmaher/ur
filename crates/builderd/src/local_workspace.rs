@@ -38,6 +38,8 @@ use crate::local_settings::{DriveLink, LocalSettingsManager};
 const DRIVE_DIR: &str = "drive";
 const UR_DIR: &str = ".ur";
 const BRAIN_LINK: &str = "brain";
+/// `.ur/owner`: the agent name and slot path, one per line.
+const OWNER_FILE: &str = "owner";
 /// Per-drive `agent_shared` stand-in holding only `potential-skills/`, with
 /// one link per requested skill to its resolved source.
 const SKILL_SOURCES_DIR: &str = "skill-sources";
@@ -155,6 +157,15 @@ impl LocalWorkspaceManager {
         tokio::fs::create_dir_all(&ur_dir)
             .await
             .map_err(io(format!("create {}", ur_dir.display())))?;
+        // Written before the memory link so an orphan drive can always be
+        // torn down without a session (see `teardown_orphan`).
+        let owner = ur_dir.join(OWNER_FILE);
+        tokio::fs::write(
+            &owner,
+            format!("{}\n{}", req.agent.name(), req.slot_path.display()),
+        )
+        .await
+        .map_err(io(format!("write {}", owner.display())))?;
 
         let links = self.link_mounts(&drive, req).await?;
         self.link_memory(req).await?;
@@ -446,6 +457,38 @@ impl LocalWorkspaceManager {
             first_err.get_or_insert(e);
         }
         first_err.map_or(Ok(()), Err)
+    }
+
+    /// Ids with a directory under `drive/`; none when `drive/` is missing.
+    pub async fn drive_ids(&self) -> Result<Vec<String>> {
+        let root = self.workspace_root.join(DRIVE_DIR);
+        let ctx = format!("list {}", root.display());
+        let mut entries = match tokio::fs::read_dir(&root).await {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(io(ctx)(e)),
+        };
+        let mut ids = Vec::new();
+        while let Some(entry) = entries.next_entry().await.map_err(io(&ctx))? {
+            ids.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        ids.sort();
+        Ok(ids)
+    }
+
+    /// Tear down a drive with no session, taking the slot and agent from its
+    /// `.ur/owner`. Without a readable owner only the drive is removed.
+    pub async fn teardown_orphan(&self, worker_id: &str) -> Result<()> {
+        validate_worker_id(worker_id)?;
+        let owner = self.drive_path(worker_id).join(UR_DIR).join(OWNER_FILE);
+        let parsed = tokio::fs::read_to_string(&owner).await.ok().and_then(|s| {
+            let (agent, slot) = s.split_once('\n')?;
+            Some((AgentType::parse(agent).ok()?, PathBuf::from(slot)))
+        });
+        match parsed {
+            Some((agent, slot)) => self.teardown(worker_id, &slot, agent).await,
+            None => remove_tree_if_present(&self.drive_path(worker_id)).await,
+        }
     }
 }
 

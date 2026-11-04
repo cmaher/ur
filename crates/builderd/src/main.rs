@@ -134,6 +134,13 @@ async fn main() -> anyhow::Result<()> {
 
     let container_handler = container_handler::BuilderContainerHandler::new();
 
+    // Before serving: ListLocalWorkers must never under-report live sessions
+    // left by a previous builderd (the server releases unlisted slots).
+    local_workers
+        .adopt_existing()
+        .await
+        .map_err(|s| anyhow::anyhow!("adopt local workers: {}", s.message()))?;
+
     Server::builder()
         .add_service(BuilderDaemonServiceServer::new(handler))
         .add_service(BuilderContainerServiceServer::new(container_handler))

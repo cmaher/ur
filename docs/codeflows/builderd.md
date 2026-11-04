@@ -152,7 +152,9 @@ any failure after build → teardown → error
 Session env: the request env (the server supplies `UR_WORKER_SECRET`,
 `UR_SERVER_ADDR=127.0.0.1:<worker_port>`, `UR_PROJECT`, `UR_WORKER_FORGE`) followed by
 builderd's own `UR_WORKER_ID`, `UR_WORKERD_ADDR`, `UR_AGENT_TYPE`, `UR_DRIVE`,
-`UR_RUNTIME=local`, which the request cannot override. builderd derives `UR_WORKERD_ADDR`
+`UR_RUNTIME=local` and (when set) `UR_WORKER_INSTRUCTION_STRATEGY`, which the request cannot
+override. Adoption reads them back. The drive's `.ur/owner` records the agent and slot path so
+an orphan drive's memory link can be removed without a session. builderd derives `UR_WORKERD_ADDR`
 from its own listen address (an unspecified bind maps to `127.0.0.1`), because on Linux it
 binds the Docker bridge IP, which the server cannot know.
 
@@ -170,16 +172,28 @@ skill to its resolved source, and `check_assets` checks the same resolution.
 or credential gate. Mounts, memory/brain dirs, instruction file and host skills are host
 paths (templates resolve against the host config dir). Stop marks the row `stopping`, calls
 `StopLocalWorker`, and only on success releases the slot and marks it `stopped`; on failure
-the row stays `stopping` (retry is ur-j5puq). On server restart, `WorkerRepo::reconcile_workers`
-reports `runtime = local` rows as indeterminate and leaves them unchanged instead of
-Docker-inspecting `ur-<id>` (which would mark a live worker stopped and free its slot); this
-is a stopgap until reconciliation against `ListLocalWorkers` (ur-j5puq). Client: `BuilderLocalWorkerClient`
+the row stays `stopping`. Client: `BuilderLocalWorkerClient`
 (`crates/server/src/builder_local_worker_client.rs`).
 
-Teardown (stop, failed launch, agent exit): kill the session → deregister (abort the exit
-watcher, unless the watcher itself is tearing down) → `LocalWorkspaceManager.teardown`.
-Every step is attempted; the first error is returned. The exit sink only tears down;
-notifying the server, the session watcher, and restart reconciliation are ur-j5puq.
+### Termination paths and reconciliation (ur-j5puq)
+
+Invariant (builderd): after startup a `ur-<id>` session exists only while `<id>` is
+registered, so `ListLocalWorkers` never omits a live session. Wrongly releasing a live
+worker's slot would let the next worker reset it and destroy uncommitted work, so the server
+releases a local slot only when builderd confirmed the id absent or `StopLocalWorker`
+succeeded.
+
+Teardown (stop, failed launch, agent exit, external kill): kill the session (abort the exit
+watcher unless it is the caller) → `LocalWorkspaceManager.teardown` → deregister. A failed
+step stops there and the worker stays registered (listed, `session_alive` false once killed),
+so the server's retried Stop runs teardown again.
+
+| Trigger | Path |
+|---|---|
+| Agent exit, external `kill-session` | workerd `ExitWatcherManager` (`PaneDead` / `AgentReturnedToShell`) → exit sink → teardown; the server sees the id leave the list on its next pass |
+| builderd restart / host reboot | `LocalWorkerManager::adopt_existing` in `main.rs` **before** `serve`: each `ur-<id>` session is re-registered from its env (`UR_WORKER_ID` must match, `UR_SERVER_ADDR`, `UR_WORKER_SECRET`, a local-capable `UR_AGENT_TYPE`, `UR_DRIVE` = this builderd's drive) and start dir (`#{session_path}` = slot), with a new exit watcher; an unadoptable session is killed (a failed kill aborts startup); then every `drive/<id>` without a registered worker gets `teardown_orphan` (links only). Session listing failure aborts startup; tmux not installed means no sessions |
+| Server start + every 15s | `LocalWorkerReconcileManager` (`crates/server/src/local_reconcile.rs`): reads active local rows, then `ListLocalWorkers`. List error → no change. `running` + listed alive → none; `running` not listed, `running` + session dead, or `stopping` → `stop_by_worker_id` (StopLocalWorker, then slot release + `stopped`; failure leaves `stopping` for the next pass); `provisioning` → none; listed id with no active row (re-read first) → `StopLocalWorker`. `WorkerRepo::reconcile_workers` skips local rows |
+| `ur stop` | stops every running worker via `WorkerStop` before `compose down` and builderd shutdown; a local failure aborts `ur stop` with the error |
 
 The routed `WorkerDaemonService` (`crates/builderd/src/workerd_router.rs`, `WorkerdRouter`)
 reads the `ur-worker-id` header (`ur_config::WORKER_ID_HEADER`) and delegates to that

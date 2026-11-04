@@ -24,6 +24,10 @@ the host CLI (attach command generation), and host-local worker management (dedi
   is set), so window 0 stays current and
   lifecycle checks keep targeting `<session>:0.0`. `send_keys_to_window()` is a plain
   type-then-Enter for shell windows (no Claude input-box handling).
+- `environment()` (`show-environment -t =name`, removed `-NAME` entries skipped) and `start_dir()`
+  (`#{session_path}`) read a session back; builderd uses them to adopt sessions after a restart.
+- A server that is exiting (after its last session was killed) answers "no current target" or
+  "server exited unexpectedly"; both count as no session / no server.
 - `kill()` is idempotent (missing session/server is `Ok`); `exists()` uses `has-session`;
   `Session::list_sessions(socket)` returns an empty list when the server is not running.
 - **Every** op uses an exact-match target so `ur-w1` never prefix-matches `ur-w10`:

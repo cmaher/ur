@@ -7,11 +7,17 @@
 //! agent argv typed into window 0. Any failure after the drive build runs the
 //! full teardown before the error is returned.
 //!
+//! Invariant (ur-j5puq): once [`LocalWorkerManager::adopt_existing`] has
+//! run, a `ur-<id>` session on the socket exists only while `<id>` is
+//! registered. Teardown kills the session first and deregisters last, so a
+//! failed kill or drive removal leaves the worker listed for a retried Stop.
+//!
 //! # Known limits
 //!
 //! - Sync startup hooks run with builderd's environment, not the session env.
-//! - An orphan `ur-<id>` session (e.g. after a builderd restart) makes Launch
-//!   return `AlreadyExists` and Stop a no-op; reconciliation is ur-j5puq.
+//! - An adopted design worker whose agent had already returned to the shell
+//!   before the restart is not detected as exited (its watcher starts in the
+//!   waiting state); a Stop still tears it down.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -84,12 +90,18 @@ impl LocalWorkerRegistry {
         out
     }
 
+    fn abort_watcher(&self, worker_id: &str) {
+        if let Some(w) = self.read().get(worker_id) {
+            w.watcher.abort();
+        }
+    }
+
     fn insert(&self, worker_id: String, worker: LocalWorker) {
         self.write().insert(worker_id, worker);
     }
 
-    fn remove(&self, worker_id: &str) -> Option<LocalWorker> {
-        self.write().remove(worker_id)
+    fn remove(&self, worker_id: &str) {
+        self.write().remove(worker_id);
     }
 
     /// What teardown needs, without removing the entry.
@@ -249,7 +261,11 @@ impl LocalWorkerManager {
             SkillLayout::ur_plugin(),
             session.clone(),
         );
-        let watcher = self.spawn_exit_watcher(req, &session);
+        let watcher = self.spawn_exit_watcher(
+            &req.worker_id,
+            req.instruction_strategy.as_deref() == Some(DESIGN_STRATEGY),
+            &session,
+        );
         self.registry.insert(
             req.worker_id.clone(),
             LocalWorker {
@@ -275,22 +291,23 @@ impl LocalWorkerManager {
 
     fn spawn_exit_watcher(
         &self,
-        req: &LocalWorkspaceRequest,
+        worker_id: &str,
+        is_design: bool,
         session: &tmux::Session,
     ) -> AbortHandle {
         let sink = LocalExitSink {
             manager: self.clone(),
-            worker_id: req.worker_id.clone(),
+            worker_id: worker_id.to_owned(),
         };
         let watcher = ExitWatcherManager::new(
             Arc::new(session.clone()),
             Arc::new(sink),
-            req.instruction_strategy.as_deref() == Some(DESIGN_STRATEGY),
+            is_design,
             self.exit_poll_interval,
         );
-        let worker_id = req.worker_id.clone();
-        // Delivering this to the server is ur-j5puq; until then the sink's
-        // error ends here.
+        let worker_id = worker_id.to_owned();
+        // The server learns of the exit from ListLocalWorkers (its reconcile
+        // loop); a failed teardown leaves the worker registered for Stop.
         tokio::spawn(async move {
             match watcher.run().await {
                 Ok(reason) => info!(worker_id, ?reason, "local worker agent exited"),
@@ -312,8 +329,10 @@ impl LocalWorkerManager {
         self.teardown(worker_id, &slot_path, agent, caller).await
     }
 
-    /// Kill the session, deregister, tear down the workspace. Every step is
-    /// attempted; the first error is returned.
+    /// Kill the session, tear down the workspace, deregister. A failed step
+    /// stops there and leaves the worker registered, so it stays listed and
+    /// the server's retried Stop runs teardown again: an id is never dropped
+    /// from the list while its session may be alive.
     async fn teardown(
         &self,
         worker_id: &str,
@@ -321,21 +340,131 @@ impl LocalWorkerManager {
         agent: AgentType,
         caller: TeardownCaller,
     ) -> Result<()> {
-        let mut first_err = self
-            .session(worker_id)
+        self.session(worker_id)
             .kill()
             .await
-            .err()
-            .map(|e| Status::internal(format!("kill tmux session: {e:#}")));
-        if let Some(worker) = self.registry.remove(worker_id)
-            && caller == TeardownCaller::Stop
-        {
-            worker.watcher.abort();
+            .map_err(|e| Status::internal(format!("kill tmux session: {e:#}")))?;
+        if caller == TeardownCaller::Stop {
+            self.registry.abort_watcher(worker_id);
         }
-        if let Err(e) = self.workspace.teardown(worker_id, slot_path, agent).await {
-            first_err.get_or_insert(e);
+        self.workspace.teardown(worker_id, slot_path, agent).await?;
+        self.registry.remove(worker_id);
+        Ok(())
+    }
+
+    /// builderd startup (before serving): re-register every live `ur-<id>`
+    /// session from its own env and start dir, kill any it cannot adopt, then
+    /// tear down every drive left without a registered worker. Fails only
+    /// when the sessions cannot be listed or an unadoptable one survives a
+    /// kill, since serving then could under-report live sessions.
+    pub async fn adopt_existing(&self) -> Result<()> {
+        let sessions = match tmux::Session::list_sessions(Some(&self.tmux_socket)).await {
+            Ok(sessions) => sessions,
+            Err(e) if tmux_missing(&e) => Vec::new(),
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "list local worker sessions: {e:#}"
+                )));
+            }
+        };
+        for name in sessions {
+            let Some(worker_id) = name.strip_prefix("ur-") else {
+                continue;
+            };
+            self.adopt_or_kill(worker_id).await?;
         }
-        first_err.map_or(Ok(()), Err)
+        let drives = self.workspace.drive_ids().await.unwrap_or_else(|e| {
+            error!(error = e.message(), "cannot list local worker drives");
+            Vec::new()
+        });
+        for worker_id in drives {
+            if self.registry.contains(&worker_id) {
+                continue;
+            }
+            info!(worker_id, "tearing down orphan local worker drive");
+            if let Err(e) = self.workspace.teardown_orphan(&worker_id).await {
+                error!(
+                    worker_id,
+                    error = e.message(),
+                    "orphan local worker drive teardown failed"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Adopt `ur-<worker_id>`, or kill it when it cannot be adopted. Its
+    /// drive is left for the orphan sweep.
+    async fn adopt_or_kill(&self, worker_id: &str) -> Result<()> {
+        let Err(e) = self.adopt_session(worker_id).await else {
+            info!(worker_id, "adopted live local worker session");
+            return Ok(());
+        };
+        error!(
+            worker_id,
+            error = e.message(),
+            "cannot adopt local worker session; tearing it down"
+        );
+        self.session(worker_id).kill().await.map_err(|k| {
+            Status::internal(format!(
+                "kill unadoptable session '{}': {k:#}",
+                session_name(worker_id)
+            ))
+        })
+    }
+
+    /// Rebuild a registry entry (daemon, identity, slot, agent, exit
+    /// watcher) from a live session's env and start dir.
+    async fn adopt_session(&self, worker_id: &str) -> Result<()> {
+        let session = self.session(worker_id);
+        let env = session
+            .environment()
+            .await
+            .map_err(|e| Status::internal(format!("read session env: {e:#}")))?;
+        if env_value(&env, ur_config::UR_WORKER_ID_ENV) != worker_id {
+            return Err(Status::invalid_argument(format!(
+                "session {} does not match the session name",
+                ur_config::UR_WORKER_ID_ENV
+            )));
+        }
+        validate_launch(worker_id, &env)?;
+        let agent = AgentType::parse(env_value(&env, ur_config::UR_AGENT_TYPE_ENV))
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        if !agent.supports_local_runtime() {
+            return Err(Status::failed_precondition(format!(
+                "agent '{}' does not support the local runtime",
+                agent.name()
+            )));
+        }
+        if Path::new(env_value(&env, UR_DRIVE_ENV)) != self.workspace.drive_path(worker_id) {
+            return Err(Status::invalid_argument(format!(
+                "session {UR_DRIVE_ENV} is not this builderd's drive"
+            )));
+        }
+        let slot_path = session
+            .start_dir()
+            .await
+            .map_err(|e| Status::internal(format!("read session start dir: {e:#}")))?;
+        let identity = WorkerIdentity {
+            server_addr: env_value(&env, ur_config::UR_SERVER_ADDR_ENV).to_owned(),
+            worker_id: worker_id.to_owned(),
+            worker_secret: env_value(&env, ur_config::UR_WORKER_SECRET_ENV).to_owned(),
+        };
+        let is_design =
+            env_value(&env, ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) == DESIGN_STRATEGY;
+        let watcher = self.spawn_exit_watcher(worker_id, is_design, &session);
+        let daemon =
+            WorkerDaemonServiceImpl::new(identity, agent, SkillLayout::ur_plugin(), session);
+        self.registry.insert(
+            worker_id.to_owned(),
+            LocalWorker {
+                daemon,
+                slot_path,
+                agent,
+                watcher,
+            },
+        );
+        Ok(())
     }
 
     /// Registered workers (sorted by id) and whether each session is alive.
@@ -352,7 +481,16 @@ impl LocalWorkerManager {
     }
 }
 
-/// Tears the worker down when its agent exits. Server notification is ur-j5puq.
+/// Whether tmux is not installed: then no session can exist.
+fn tmux_missing(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+    })
+}
+
+/// Tears the worker down when its agent exits; the server sees it leave
+/// `ListLocalWorkers`.
 struct LocalExitSink {
     manager: LocalWorkerManager,
     worker_id: String,
@@ -411,16 +549,26 @@ fn session_env(
     workerd_addr: &str,
     env: Vec<(String, String)>,
 ) -> Vec<(String, String)> {
-    let own = [
+    // Adoption after a builderd restart reads these back.
+    let mut own = vec![
         (ur_config::UR_WORKER_ID_ENV, req.worker_id.clone()),
         (ur_config::UR_WORKERD_ADDR_ENV, workerd_addr.to_owned()),
         (ur_config::UR_AGENT_TYPE_ENV, req.agent.name().to_owned()),
         (UR_DRIVE_ENV, drive.to_string_lossy().into_owned()),
         (UR_RUNTIME_ENV, WorkerRuntime::Local.as_str().to_owned()),
     ];
+    if let Some(strategy) = &req.instruction_strategy {
+        own.push((
+            ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV,
+            strategy.clone(),
+        ));
+    }
     let mut out: Vec<(String, String)> = env
         .into_iter()
-        .filter(|(k, _)| !own.iter().any(|(own_key, _)| own_key == k))
+        .filter(|(k, _)| {
+            k != ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV
+                && !own.iter().any(|(own_key, _)| own_key == k)
+        })
         .collect();
     out.extend(own.into_iter().map(|(k, v)| (k.to_owned(), v)));
     out

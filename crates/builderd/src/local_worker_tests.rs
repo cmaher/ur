@@ -57,11 +57,13 @@ impl Fixture {
         for dir in ["shared", "config", "workspace", "home", "out", "src/ctx"] {
             fs::create_dir_all(root.join(dir)).unwrap();
         }
-        // Records cwd and env, then stays alive as an interactive shell.
+        // Records env, then cwd (renamed into place last, so a visible
+        // `.pwd` means both are complete), then stays alive as a shell.
         write_exec(
             &root.join("bin/stub-agent"),
-            "#!/bin/sh\npwd > \"$STUB_OUT/$UR_WORKER_ID.pwd\"\n\
-             env > \"$STUB_OUT/$UR_WORKER_ID.env\"\nexec sh\n",
+            "#!/bin/sh\nenv > \"$STUB_OUT/$UR_WORKER_ID.env\"\n\
+             pwd > \"$STUB_OUT/$UR_WORKER_ID.tmp\"\n\
+             mv \"$STUB_OUT/$UR_WORKER_ID.tmp\" \"$STUB_OUT/$UR_WORKER_ID.pwd\"\nexec sh\n",
         );
         let registry = LocalWorkerRegistry::default();
         let manager = LocalWorkerManager::new(
@@ -392,4 +394,166 @@ async fn rejects_tmux_renamed_ids_and_missing_server_env() {
             f.assert_gone("w1").await;
         }
     }
+}
+
+impl Fixture {
+    /// The same socket and dirs under a fresh registry: a restarted builderd.
+    fn restarted(&self) -> (LocalWorkerManager, LocalWorkerRegistry) {
+        let registry = LocalWorkerRegistry::default();
+        let manager = LocalWorkerManager {
+            registry: registry.clone(),
+            ..self.manager.clone()
+        };
+        (manager, registry)
+    }
+
+    fn with_memory(&self, id: &str, slot: &Path) -> LocalWorkspaceRequest {
+        LocalWorkspaceRequest {
+            memory_dir: Some(self.path(&format!("mem/{id}"))),
+            ..self.request(id, slot)
+        }
+    }
+
+    fn memory_link(&self, slot: &Path) -> PathBuf {
+        AgentType::Claude
+            .local_memory_dir(&self.path("home"), slot)
+            .unwrap()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn external_kill_removes_drive_and_memory_link() {
+    let f = Fixture::new("extkill", Duration::from_millis(100));
+    let slot = f.slot("slot");
+    f.manager
+        .launch(&f.with_memory("w1", &slot), f.env())
+        .await
+        .unwrap();
+    let link = f.memory_link(&slot);
+    assert!(link.is_symlink());
+    std::process::Command::new("tmux")
+        .args(["-L", &f.socket, "kill-session", "-t", "=ur-w1"])
+        .output()
+        .unwrap();
+    wait_for("exit teardown", async || {
+        f.manager.list().await.unwrap().is_empty()
+    })
+    .await;
+    f.assert_gone("w1").await;
+    assert!(!link.exists() && !link.is_symlink(), "memory link removed");
+    assert!(f.path("mem/w1").is_dir(), "memory dir survives");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_adopts_live_session_and_tears_down_orphans() {
+    let f = Fixture::new("adopt", Duration::from_secs(3600));
+    let (slot1, slot2) = (f.slot("slot1"), f.slot("slot2"));
+    f.manager
+        .launch(&f.request("w1", &slot1), f.env())
+        .await
+        .unwrap();
+    // w2's session dies while builderd is down: only its drive is left.
+    f.manager
+        .launch(&f.with_memory("w2", &slot2), f.env())
+        .await
+        .unwrap();
+    f.session("w2").kill().await.unwrap();
+    // w3: an unadoptable `ur-*` session (no env) with a drive.
+    let w3 = tmux::Session::create(tmux::CreateOptions {
+        name: session_name("w3"),
+        socket: Some(f.socket.clone()),
+        detached: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    fs::create_dir_all(f.drive("w3")).unwrap();
+    let other = tmux::Session::create(tmux::CreateOptions {
+        name: "user-session".into(),
+        socket: Some(f.socket.clone()),
+        detached: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let (manager, registry) = f.restarted();
+    assert!(manager.list().await.unwrap().is_empty());
+    manager.adopt_existing().await.unwrap();
+
+    assert_eq!(manager.list().await.unwrap(), vec![("w1".to_owned(), true)]);
+    assert!(!f.drive("w2").exists(), "orphan drive removed");
+    assert!(
+        !f.memory_link(&slot2).is_symlink(),
+        "orphan memory link removed"
+    );
+    assert!(f.path("mem/w2").is_dir(), "memory dir survives");
+    assert!(!w3.exists().await.unwrap(), "unadoptable session killed");
+    assert!(!f.drive("w3").exists(), "unadoptable drive removed");
+    assert!(other.exists().await.unwrap(), "non-ur sessions untouched");
+    assert!(f.drive("w1").join("ctx").is_symlink(), "adopted drive kept");
+
+    let router = WorkerdRouter { registry };
+    let resp = router
+        .send_message(routed("w1", send("echo adopted-w1")))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(resp.success, "{}", resp.error);
+    let session = f.session("w1");
+    wait_for("dispatch to adopted worker", async || {
+        session.capture_pane().await.unwrap().contains("adopted-w1")
+    })
+    .await;
+
+    manager.stop("w1").await.unwrap();
+    assert!(!session.exists().await.unwrap());
+    assert!(!f.drive("w1").exists());
+    assert!(slot1.is_dir(), "slot survives");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn adopted_worker_exit_is_watched() {
+    let f = Fixture::new("adoptexit", Duration::from_millis(100));
+    let slot = f.slot("slot");
+    f.manager
+        .launch(&f.request("w1", &slot), f.env())
+        .await
+        .unwrap();
+    let (manager, registry) = f.restarted();
+    manager.adopt_existing().await.unwrap();
+    assert!(registry.contains("w1"));
+    // The old builderd's watcher would also fire; drop its entry so only the
+    // adopted watcher can tear down.
+    f.registry.remove("w1");
+    f.registry.abort_watcher("w1");
+    f.session("w1").kill().await.unwrap();
+    wait_for("adopted exit teardown", async || {
+        !registry.contains("w1") && !f.drive("w1").exists()
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_drive_teardown_keeps_worker_listed_until_retry() {
+    let f = Fixture::new("tdfail", Duration::from_secs(3600));
+    let slot = f.slot("slot");
+    f.manager
+        .launch(&f.request("w1", &slot), f.env())
+        .await
+        .unwrap();
+    let drive = f.drive("w1");
+    fs::set_permissions(&drive, fs::Permissions::from_mode(0o555)).unwrap();
+    let err = f.manager.stop("w1").await.unwrap_err();
+    assert!(err.message().contains("remove"), "{err}");
+    assert!(!f.session("w1").exists().await.unwrap());
+    assert_eq!(
+        f.manager.list().await.unwrap(),
+        vec![("w1".to_owned(), false)],
+        "a failed teardown stays listed so the server keeps the row stopping"
+    );
+
+    fs::set_permissions(&drive, fs::Permissions::from_mode(0o755)).unwrap();
+    f.manager.stop("w1").await.unwrap();
+    f.assert_gone("w1").await;
 }

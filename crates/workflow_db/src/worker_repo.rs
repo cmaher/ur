@@ -641,9 +641,9 @@ impl WorkerRepo {
     /// probe must never be read as "dead", or a reconcile pass would mark
     /// every live worker stopped and release the slots they are still using.
     ///
-    /// `runtime = local` rows have no container to probe, so they are always
-    /// left unchanged and reported in `indeterminate` (stopgap until
-    /// reconciliation against builderd's local workers, ur-j5puq).
+    /// `runtime = local` rows have no container to probe and are skipped
+    /// (left unchanged, not reported): the server's
+    /// `LocalWorkerReconcileManager` reconciles them against builderd.
     pub async fn reconcile_workers<F, Fut>(
         &self,
         is_container_alive: F,
@@ -662,7 +662,6 @@ impl WorkerRepo {
 
         for worker in all_workers {
             if worker.runtime == WorkerRuntime::Local {
-                result.indeterminate.push(worker.worker_id);
                 continue;
             }
             match is_container_alive(worker.container_id.clone()).await {

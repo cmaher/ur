@@ -36,6 +36,11 @@ ur start
 
 ```
 ur stop
+├── server reachable: WorkerList → WorkerStop each running worker (parallel)
+│   └── any runtime = local failure → error, nothing below runs (server and builderd
+│       stay up; the server's local reconcile loop retries the `stopping` row)
+│   server unreachable: kill worker containers by prefix (local sessions survive;
+│       the next builderd start adopts them)
 ├── compose.down()
 │   ├── docker compose down
 │   └── Remove ~/.ur/docker-compose.yml

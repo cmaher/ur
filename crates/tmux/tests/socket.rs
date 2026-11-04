@@ -87,6 +87,20 @@ async fn create_list_window_kill_on_dedicated_socket() {
         show(&["show-environment", "-t", "ur-w1", "UR_TMUX_TEST"]),
         "UR_TMUX_TEST=hello"
     );
+    let env = session.environment().await.expect("show-environment");
+    assert!(
+        env.contains(&("UR_TMUX_TEST".into(), "hello".into())),
+        "{env:?}"
+    );
+    assert!(env.iter().all(|(k, _)| !k.starts_with('-')), "{env:?}");
+    assert_eq!(session.start_dir().await.expect("start dir"), start_dir);
+    assert!(
+        Session::on_socket(&socket, "ur-w")
+            .environment()
+            .await
+            .is_err(),
+        "a prefix name must not match ur-w1"
+    );
 
     session.new_window("bg", None).await.expect("new window");
     assert_eq!(

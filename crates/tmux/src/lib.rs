@@ -439,6 +439,30 @@ impl Session {
         }
     }
 
+    /// The session environment (`show-environment`): `NAME=VALUE` entries only;
+    /// variables marked removed (`-NAME`) are skipped.
+    pub async fn environment(&self) -> Result<Vec<(String, String)>> {
+        let stdout =
+            run_tmux_stdout(&self.argv(&["show-environment", "-t", &self.exact_target()])).await?;
+        Ok(parse_environment(&stdout))
+    }
+
+    /// The directory the session was created in (`#{session_path}`, `-c`).
+    pub async fn start_dir(&self) -> Result<PathBuf> {
+        let args = self.argv(&[
+            "display-message",
+            "-p",
+            "-t",
+            &self.session_target(),
+            "#{session_path}",
+        ]);
+        let path = run_tmux_stdout(&args).await?.trim().to_owned();
+        if path.is_empty() {
+            bail!("tmux session '{}' reported no start dir", self.name);
+        }
+        Ok(PathBuf::from(path))
+    }
+
     /// Kill this session (all of its windows).
     ///
     /// Idempotent: a session (or server) that no longer exists counts as killed.
@@ -592,6 +616,16 @@ fn submit_probe(text: &str) -> String {
         .collect::<String>()
 }
 
+/// `show-environment` output → `(name, value)`, skipping removed (`-NAME`) entries.
+fn parse_environment(stdout: &str) -> Vec<(String, String)> {
+    stdout
+        .lines()
+        .filter(|line| !line.starts_with('-'))
+        .filter_map(|line| line.split_once('='))
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect()
+}
+
 /// Socket-selection arguments: `-L <socket>` for a dedicated server, nothing
 /// for the default server.
 fn socket_args(socket: Option<&str>) -> Vec<String> {
@@ -604,15 +638,22 @@ fn socket_args(socket: Option<&str>) -> Vec<String> {
 /// Whether tmux stderr indicates the server is not running: no socket, or a
 /// stale one. Other connect failures (e.g. permission denied) are real errors.
 fn is_no_server(stderr: &str) -> bool {
+    // "server exited unexpectedly": the server quit mid-request (it exits
+    // once its last session is killed), so it holds no sessions.
     stderr.contains("no server running")
+        || stderr.contains("server exited unexpectedly")
         || (stderr.contains("error connecting to")
             && (stderr.contains("No such file or directory")
                 || stderr.contains("Connection refused")))
 }
 
-/// Whether tmux stderr indicates the target session does not exist.
+/// Whether tmux stderr indicates the target session does not exist. "no
+/// current target" is what a server with no sessions left (exiting after its
+/// last session was killed) answers.
 fn is_no_session(stderr: &str) -> bool {
-    stderr.contains("can't find session") || stderr.contains("session not found")
+    stderr.contains("can't find session")
+        || stderr.contains("session not found")
+        || stderr.contains("no current target")
 }
 
 /// Outcome of a tmux invocation that spawned successfully.
@@ -887,12 +928,27 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_environment_skips_removed_and_keeps_equals_in_values() {
+        let out = "-DISPLAY\nUR_WORKER_ID=w1\nA=b=c\nEMPTY=\n";
+        assert_eq!(
+            parse_environment(out),
+            vec![
+                ("UR_WORKER_ID".to_owned(), "w1".to_owned()),
+                ("A".to_owned(), "b=c".to_owned()),
+                ("EMPTY".to_owned(), String::new()),
+            ]
+        );
+    }
+
+    #[test]
     fn test_missing_server_and_session_detection() {
         assert!(is_no_server("no server running on /tmp/tmux-501/ur"));
         assert!(is_no_server(
             "error connecting to /tmp/tmux-501/ur (No such file or directory)"
         ));
         assert!(is_no_session("can't find session: ur-w1"));
+        assert!(is_no_session("no current target"));
+        assert!(is_no_server("server exited unexpectedly"));
         assert!(is_no_server(
             "error connecting to /tmp/tmux-501/ur (Connection refused)"
         ));

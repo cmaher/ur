@@ -661,8 +661,9 @@ async fn restart_with_unreachable_runtime_leaves_workers_untouched() {
 }
 
 /// Scenario 5: a live `runtime = local` worker has no container, so a Docker
-/// probe would report it dead. Reconciliation must leave it running with its
-/// slot, while a container row is still reconciled.
+/// probe would report it dead. Container reconciliation skips it (it is
+/// reconciled against builderd by `LocalWorkerReconcileManager`), leaving it
+/// running with its slot, while a container row is still reconciled.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restart_leaves_local_workers_untouched() {
     let test_db = ur_db_test::TestDb::new().await;
@@ -705,7 +706,10 @@ async fn restart_leaves_local_workers_untouched() {
         .await
         .unwrap();
 
-    assert_eq!(result.indeterminate, vec!["worker-local"]);
+    assert!(
+        result.indeterminate.is_empty(),
+        "local rows are LocalWorkerReconcileManager's, not reported here"
+    );
     assert_eq!(result.marked_stopped, vec!["worker-container"]);
     assert_eq!(*probed.lock().unwrap(), vec!["container-dead"]);
     let local = worker_repo
