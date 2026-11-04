@@ -1219,7 +1219,12 @@ impl WorkerManager {
                 &worker.container_id,
                 "stop_worker",
             )?,
-            ur_config::WorkerRuntime::Local => self.stop_local_worker(worker_id).await?,
+            ur_config::WorkerRuntime::Local => {
+                if !self.stop_local_worker(worker_id).await? {
+                    info!(%worker_id, "local worker already stopped; nothing to release");
+                    return Ok(());
+                }
+            }
         }
 
         // 2. Release pool slot if this was a project-based launch

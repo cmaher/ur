@@ -10,7 +10,7 @@
 //! | `running` | not listed | stop path (Stop of an unknown id is Ok) |
 //! | `running` | listed, session dead | stop path |
 //! | `stopping` | any | stop path (retry) |
-//! | `provisioning` | any | none |
+//! | `provisioning` | any | none (startup: stale, see below) |
 //! | none / `stopped` | listed | `StopLocalWorker` |
 //!
 //! The stop path (`WorkerManager::stop_by_worker_id`) releases the slot and
@@ -21,6 +21,12 @@
 //! registered, so its absence afterwards means builderd has torn it down. An
 //! unknown listed id is re-read before it is stopped, because a launch
 //! records its row before builderd registers the worker.
+//!
+//! [`LocalWorkerReconcileManager::startup`] runs before the server serves or
+//! dispatches, so no launch can be in flight: a `provisioning` row then is a
+//! launch the previous server never finished (its agent may be live). Its
+//! slot is linked to it and it is marked `stopping`, so the ordinary
+//! stopping path converges it without the slot returning to the pool first.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -63,7 +69,62 @@ impl LocalWorkerReconcileManager {
         }
     }
 
-    /// Run a pass now (server startup), then one every `interval`.
+    /// The startup pass. Must finish before the server serves or dispatches.
+    /// `Err` only when stale `provisioning` rows cannot be held (DB errors);
+    /// a failed builderd list is logged and left to the loop.
+    pub async fn startup(&self) -> Result<(), String> {
+        let stale: Vec<_> = self
+            .worker_repo
+            .list_workers_by_container_status("provisioning")
+            .await
+            .map_err(|e| format!("list provisioning workers: {e}"))?
+            .into_iter()
+            .filter(|w| w.runtime == ur_config::WorkerRuntime::Local)
+            .collect();
+        for row in &stale {
+            warn!(
+                worker_id = row.worker_id,
+                "unfinished local launch from a previous server; stopping it"
+            );
+            self.hold_slot(row).await?;
+        }
+        if let Err(e) = self.reconcile_once().await {
+            warn!(error = %e, "startup local worker reconcile skipped; the loop retries");
+        }
+        Ok(())
+    }
+
+    /// Link `row`'s slot (by its recorded workspace path) to it if unlinked,
+    /// then mark it `stopping`.
+    async fn hold_slot(&self, row: &workflow_db::model::Worker) -> Result<(), String> {
+        let db = |what: &'static str| move |e: sqlx::Error| format!("{what}: {e}");
+        if let Some(path) = &row.workspace_path
+            && let Some(slot) = self
+                .worker_repo
+                .get_slot_by_host_path(path)
+                .await
+                .map_err(db("look up slot"))?
+            && self
+                .worker_repo
+                .get_worker_slot(&row.worker_id)
+                .await
+                .map_err(db("read slot link"))?
+                .is_none()
+        {
+            self.worker_repo
+                .link_worker_slot(&row.worker_id, &slot.id)
+                .await
+                .map_err(db("link slot"))?;
+        }
+        self.worker_repo
+            .begin_stopping(&row.worker_id)
+            .await
+            .map_err(db("mark stopping"))?;
+        Ok(())
+    }
+
+    /// Run a pass every `interval`, starting one interval after
+    /// [`Self::startup`].
     pub fn spawn(self, shutdown_rx: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(self.run(shutdown_rx))
     }
@@ -71,9 +132,6 @@ impl LocalWorkerReconcileManager {
     async fn run(self, mut shutdown_rx: watch::Receiver<bool>) {
         info!(interval = ?self.interval, "local worker reconciliation started");
         loop {
-            if let Err(e) = self.reconcile_once().await {
-                warn!(error = %e, "local worker reconcile pass skipped; nothing changed");
-            }
             tokio::select! {
                 _ = tokio::time::sleep(self.interval) => {}
                 _ = shutdown_rx.changed() => {
@@ -82,6 +140,9 @@ impl LocalWorkerReconcileManager {
                         return;
                     }
                 }
+            }
+            if let Err(e) = self.reconcile_once().await {
+                warn!(error = %e, "local worker reconcile pass skipped; nothing changed");
             }
         }
     }

@@ -33,9 +33,10 @@ fn host_string(path: &Path) -> String {
 }
 
 impl WorkerManager {
-    /// `run_and_record` for `runtime = local`. On launch failure builderd has
-    /// already torn the worker down; the provisional row is deleted and
-    /// builderd's error text returned. Returns `(session_name, worker_secret)`.
+    /// `run_and_record` for `runtime = local`. On launch failure the row is
+    /// deleted only once `StopLocalWorker` confirms builderd holds nothing;
+    /// otherwise see [`Self::abandon_local_launch`]. builderd's error text is
+    /// returned either way. Returns `(session_name, worker_secret)`.
     pub(crate) async fn run_and_record_local(
         &self,
         config: WorkerConfig,
@@ -59,9 +60,7 @@ impl WorkerManager {
             .await
         {
             let error = format!("launch_local_worker gRPC error: {status}");
-            return Err(self
-                .remove_provisioning_worker(&config.worker_id, error)
-                .await);
+            return Err(self.abandon_local_launch(&config, error).await);
         }
         info!(
             process_id = config.process_id,
@@ -71,31 +70,73 @@ impl WorkerManager {
         );
 
         if let Err(error) = self.finalize_worker_launch(&config, &session).await {
-            let stop_error = self
-                .builder_local_worker_client
-                .stop_local_worker(&config.worker_id.0)
-                .await
-                .err()
-                .map(|status| format!("; failed to clean up local worker: {status}"))
-                .unwrap_or_default();
-            return Err(self
-                .remove_provisioning_worker(&config.worker_id, format!("{error}{stop_error}"))
-                .await);
+            return Err(self.abandon_local_launch(&config, error).await);
         }
         Ok((session, worker_secret))
     }
 
-    /// Mark the row `stopping`, then tear the worker down via builderd. On
-    /// failure the row stays `stopping` and builderd's error text is returned.
-    pub(crate) async fn stop_local_worker(&self, worker_id: &WorkerId) -> Result<(), String> {
-        self.worker_repo
-            .update_worker_container_status(&worker_id.0, "stopping")
+    /// Clean up after a failed launch. A failed launch may still have left a
+    /// live session (e.g. its teardown failed), so the slot is let go only
+    /// once `StopLocalWorker` succeeds; otherwise the row becomes `stopping`
+    /// with the slot linked to it, and the reconcile loop retries the stop.
+    async fn abandon_local_launch(&self, config: &WorkerConfig, error: String) -> String {
+        let worker_id = &config.worker_id;
+        let Err(status) = self
+            .builder_local_worker_client
+            .stop_local_worker(&worker_id.0)
             .await
-            .map_err(|e| format!("failed to update worker status: {e}"))?;
+        else {
+            return self.remove_provisioning_worker(worker_id, error).await;
+        };
+        let mut error = format!("{error}; failed to clean up local worker: {status}");
+        if let Err(e) = self.hold_slot_for_retry(config).await {
+            error.push_str(&format!("; {e}"));
+        }
+        error
+    }
+
+    /// Keep a failed launch's slot out of the pool: link it to the worker and
+    /// mark the row `stopping` so the reconcile loop retries the stop.
+    async fn hold_slot_for_retry(&self, config: &WorkerConfig) -> Result<(), String> {
+        let worker_id = &config.worker_id.0;
+        if let Some(slot_id) = &config.slot_id
+            && self
+                .worker_repo
+                .get_worker_slot(worker_id)
+                .await
+                .map_err(|e| format!("failed to read slot link: {e}"))?
+                .is_none()
+        {
+            self.worker_repo
+                .link_worker_slot(worker_id, slot_id)
+                .await
+                .map_err(|e| format!("failed to link slot for retry: {e}"))?;
+        }
+        self.worker_repo
+            .begin_stopping(worker_id)
+            .await
+            .map_err(|e| format!("failed to mark worker stopping: {e}"))?;
+        Ok(())
+    }
+
+    /// Mark the row `stopping` (only from an active status), then tear the
+    /// worker down via builderd. `Ok(false)`: the row is already stopped or
+    /// gone, so there is nothing to stop or release. On failure the row
+    /// stays `stopping` and builderd's error text is returned.
+    pub(crate) async fn stop_local_worker(&self, worker_id: &WorkerId) -> Result<bool, String> {
+        if !self
+            .worker_repo
+            .begin_stopping(&worker_id.0)
+            .await
+            .map_err(|e| format!("failed to update worker status: {e}"))?
+        {
+            return Ok(false);
+        }
         self.builder_local_worker_client
             .stop_local_worker(&worker_id.0)
             .await
-            .map_err(|status| format!("stop_local_worker gRPC error: {status}"))
+            .map_err(|status| format!("stop_local_worker gRPC error: {status}"))?;
+        Ok(true)
     }
 }
 

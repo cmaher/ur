@@ -181,6 +181,22 @@ impl WorkerRepo {
         Ok(())
     }
 
+    /// Move an active (`provisioning`/`running`/`stopping`) worker to
+    /// `stopping`. `false` when the row is gone or already `stopped`, so a
+    /// stale stopper can tell it has nothing to stop.
+    pub async fn begin_stopping(&self, worker_id: &str) -> Result<bool, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE worker SET container_status = 'stopping', updated_at = $1
+             WHERE worker_id = $2 AND container_status IN ('provisioning', 'running', 'stopping')",
+        )
+        .bind(&now)
+        .bind(worker_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Replace the provisional container name with Docker's immutable ID and
     /// mark the worker running after its health check succeeds.
     pub async fn finalize_worker_launch(

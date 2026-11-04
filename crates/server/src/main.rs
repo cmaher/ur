@@ -360,26 +360,25 @@ struct WorkflowServices {
     ui_poller_handle: tokio::task::JoinHandle<()>,
 }
 
-/// Start local worker reconciliation: a pass now (replacing restart
-/// reconciliation for `runtime = local` rows), then every 15s.
-fn spawn_local_reconcile(
+/// Reconciles `runtime = local` rows against builderd (every 15s).
+fn local_reconcile_manager(
     builderd_addr: &str,
     worker_manager: &WorkerManager,
     worker_repo: &WorkerRepo,
-    shutdown_tx: &watch::Sender<bool>,
-) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+) -> anyhow::Result<ur_server::local_reconcile::LocalWorkerReconcileManager> {
     let channel =
         ur_rpc::retry::RetryChannel::new(builderd_addr, ur_rpc::retry::RetryConfig::default())
             .map_err(|e| anyhow::anyhow!("failed to create builderd retry channel: {e}"))?;
-    let manager = ur_server::local_reconcile::LocalWorkerReconcileManager::new(
-        worker_manager.clone(),
-        worker_repo.clone(),
-        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
-            channel.channel().clone(),
+    Ok(
+        ur_server::local_reconcile::LocalWorkerReconcileManager::new(
+            worker_manager.clone(),
+            worker_repo.clone(),
+            ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
+                channel.channel().clone(),
+            ),
+            ur_server::local_reconcile::DEFAULT_LOCAL_RECONCILE_INTERVAL,
         ),
-        ur_server::local_reconcile::DEFAULT_LOCAL_RECONCILE_INTERVAL,
-    );
-    Ok(manager.spawn(shutdown_tx.subscribe()))
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -574,12 +573,10 @@ async fn serve_grpc_servers(
     ticket_handler.transition_tx = Some(wf.transition_tx.clone());
     ticket_handler.cancel_tx = Some(wf.cancel_tx);
 
-    let local_reconcile_handle = spawn_local_reconcile(
-        &builderd_addr,
-        &worker_manager,
-        &worker_repo,
-        &wf.shutdown_tx,
-    )?;
+    // The startup pass already ran in `main`; this is the periodic loop.
+    let local_reconcile_handle =
+        local_reconcile_manager(&builderd_addr, &worker_manager, &worker_repo)?
+            .spawn(wf.shutdown_tx.subscribe());
 
     let host_server =
         ur_server::grpc_server::serve_grpc(host_addr, grpc_handler, ticket_handler.clone());
@@ -798,6 +795,13 @@ async fn main() -> anyhow::Result<()> {
         worker_modes,
     )
     .await?;
+
+    // Before anything serves or dispatches: no local launch is in flight, so
+    // leftover `provisioning` local rows are stale and held for a stop.
+    local_reconcile_manager(&builderd_addr, &worker_manager, &worker_repo)?
+        .startup()
+        .await
+        .map_err(|e| anyhow::anyhow!("local worker startup reconciliation failed: {e}"))?;
 
     let result = init_and_serve(
         &cfg,

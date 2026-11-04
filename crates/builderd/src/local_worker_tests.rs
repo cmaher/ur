@@ -557,3 +557,103 @@ async fn failed_drive_teardown_keeps_worker_listed_until_retry() {
     f.manager.stop("w1").await.unwrap();
     f.assert_gone("w1").await;
 }
+
+/// A stale orphan drive naming the slot a live (adopted) worker now uses
+/// must leave that worker's memory link alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn orphan_sweep_keeps_live_workers_memory_link() {
+    let f = Fixture::new("orphanmem", Duration::from_secs(3600));
+    let slot = f.slot("slot");
+    f.manager
+        .launch(&f.with_memory("w2", &slot), f.env())
+        .await
+        .unwrap();
+    f.session("w2").kill().await.unwrap();
+    let live = LocalWorkspaceRequest {
+        memory_dir: Some(f.path("mem/w2")),
+        ..f.request("w1", &slot)
+    };
+    f.manager.launch(&live, f.env()).await.unwrap();
+    let link = f.memory_link(&slot);
+    assert!(link.is_symlink());
+
+    let (manager, _registry) = f.restarted();
+    manager.adopt_existing().await.unwrap();
+    assert!(!f.drive("w2").exists(), "orphan drive removed");
+    assert_eq!(
+        fs::read_link(&link).unwrap(),
+        f.path("mem/w2"),
+        "live link kept"
+    );
+
+    manager.stop("w1").await.unwrap();
+    assert!(
+        !link.is_symlink(),
+        "the live worker's own teardown removes it"
+    );
+}
+
+/// Teardown removes the memory link only while it points at this drive's
+/// recorded target.
+#[tokio::test(flavor = "multi_thread")]
+async fn teardown_keeps_a_memory_link_that_was_repointed() {
+    let f = Fixture::new("repoint", Duration::from_secs(3600));
+    let slot = f.slot("slot");
+    f.manager
+        .launch(&f.with_memory("w1", &slot), f.env())
+        .await
+        .unwrap();
+    let link = f.memory_link(&slot);
+    fs::create_dir_all(f.path("mem/user")).unwrap();
+    fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(f.path("mem/user"), &link).unwrap();
+
+    f.manager.stop("w1").await.unwrap();
+    f.assert_gone("w1").await;
+    assert_eq!(fs::read_link(&link).unwrap(), f.path("mem/user"));
+}
+
+#[test]
+fn session_read_errors_are_fatal_only_while_the_session_lives() {
+    let e = anyhow::anyhow!("tmux show-environment failed: boom");
+    let err = session_read_failure("w1", &e, true).unwrap_err();
+    assert!(err.message().contains("boom"), "{err}");
+    session_read_failure("w1", &e, false).unwrap();
+}
+
+#[test]
+fn adoptable_rejects_only_bad_env_and_unsupported_agents() {
+    let drive = Path::new("/ws/drive/w1");
+    let good = || -> Vec<(String, String)> {
+        [
+            (ur_config::UR_WORKER_ID_ENV, "w1"),
+            (ur_config::UR_SERVER_ADDR_ENV, "127.0.0.1:1"),
+            (ur_config::UR_WORKER_SECRET_ENV, "s"),
+            (ur_config::UR_AGENT_TYPE_ENV, "claude"),
+            (UR_DRIVE_ENV, "/ws/drive/w1"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect()
+    };
+    assert_eq!(adoptable("w1", &good(), drive), Ok(AgentType::Claude));
+    let with = |key: &str, value: &str| -> Vec<(String, String)> {
+        let mut env = good();
+        env.retain(|(k, _)| k != key);
+        env.push((key.to_owned(), value.to_owned()));
+        env
+    };
+    for (key, value) in [
+        (ur_config::UR_WORKER_ID_ENV, "w2"),
+        (ur_config::UR_SERVER_ADDR_ENV, ""),
+        (ur_config::UR_WORKER_SECRET_ENV, ""),
+        (ur_config::UR_AGENT_TYPE_ENV, "nope"),
+        (ur_config::UR_AGENT_TYPE_ENV, "codex"),
+        (UR_DRIVE_ENV, "/elsewhere/w1"),
+    ] {
+        assert!(
+            adoptable("w1", &with(key, value), drive).is_err(),
+            "{key}={value}"
+        );
+    }
+}

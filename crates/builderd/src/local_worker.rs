@@ -18,6 +18,9 @@
 //! - An adopted design worker whose agent had already returned to the shell
 //!   before the restart is not detected as exited (its watcher starts in the
 //!   waiting state); a Stop still tears it down.
+//! - Orphan drive listing/teardown failures at startup are logged only and
+//!   retried at the next startup: drives hold only links, so failing startup
+//!   over one would cost availability for no data-safety gain.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -102,6 +105,11 @@ impl LocalWorkerRegistry {
 
     fn remove(&self, worker_id: &str) {
         self.write().remove(worker_id);
+    }
+
+    /// Slots of registered workers.
+    fn slots(&self) -> Vec<PathBuf> {
+        self.read().values().map(|w| w.slot_path.clone()).collect()
     }
 
     /// What teardown needs, without removing the entry.
@@ -354,9 +362,11 @@ impl LocalWorkerManager {
 
     /// builderd startup (before serving): re-register every live `ur-<id>`
     /// session from its own env and start dir, kill any it cannot adopt, then
-    /// tear down every drive left without a registered worker. Fails only
-    /// when the sessions cannot be listed or an unadoptable one survives a
-    /// kill, since serving then could under-report live sessions.
+    /// tear down every drive left without a registered worker. Fails when the
+    /// sessions cannot be listed or read, or an unadoptable one survives a
+    /// kill, since serving then could under-report live sessions. Orphan
+    /// drive failures are only logged (drives hold links only; the next
+    /// startup retries).
     pub async fn adopt_existing(&self) -> Result<()> {
         let sessions = match tmux::Session::list_sessions(Some(&self.tmux_socket)).await {
             Ok(sessions) => sessions,
@@ -377,12 +387,17 @@ impl LocalWorkerManager {
             error!(error = e.message(), "cannot list local worker drives");
             Vec::new()
         });
+        let live_slots = self.registry.slots();
         for worker_id in drives {
             if self.registry.contains(&worker_id) {
                 continue;
             }
             info!(worker_id, "tearing down orphan local worker drive");
-            if let Err(e) = self.workspace.teardown_orphan(&worker_id).await {
+            if let Err(e) = self
+                .workspace
+                .teardown_orphan(&worker_id, &live_slots)
+                .await
+            {
                 error!(
                     worker_id,
                     error = e.message(),
@@ -393,58 +408,38 @@ impl LocalWorkerManager {
         Ok(())
     }
 
-    /// Adopt `ur-<worker_id>`, or kill it when it cannot be adopted. Its
-    /// drive is left for the orphan sweep.
+    /// Adopt `ur-<worker_id>`, or kill it when its env is unusable. A tmux
+    /// error reading a live session is fatal, not a reason to kill it.
     async fn adopt_or_kill(&self, worker_id: &str) -> Result<()> {
-        let Err(e) = self.adopt_session(worker_id).await else {
-            info!(worker_id, "adopted live local worker session");
-            return Ok(());
-        };
-        error!(
-            worker_id,
-            error = e.message(),
-            "cannot adopt local worker session; tearing it down"
-        );
-        self.session(worker_id).kill().await.map_err(|k| {
-            Status::internal(format!(
-                "kill unadoptable session '{}': {k:#}",
-                session_name(worker_id)
-            ))
-        })
-    }
-
-    /// Rebuild a registry entry (daemon, identity, slot, agent, exit
-    /// watcher) from a live session's env and start dir.
-    async fn adopt_session(&self, worker_id: &str) -> Result<()> {
         let session = self.session(worker_id);
-        let env = session
-            .environment()
-            .await
-            .map_err(|e| Status::internal(format!("read session env: {e:#}")))?;
-        if env_value(&env, ur_config::UR_WORKER_ID_ENV) != worker_id {
-            return Err(Status::invalid_argument(format!(
-                "session {} does not match the session name",
-                ur_config::UR_WORKER_ID_ENV
-            )));
+        let read = async {
+            Ok::<_, anyhow::Error>((session.environment().await?, session.start_dir().await?))
         }
-        validate_launch(worker_id, &env)?;
-        let agent = AgentType::parse(env_value(&env, ur_config::UR_AGENT_TYPE_ENV))
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
-        if !agent.supports_local_runtime() {
-            return Err(Status::failed_precondition(format!(
-                "agent '{}' does not support the local runtime",
-                agent.name()
-            )));
-        }
-        if Path::new(env_value(&env, UR_DRIVE_ENV)) != self.workspace.drive_path(worker_id) {
-            return Err(Status::invalid_argument(format!(
-                "session {UR_DRIVE_ENV} is not this builderd's drive"
-            )));
-        }
-        let slot_path = session
-            .start_dir()
-            .await
-            .map_err(|e| Status::internal(format!("read session start dir: {e:#}")))?;
+        .await;
+        let (env, slot_path) = match read {
+            Ok(read) => read,
+            Err(e) => {
+                let alive = session.exists().await.map_err(|x| {
+                    Status::internal(format!("check session '{}': {x:#}", session.name()))
+                })?;
+                return session_read_failure(worker_id, &e, alive);
+            }
+        };
+        let agent = match adoptable(worker_id, &env, &self.workspace.drive_path(worker_id)) {
+            Ok(agent) => agent,
+            Err(reason) => {
+                error!(
+                    worker_id,
+                    reason, "cannot adopt local worker session; killing it"
+                );
+                return session.kill().await.map_err(|k| {
+                    Status::internal(format!(
+                        "kill unadoptable session '{}': {k:#}",
+                        session.name()
+                    ))
+                });
+            }
+        };
         let identity = WorkerIdentity {
             server_addr: env_value(&env, ur_config::UR_SERVER_ADDR_ENV).to_owned(),
             worker_id: worker_id.to_owned(),
@@ -464,6 +459,7 @@ impl LocalWorkerManager {
                 watcher,
             },
         );
+        info!(worker_id, "adopted live local worker session");
         Ok(())
     }
 
@@ -479,6 +475,48 @@ impl LocalWorkerManager {
         }
         Ok(out)
     }
+}
+
+/// A failed read of a listed session: fatal while it is still alive (a
+/// transient tmux error must not kill a live agent); nothing to adopt once it
+/// has ended (its drive is left to the orphan sweep).
+fn session_read_failure(worker_id: &str, e: &anyhow::Error, alive: bool) -> Result<()> {
+    if alive {
+        return Err(Status::internal(format!(
+            "read local worker session '{}': {e:#}",
+            session_name(worker_id)
+        )));
+    }
+    info!(worker_id, "local worker session ended before adoption");
+    Ok(())
+}
+
+/// Whether a session's env can be adopted as `worker_id`; the agent, or why
+/// not. Only bad or missing env and an unsupported agent are unadoptable.
+fn adoptable(
+    worker_id: &str,
+    env: &[(String, String)],
+    drive: &Path,
+) -> std::result::Result<AgentType, String> {
+    if env_value(env, ur_config::UR_WORKER_ID_ENV) != worker_id {
+        return Err(format!(
+            "{} does not match the session name",
+            ur_config::UR_WORKER_ID_ENV
+        ));
+    }
+    validate_launch(worker_id, env).map_err(|s| s.message().to_owned())?;
+    let agent = AgentType::parse(env_value(env, ur_config::UR_AGENT_TYPE_ENV))
+        .map_err(|e| e.to_string())?;
+    if !agent.supports_local_runtime() {
+        return Err(format!(
+            "agent '{}' does not support the local runtime",
+            agent.name()
+        ));
+    }
+    if Path::new(env_value(env, UR_DRIVE_ENV)) != drive {
+        return Err(format!("{UR_DRIVE_ENV} is not this builderd's drive"));
+    }
+    Ok(agent)
 }
 
 /// Whether tmux is not installed: then no session can exist.

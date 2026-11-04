@@ -17,6 +17,9 @@ ur start
 │   ├── Spawn: builderd --port <builderd_port> --workspace <workspace>
 │   ├── Detach into own process group (no Ctrl-C propagation)
 │   ├── Write PID file
+│   ├── Wait (≤30s) for the builderd port to accept TCP. builderd adopts surviving
+│   │   local workers before it listens and exits if it cannot; on exit or timeout
+│   │   the PID file is removed and the error names builderd.log* / builderd.err
 │   └── Release lock (drop)
 │
 └── compose.up()
@@ -36,11 +39,13 @@ ur start
 
 ```
 ur stop
-├── server reachable: WorkerList → WorkerStop each running worker (parallel)
-│   └── any runtime = local failure → error, nothing below runs (server and builderd
-│       stay up; the server's local reconcile loop retries the `stopping` row)
-│   server unreachable: kill worker containers by prefix (local sessions survive;
-│       the next builderd start adopts them)
+├── server reachable: WorkerList → WorkerStop each running worker (parallel, warnings)
+│   server unreachable: kill worker containers by prefix
+├── builderd running: ListLocalWorkers → StopLocalWorker each, directly from the host
+│   │   (covers every live local worker whatever its row says; rows converge at the
+│   │   next server start, which sees them unlisted)
+│   └── list or stop failure → error, nothing below runs (server and builderd stay up)
+│   builderd not running: warn; surviving sessions are adopted on its next start
 ├── compose.down()
 │   ├── docker compose down
 │   └── Remove ~/.ur/docker-compose.yml

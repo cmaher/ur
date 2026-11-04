@@ -247,6 +247,25 @@ impl RepoPoolManager {
             .await
             .map_err(|e| format!("db error looking up slot by host path: {e}"))?;
 
+        // Only the slot's current owner may clean it: a stale stopper whose
+        // link is gone (the slot may already serve another worker) must not
+        // reset it.
+        if let Some(slot) = &slot {
+            let link = self
+                .worker_repo
+                .get_worker_slot(worker_id)
+                .await
+                .map_err(|e| format!("db error reading worker slot link: {e}"))?;
+            if link.is_none_or(|l| l.slot_id != slot.id) {
+                tracing::warn!(
+                    worker_id,
+                    path = %slot_path.display(),
+                    "slot is not linked to this worker; leaving it untouched"
+                );
+                return Ok(());
+            }
+        }
+
         if let Some(slot) = slot
             && let Err(e) = self
                 .builder_pool_client
