@@ -1,4 +1,8 @@
-use std::{path::PathBuf, process::ExitStatus, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::ExitStatus,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
 use tracing::{debug, info, warn};
@@ -45,7 +49,8 @@ pub struct CreateOptions {
     pub name: String,
     /// tmux server socket name (`-L`). `None` uses the default server.
     pub socket: Option<String>,
-    /// Initial working directory for the session (`-c`). New windows inherit it.
+    /// Initial working directory for the session (`-c`). Windows created
+    /// later do not inherit it; pass `start_dir` to `Session::new_window`.
     pub start_dir: Option<PathBuf>,
     /// Environment variables set on the session (`-e NAME=VALUE`), in order.
     /// New windows inherit them.
@@ -390,11 +395,13 @@ impl Session {
 
     /// Create a detached window named `window` in this session.
     ///
-    /// The window inherits the session's working directory and environment.
-    /// Window 0 stays the current window, so session-level operations and
-    /// lifecycle checks (`<session>:0.0`) are unaffected.
-    pub async fn new_window(&self, window: &str) -> Result<()> {
-        run_tmux(&self.new_window_args(window))
+    /// The window inherits the session's environment. Its working directory
+    /// is `start_dir` (`-c`); `None` leaves it to tmux, which uses the calling
+    /// client's cwd, not the session's. Window 0 stays the current window, so
+    /// session-level operations and lifecycle checks (`<session>:0.0`) are
+    /// unaffected.
+    pub async fn new_window(&self, window: &str, start_dir: Option<&Path>) -> Result<()> {
+        run_tmux(&self.new_window_args(window, start_dir))
             .await
             .with_context(|| {
                 format!(
@@ -471,17 +478,22 @@ impl Session {
         argv
     }
 
-    fn new_window_args(&self, window: &str) -> Vec<String> {
+    fn new_window_args(&self, window: &str, start_dir: Option<&Path>) -> Vec<String> {
         // The session target (`=name:`) lets the new window take the next
         // free index rather than replacing the current one.
-        self.argv(&[
+        let mut args = self.argv(&[
             "new-window",
             "-d",
             "-t",
             &self.session_target(),
             "-n",
             window,
-        ])
+        ]);
+        if let Some(dir) = start_dir {
+            args.push("-c".into());
+            args.push(dir.to_string_lossy().into_owned());
+        }
+        args
     }
 
     fn capture_pane_args(&self) -> Vec<String> {
@@ -755,12 +767,27 @@ mod tests {
     #[test]
     fn test_new_window_argv() {
         assert_eq!(
-            Session::from_name("agent").new_window_args("bg"),
+            Session::from_name("agent").new_window_args("bg", None),
             vec!["new-window", "-d", "-t", "=agent:", "-n", "bg"]
         );
         assert_eq!(
-            Session::on_socket("ur", "ur-w1").new_window_args("bg"),
+            Session::on_socket("ur", "ur-w1").new_window_args("bg", None),
             vec!["-L", "ur", "new-window", "-d", "-t", "=ur-w1:", "-n", "bg"]
+        );
+        assert_eq!(
+            Session::on_socket("ur", "ur-w1").new_window_args("bg", Some(Path::new("/s"))),
+            vec![
+                "-L",
+                "ur",
+                "new-window",
+                "-d",
+                "-t",
+                "=ur-w1:",
+                "-n",
+                "bg",
+                "-c",
+                "/s"
+            ]
         );
     }
 

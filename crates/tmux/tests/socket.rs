@@ -88,7 +88,7 @@ async fn create_list_window_kill_on_dedicated_socket() {
         "UR_TMUX_TEST=hello"
     );
 
-    session.new_window("bg").await.expect("new window");
+    session.new_window("bg", None).await.expect("new window");
     assert_eq!(
         show(&["list-windows", "-t", "ur-w1", "-F", "#{window_name}"])
             .lines()
@@ -159,7 +159,9 @@ async fn targeted_ops_do_not_prefix_match_sibling_session() {
     })
     .await
     .expect("create ur-w10");
-    keep.new_window("bg").await.expect("bg window on ur-w10");
+    keep.new_window("bg", None)
+        .await
+        .expect("bg window on ur-w10");
     let missing = Session::on_socket(&socket, "ur-w1");
 
     const MARKER: &str = "PREFIX_MATCH_MARKER";
@@ -170,7 +172,7 @@ async fn targeted_ops_do_not_prefix_match_sibling_session() {
     assert!(missing.set_option("status-left", MARKER).await.is_err());
     assert!(missing.set_status_left(MARKER).await.is_err());
     assert!(missing.capture_pane().await.is_err());
-    assert!(missing.new_window("other").await.is_err());
+    assert!(missing.new_window("other", None).await.is_err());
     assert!(missing.is_pane_alive().await.is_err());
     // Older tmux errors; newer tmux prints nothing for a missing target.
     assert!(

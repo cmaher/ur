@@ -127,6 +127,8 @@ impl Fixture {
             ),
             (ur_config::UR_WORKER_ID_ENV.into(), "spoofed".into()),
             (ur_config::UR_SERVER_ADDR_ENV.into(), "127.0.0.1:1".into()),
+            (ur_config::UR_WORKER_SECRET_ENV.into(), "secret".into()),
+            (ur_config::UR_WORKERD_ADDR_ENV.into(), "127.0.0.1:2".into()),
         ]
     }
 
@@ -176,7 +178,7 @@ async fn launch_routes_two_workers_independently_and_stops() {
     let (slot1, slot2) = (f.slot("slot1"), f.slot("slot2"));
     write_exec(
         &slot1.join("ur-hooks/startup-bg/10-bg"),
-        "#!/bin/sh\necho bg > \"$STUB_OUT/bg-ran\"\n",
+        "#!/bin/sh\npwd > \"$STUB_OUT/bg-ran\"\n",
     );
     let (req1, req2) = (f.request("w1", &slot1), f.request("w2", &slot2));
     let (r1, r2) = tokio::join!(
@@ -204,7 +206,13 @@ async fn launch_routes_two_workers_independently_and_stops() {
         }
         assert!(drive.join("ctx").is_symlink());
     }
-    wait_for("bg hook", async || f.path("out/bg-ran").exists()).await;
+    let bg = f.path("out/bg-ran");
+    wait_for("bg hook", async || {
+        fs::read_to_string(&bg).is_ok_and(|s| s.ends_with('\n'))
+    })
+    .await;
+    let bg_cwd = PathBuf::from(fs::read_to_string(&bg).unwrap().trim());
+    assert_eq!(bg_cwd.canonicalize().unwrap(), slot1, "bg hook cwd");
 
     let router = WorkerdRouter {
         registry: f.registry.clone(),
@@ -334,4 +342,52 @@ async fn agent_exit_tears_worker_down() {
     })
     .await;
     f.assert_gone("w1").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rejects_tmux_renamed_ids_and_missing_server_env() {
+    let f = Fixture::new("invalid", Duration::from_secs(3600));
+    let slot = f.slot("slot");
+    for id in ["w.1", "w:1"] {
+        let err = f
+            .manager
+            .launch(&f.request(id, &slot), f.env())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument, "{id}: {err}");
+        f.assert_gone(id).await;
+        assert!(f.manager.list().await.unwrap().is_empty());
+        assert!(
+            tmux::Session::list_sessions(Some(&f.socket))
+                .await
+                .unwrap()
+                .is_empty(),
+            "{id}: renamed session leaked"
+        );
+    }
+    for key in [
+        ur_config::UR_SERVER_ADDR_ENV,
+        ur_config::UR_WORKER_SECRET_ENV,
+        ur_config::UR_WORKERD_ADDR_ENV,
+    ] {
+        for env in [
+            f.env()
+                .into_iter()
+                .filter(|(k, _)| k != key)
+                .collect::<Vec<_>>(),
+            f.env()
+                .into_iter()
+                .map(|(k, v)| if k == key { (k, String::new()) } else { (k, v) })
+                .collect(),
+        ] {
+            let err = f
+                .manager
+                .launch(&f.request("w1", &slot), env)
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), tonic::Code::InvalidArgument, "{key}: {err}");
+            assert!(err.message().contains(key), "{err}");
+            f.assert_gone("w1").await;
+        }
+    }
 }

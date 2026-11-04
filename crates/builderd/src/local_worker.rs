@@ -5,6 +5,12 @@
 //! → tmux session → background hooks in window `:bg` → registry insert →
 //! agent argv typed into window 0. Any failure after the drive build runs the
 //! full teardown before the error is returned.
+//!
+//! # Known limits
+//!
+//! - Sync startup hooks run with builderd's environment, not the session env.
+//! - An orphan `ur-<id>` session (e.g. after a builderd restart) makes Launch
+//!   return `AlreadyExists` and Stop a no-op; reconciliation is ur-j5puq.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -151,6 +157,7 @@ impl LocalWorkerManager {
                 req.agent.name()
             )));
         }
+        validate_launch(&req.worker_id, &env)?;
         let session = self.session(&req.worker_id);
         let orphan = session
             .exists()
@@ -227,7 +234,7 @@ impl LocalWorkerManager {
                 .join(" ")
                 + " wait";
             session
-                .new_window(BG_WINDOW)
+                .new_window(BG_WINDOW, Some(&req.slot_path))
                 .await
                 .map_err(step("create background hook window"))?;
             session
@@ -368,6 +375,31 @@ impl AgentExitSink for LocalExitSink {
             .await
             .map_err(|s| anyhow::anyhow!("teardown of '{}': {}", self.worker_id, s.message()))
     }
+}
+
+/// Server-supplied env every local worker needs for its server-bound calls.
+const REQUIRED_ENV: &[&str] = &[
+    ur_config::UR_SERVER_ADDR_ENV,
+    ur_config::UR_WORKER_SECRET_ENV,
+    ur_config::UR_WORKERD_ADDR_ENV,
+];
+
+/// Reject ids tmux would rename (`.`/`:` → `_`, so kill/has-session miss the
+/// session) and a request env missing the server variables.
+fn validate_launch(worker_id: &str, env: &[(String, String)]) -> Result<()> {
+    if worker_id.contains(['.', ':']) {
+        return Err(Status::invalid_argument(format!(
+            "worker id '{worker_id}' must not contain '.' or ':'"
+        )));
+    }
+    for key in REQUIRED_ENV {
+        if env_value(env, key).is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "request env must set {key}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn env_value<'a>(env: &'a [(String, String)], key: &str) -> &'a str {
