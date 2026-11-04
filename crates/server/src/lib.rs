@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod backup;
 pub mod builder_container_client;
+pub mod builder_local_worker_client;
 pub mod builder_pool_client;
 pub mod config;
 pub mod grpc;

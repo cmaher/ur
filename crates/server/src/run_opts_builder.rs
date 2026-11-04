@@ -197,37 +197,12 @@ impl RunOptsBuilder {
         let Some(memory_subdir) = agent.memory_subdir() else {
             return Ok(self);
         };
-
-        let resolved = resolve_template_path(template, host_config_dir)
-            .map_err(|e| format!("failed to resolve memory_dir: {e}"))?;
-
-        let host_path = match resolved {
-            ResolvedTemplatePath::HostPath(host_path) => host_path,
-            ResolvedTemplatePath::ProjectRelative(_) => {
-                return Err("memory_dir resolved to a project-relative path, \
-                     which is not supported (use an absolute path or %URCONFIG%)"
-                    .to_string());
-            }
-        };
-
-        let create_path = convention_check_path(&host_path, host_config_dir);
-        std::fs::create_dir_all(&create_path).map_err(|e| {
-            format!(
-                "failed to create memory_dir '{}': {e}",
-                create_path.display()
-            )
-        })?;
-        std::os::unix::fs::chown(
-            &create_path,
+        let host_path = prepare_host_dir(
+            template,
+            host_config_dir,
+            "memory_dir",
             Some(ur_config::WORKER_UID),
-            Some(ur_config::WORKER_UID),
-        )
-        .map_err(|e| {
-            format!(
-                "failed to chown memory_dir '{}': {e}",
-                create_path.display()
-            )
-        })?;
+        )?;
 
         let container_path = PathBuf::from(ur_config::WORKER_HOME)
             .join(agent.home_subdir())
@@ -263,32 +238,12 @@ impl RunOptsBuilder {
         let Some(template) = brain_dir.as_deref() else {
             return Ok(self);
         };
-
-        let resolved = resolve_template_path(template, host_config_dir)
-            .map_err(|e| format!("failed to resolve brain_dir: {e}"))?;
-
-        let host_path = match resolved {
-            ResolvedTemplatePath::HostPath(host_path) => host_path,
-            ResolvedTemplatePath::ProjectRelative(_) => {
-                return Err("brain_dir resolved to a project-relative path, \
-                     which is not supported (use an absolute path or %URCONFIG%)"
-                    .to_string());
-            }
-        };
-
-        let create_path = convention_check_path(&host_path, host_config_dir);
-        std::fs::create_dir_all(&create_path).map_err(|e| {
-            format!(
-                "failed to create brain_dir '{}': {e}",
-                create_path.display()
-            )
-        })?;
-        std::os::unix::fs::chown(
-            &create_path,
+        let host_path = prepare_host_dir(
+            template,
+            host_config_dir,
+            "brain_dir",
             Some(ur_config::WORKER_UID),
-            Some(ur_config::WORKER_UID),
-        )
-        .map_err(|e| format!("failed to chown brain_dir '{}': {e}", create_path.display()))?;
+        )?;
 
         let container_path = PathBuf::from(ur_config::BRAIN_CONTAINER_PATH);
         self.volumes.push((host_path, container_path));
@@ -311,18 +266,7 @@ impl RunOptsBuilder {
         host_config_dir: &Path,
     ) -> Result<Self, String> {
         for mount in mounts {
-            let resolved = resolve_template_path(&mount.source, host_config_dir)
-                .map_err(|e| format!("failed to resolve mount source '{}': {e}", mount.source))?;
-            let host_path = match resolved {
-                ResolvedTemplatePath::HostPath(host_path) => host_path,
-                ResolvedTemplatePath::ProjectRelative(_) => {
-                    return Err(format!(
-                        "mount source '{}' resolved to a project-relative path, \
-                         which is not supported for mounts",
-                        mount.source
-                    ));
-                }
-            };
+            let host_path = resolve_mount_source(&mount.source, host_config_dir)?;
             let container_path = if mount.readonly {
                 PathBuf::from(format!("{}:ro", mount.destination))
             } else {
@@ -570,6 +514,55 @@ impl RunOptsBuilder {
             add_hosts: vec![],
         }
     }
+}
+
+/// Resolve a `container.mounts` source template to its host path. Only
+/// `%URCONFIG%` and absolute paths are supported (`%PROJECT%` is rejected).
+pub(crate) fn resolve_mount_source(
+    source: &str,
+    host_config_dir: &Path,
+) -> Result<PathBuf, String> {
+    match resolve_template_path(source, host_config_dir)
+        .map_err(|e| format!("failed to resolve mount source '{source}': {e}"))?
+    {
+        ResolvedTemplatePath::HostPath(host_path) => Ok(host_path),
+        ResolvedTemplatePath::ProjectRelative(_) => Err(format!(
+            "mount source '{source}' resolved to a project-relative path, \
+             which is not supported for mounts"
+        )),
+    }
+}
+
+/// Resolve a `memory_dir`/`brain_dir` (`key`) template to its host path and
+/// create it through the server-visible path ([`convention_check_path`]),
+/// chowned to `owner` when given (containers pass [`ur_config::WORKER_UID`];
+/// local workers run as the host user). A project-relative result is an error
+/// because `%PROJECT%` is rejected for these keys at config validation time.
+pub(crate) fn prepare_host_dir(
+    template: &str,
+    host_config_dir: &Path,
+    key: &str,
+    owner: Option<u32>,
+) -> Result<PathBuf, String> {
+    let host_path = match resolve_template_path(template, host_config_dir)
+        .map_err(|e| format!("failed to resolve {key}: {e}"))?
+    {
+        ResolvedTemplatePath::HostPath(host_path) => host_path,
+        ResolvedTemplatePath::ProjectRelative(_) => {
+            return Err(format!(
+                "{key} resolved to a project-relative path, \
+                 which is not supported (use an absolute path or %URCONFIG%)"
+            ));
+        }
+    };
+    let create_path = convention_check_path(&host_path, host_config_dir);
+    std::fs::create_dir_all(&create_path)
+        .map_err(|e| format!("failed to create {key} '{}': {e}", create_path.display()))?;
+    if let Some(uid) = owner {
+        std::os::unix::fs::chown(&create_path, Some(uid), Some(uid))
+            .map_err(|e| format!("failed to chown {key} '{}': {e}", create_path.display()))?;
+    }
+    Ok(host_path)
 }
 
 /// Pre-launch sanity check for a single hostexec script entry.

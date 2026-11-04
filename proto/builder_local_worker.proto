@@ -18,6 +18,13 @@ message EnvVar {
   string value = 2;
 }
 
+// A host `[skills]` entry: installed from `source` instead of the baked
+// `<agent_shared>/potential-skills/<name>`, which it shadows.
+message HostSkill {
+  string name = 1;
+  string source = 2;
+}
+
 message LocalMount {
   string source = 1;
   string dest = 2;
@@ -31,6 +38,7 @@ message LaunchLocalWorkerRequest {
   string model = 4;
   string effort = 5;
   // Exported into the tmux session (UR_WORKER_SECRET, UR_SERVER_ADDR, ...).
+  // builderd sets UR_WORKERD_ADDR itself from its listen address.
   repeated EnvVar env = 6;
   repeated LocalMount mounts = 7;
   string memory_dir = 8;
@@ -40,6 +48,7 @@ message LaunchLocalWorkerRequest {
   string project_key = 12;
   string project_instruction_path = 13;
   bool allow_no_verify = 14;
+  repeated HostSkill host_skills = 15;
 }
 
 message LaunchLocalWorkerResponse {}

@@ -19,8 +19,12 @@ use ur_rpc::proto::builder_container::{
 
 use crate::RepoPoolManager;
 use crate::builder_container_client::BuilderContainerClient;
+use crate::builder_local_worker_client::BuilderLocalWorkerClient;
 use crate::run_opts_builder::RunOptsBuilder;
 use crate::strategy::WorkerStrategy;
+
+#[path = "local_launch.rs"]
+mod local_launch;
 
 /// Unique identifier for a running worker, format: `{process_id}-{4 random [a-z0-9]}`.
 ///
@@ -639,6 +643,9 @@ pub struct WorkerConfig {
     pub forge: Option<ur_config::ForgeType>,
     /// Resolved runtime, persisted on the worker row.
     pub runtime: ur_config::WorkerRuntime,
+    /// Project `git.allow_no_verify`; local workers mirror it in their
+    /// generated permission denies.
+    pub allow_no_verify: bool,
 }
 
 /// Orchestrates the full lifecycle of worker processes:
@@ -672,6 +679,8 @@ pub struct WorkerManager {
     global_skills: GlobalSkillsConfig,
     /// gRPC client for launching/stopping containers via builderd on the host.
     builder_container_client: BuilderContainerClient,
+    /// gRPC client for launching/stopping `runtime = local` workers via builderd.
+    builder_local_worker_client: BuilderLocalWorkerClient,
 }
 
 impl WorkerManager {
@@ -690,6 +699,7 @@ impl WorkerManager {
         worker_repo: WorkerRepo,
         global_skills: GlobalSkillsConfig,
         builder_container_client: BuilderContainerClient,
+        builder_local_worker_client: BuilderLocalWorkerClient,
     ) -> Self {
         Self {
             workspace,
@@ -705,6 +715,7 @@ impl WorkerManager {
             worker_repo,
             global_skills,
             builder_container_client,
+            builder_local_worker_client,
         }
     }
 
@@ -955,6 +966,9 @@ impl WorkerManager {
     /// Generates and stores a worker secret (UUID v4) for auth.
     /// Returns `(container_id, worker_secret)`.
     pub async fn run_and_record(&self, config: WorkerConfig) -> Result<(String, String), String> {
+        if config.runtime == ur_config::WorkerRuntime::Local {
+            return self.run_and_record_local(config).await;
+        }
         // Create per-worker log directory on the local filesystem so the
         // volume mount has a source directory when the container starts.
         let worker_logs_dir = self.logs_dir.join("workers").join(&config.worker_id.0);
@@ -1194,15 +1208,18 @@ impl WorkerManager {
         // under us, but the DB still shows it running. Bailing on "No such
         // container" here would leave the worker row stuck as running forever,
         // blocking every future `ur worker kill`.
-        tolerate_missing(
-            self.builder_container_client
-                .stop_worker(StopWorkerRequest {
-                    container_id: worker.container_id.clone(),
-                })
-                .await,
-            &worker.container_id,
-            "stop_worker",
-        )?;
+        match worker.runtime {
+            ur_config::WorkerRuntime::Container => tolerate_missing(
+                self.builder_container_client
+                    .stop_worker(StopWorkerRequest {
+                        container_id: worker.container_id.clone(),
+                    })
+                    .await,
+                &worker.container_id,
+                "stop_worker",
+            )?,
+            ur_config::WorkerRuntime::Local => self.stop_local_worker(worker_id).await?,
+        }
 
         // 2. Release pool slot if this was a project-based launch
         let strategy = WorkerStrategy::from_name(&worker.strategy)
@@ -1419,10 +1436,7 @@ fn build_worker_env_vars(
     env_vars.extend(proxy_env_vars(&config.proxy_hostname));
 
     // Inject resolved skills as comma-separated list
-    let mut skills = config.skills.clone();
-    if config.forge == Some(ur_config::ForgeType::Gitea) && !skills.iter().any(|s| s == "gitea") {
-        skills.push("gitea".to_string());
-    }
+    let skills = worker_skills(config);
     if !skills.is_empty() {
         env_vars.push((ur_config::UR_WORKER_SKILLS_ENV.into(), skills.join(",")));
     }
@@ -1473,6 +1487,15 @@ fn build_worker_env_vars(
     }
 
     env_vars
+}
+
+/// The worker's skill names: `config.skills`, plus `gitea` for a Gitea forge.
+fn worker_skills(config: &WorkerConfig) -> Vec<String> {
+    let mut skills = config.skills.clone();
+    if config.forge == Some(ur_config::ForgeType::Gitea) && !skills.iter().any(|s| s == "gitea") {
+        skills.push("gitea".to_string());
+    }
+    skills
 }
 
 /// Map a host convention path to the path the server can actually touch.
@@ -1812,6 +1835,9 @@ mod tests {
             worker_repo,
             GlobalSkillsConfig::default(),
             builder_container_client,
+            crate::builder_local_worker_client::BuilderLocalWorkerClient::new(
+                tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+            ),
         );
         (mgr, workspace, test_db)
     }
@@ -2028,6 +2054,7 @@ mod tests {
             workspace_brain_dir: None,
             forge: None,
             runtime: ur_config::WorkerRuntime::Container,
+            allow_no_verify: false,
         }
     }
 
@@ -3448,6 +3475,9 @@ agent = "claude"
             worker_repo,
             globals,
             builder_container_client,
+            crate::builder_local_worker_client::BuilderLocalWorkerClient::new(
+                tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+            ),
         );
         (mgr, workspace, test_db)
     }

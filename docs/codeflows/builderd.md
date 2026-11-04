@@ -137,7 +137,7 @@ pool slot inside a tmux session `ur-<id>` on builderd's dedicated socket
 
 ```
 InvalidArgument if the id contains '.' or ':' (tmux would rename the session) or the
-    request env lacks UR_SERVER_ADDR / UR_WORKER_SECRET / UR_WORKERD_ADDR
+    request env lacks UR_SERVER_ADDR / UR_WORKER_SECRET
   → AlreadyExists if the id is registered or its session exists (live worker untouched)
   → LocalWorkspaceManager.build: agent check (supports_local_runtime, else FailedPrecondition
     before any fs work), then drive, memory link, .ur/ customization; self-cleans
@@ -149,9 +149,30 @@ InvalidArgument if the id contains '.' or ':' (tmux would rename the session) or
 any failure after build → teardown → error
 ```
 
-Session env: the request env (the server supplies `UR_WORKER_SECRET`, `UR_SERVER_ADDR`,
-`UR_WORKERD_ADDR`, `UR_GH_REPO`, …) followed by builderd's own `UR_WORKER_ID`,
-`UR_AGENT_TYPE`, `UR_DRIVE`, `UR_RUNTIME=local`, which the request cannot override.
+Session env: the request env (the server supplies `UR_WORKER_SECRET`,
+`UR_SERVER_ADDR=127.0.0.1:<worker_port>`, `UR_PROJECT`, `UR_WORKER_FORGE`) followed by
+builderd's own `UR_WORKER_ID`, `UR_WORKERD_ADDR`, `UR_AGENT_TYPE`, `UR_DRIVE`,
+`UR_RUNTIME=local`, which the request cannot override. builderd derives `UR_WORKERD_ADDR`
+from its own listen address (an unspecified bind maps to `127.0.0.1`), because on Linux it
+binds the Docker bridge IP, which the server cannot know.
+
+Skills: each requested skill is installed from its `host_skills` entry (the server's host
+`[skills]` paths) when present, else `<agent_shared>/potential-skills/<name>` — host shadows
+baked, as in containers. The drive's `.ur/skill-sources/potential-skills/` holds one link per
+skill to its resolved source, and `check_assets` checks the same resolution.
+
+### Server side
+
+`WorkerManager::run_and_record` branches on `WorkerConfig.runtime`; the local path lives in
+`crates/server/src/local_launch.rs` (`build_local_launch_request`, a child module of
+`worker.rs`). It inserts the provisional row (`container_id = ur-<id>`) → `LaunchLocalWorker`
+→ marks `running`; on failure it deletes the row and returns builderd's status, and
+`LaunchManager` drops the slot claim as for containers. No Docker network, Squid env, image
+or credential gate. Mounts, memory/brain dirs, instruction file and host skills are host
+paths (templates resolve against the host config dir). Stop marks the row `stopping`, calls
+`StopLocalWorker`, and only on success releases the slot and marks it `stopped`; on failure
+the row stays `stopping` (retry is ur-j5puq). Client: `BuilderLocalWorkerClient`
+(`crates/server/src/builder_local_worker_client.rs`).
 
 Teardown (stop, failed launch, agent exit): kill the session → deregister (abort the exit
 watcher, unless the watcher itself is tearing down) → `LocalWorkspaceManager.teardown`.

@@ -115,6 +115,9 @@ pub struct LocalWorkerManager {
     /// tmux server socket (`-L`); `ur_config::LOCAL_TMUX_SOCKET` in production.
     tmux_socket: String,
     exit_poll_interval: Duration,
+    /// This builderd's address as seen from the host, exported as
+    /// `UR_WORKERD_ADDR` so `ur-workertools` reaches the routed daemon.
+    workerd_addr: String,
     /// Replaces the agent program (argv[0]); `None` in production.
     agent_program: Option<PathBuf>,
 }
@@ -125,6 +128,7 @@ impl LocalWorkerManager {
         registry: LocalWorkerRegistry,
         tmux_socket: String,
         exit_poll_interval: Duration,
+        workerd_addr: String,
         agent_program: Option<PathBuf>,
     ) -> Self {
         LocalWorkerManager {
@@ -132,6 +136,7 @@ impl LocalWorkerManager {
             registry,
             tmux_socket,
             exit_poll_interval,
+            workerd_addr,
             agent_program,
         }
     }
@@ -211,7 +216,7 @@ impl LocalWorkerManager {
             name: session_name(&req.worker_id),
             socket: Some(self.tmux_socket.clone()),
             start_dir: Some(req.slot_path.clone()),
-            env: session_env(req, drive, env),
+            env: session_env(req, drive, &self.workerd_addr, env),
             width: Some(220),
             height: Some(55),
             detached: true,
@@ -372,7 +377,6 @@ impl AgentExitSink for LocalExitSink {
 const REQUIRED_ENV: &[&str] = &[
     ur_config::UR_SERVER_ADDR_ENV,
     ur_config::UR_WORKER_SECRET_ENV,
-    ur_config::UR_WORKERD_ADDR_ENV,
 ];
 
 /// Reject ids tmux would rename (`.`/`:` → `_`, so kill/has-session miss the
@@ -404,10 +408,12 @@ fn env_value<'a>(env: &'a [(String, String)], key: &str) -> &'a str {
 fn session_env(
     req: &LocalWorkspaceRequest,
     drive: &Path,
+    workerd_addr: &str,
     env: Vec<(String, String)>,
 ) -> Vec<(String, String)> {
     let own = [
         (ur_config::UR_WORKER_ID_ENV, req.worker_id.clone()),
+        (ur_config::UR_WORKERD_ADDR_ENV, workerd_addr.to_owned()),
         (ur_config::UR_AGENT_TYPE_ENV, req.agent.name().to_owned()),
         (UR_DRIVE_ENV, drive.to_string_lossy().into_owned()),
         (UR_RUNTIME_ENV, WorkerRuntime::Local.as_str().to_owned()),

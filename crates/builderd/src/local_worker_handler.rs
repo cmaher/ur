@@ -52,6 +52,11 @@ fn workspace_request(
         memory_dir: non_empty(req.memory_dir).map(PathBuf::from),
         brain_dir: non_empty(req.brain_dir).map(PathBuf::from),
         skills: req.skills,
+        host_skills: req
+            .host_skills
+            .into_iter()
+            .map(|h| (h.name, PathBuf::from(h.source)))
+            .collect(),
         instruction_strategy: non_empty(req.instruction_strategy),
         project_key: req.project_key,
         project_instruction_path: non_empty(req.project_instruction_path).map(PathBuf::from),

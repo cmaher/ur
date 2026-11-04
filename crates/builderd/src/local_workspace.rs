@@ -38,6 +38,10 @@ use crate::local_settings::{DriveLink, LocalSettingsManager};
 const DRIVE_DIR: &str = "drive";
 const UR_DIR: &str = ".ur";
 const BRAIN_LINK: &str = "brain";
+/// Per-drive `agent_shared` stand-in holding only `potential-skills/`, with
+/// one link per requested skill to its resolved source.
+const SKILL_SOURCES_DIR: &str = "skill-sources";
+const POTENTIAL_SKILLS_DIR: &str = "potential-skills";
 
 /// A `container.mounts` entry mapped onto the drive.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +66,8 @@ pub struct LocalWorkspaceRequest {
     pub memory_dir: Option<PathBuf>,
     pub brain_dir: Option<PathBuf>,
     pub skills: Vec<String>,
+    /// Host `[skills]` sources `(name, path)`; each shadows the baked skill.
+    pub host_skills: Vec<(String, PathBuf)>,
     pub instruction_strategy: Option<String>,
     pub project_key: String,
     pub project_instruction_path: Option<PathBuf>,
@@ -178,7 +184,7 @@ impl LocalWorkspaceManager {
             }
         }
         for skill in &req.skills {
-            let path = self.agent_shared.join("potential-skills").join(skill);
+            let path = self.skill_source(req, skill);
             if !path.exists() {
                 return Err(Status::failed_precondition(format!(
                     "skill not found: {}",
@@ -187,6 +193,37 @@ impl LocalWorkspaceManager {
             }
         }
         Ok(())
+    }
+
+    /// Where skill `name` is installed from: a host `[skills]` source first,
+    /// then the baked `<agent_shared>/potential-skills/<name>`.
+    fn skill_source(&self, req: &LocalWorkspaceRequest, name: &str) -> PathBuf {
+        match req.host_skills.iter().find(|(host, _)| host == name) {
+            Some((_, source)) => source.clone(),
+            None => self.agent_shared.join(POTENTIAL_SKILLS_DIR).join(name),
+        }
+    }
+
+    /// Link each requested skill's resolved source into the drive's
+    /// `skill-sources/potential-skills/`, the only dir `InitSkillsManager`
+    /// reads, and return that `agent_shared` stand-in.
+    async fn link_skill_sources(
+        &self,
+        drive: &Path,
+        req: &LocalWorkspaceRequest,
+    ) -> Result<PathBuf> {
+        let root = drive.join(UR_DIR).join(SKILL_SOURCES_DIR);
+        let potential = root.join(POTENTIAL_SKILLS_DIR);
+        tokio::fs::create_dir_all(&potential)
+            .await
+            .map_err(io(format!("create {}", potential.display())))?;
+        for skill in &req.skills {
+            let link = potential.join(skill);
+            tokio::fs::symlink(self.skill_source(req, skill), &link)
+                .await
+                .map_err(io(format!("link skill source {}", link.display())))?;
+        }
+        Ok(root)
     }
 
     /// `WorkerPaths` rooted at the slot (workspace) and the drive's `.ur/`.
@@ -291,7 +328,11 @@ impl LocalWorkspaceManager {
         links: &[DriveLink],
     ) -> Result<()> {
         let layout = SkillLayout::ur_plugin();
-        InitSkillsManager::new(paths.clone(), layout.clone())
+        let skill_paths = WorkerPaths {
+            agent_shared: self.link_skill_sources(drive, req).await?,
+            ..paths.clone()
+        };
+        InitSkillsManager::new(skill_paths, layout.clone())
             .run(&req.skills)
             .await
             .map_err(io("install ur plugin skills"))?;
@@ -541,6 +582,7 @@ mod tests {
                 memory_dir: None,
                 brain_dir: None,
                 skills: Vec::new(),
+                host_skills: Vec::new(),
                 instruction_strategy: None,
                 project_key: "p".into(),
                 project_instruction_path: None,
@@ -849,6 +891,54 @@ mod tests {
         let settings: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(ur.join("settings.json")).unwrap()).unwrap();
         assert_eq!(settings, LocalSettingsManager.settings_json(false));
+    }
+
+    /// A host `[skills]` source shadows the baked skill of the same name and
+    /// adds skills that are not baked at all; the sources are left intact.
+    #[tokio::test]
+    async fn host_skills_shadow_baked_skills() {
+        let f = Fixture::new();
+        for (rel, body) in [
+            ("host/implement/SKILL.md", "host implement"),
+            ("host/extra/SKILL.md", "host extra"),
+        ] {
+            fs::create_dir_all(f.path(rel).parent().unwrap()).unwrap();
+            fs::write(f.path(rel), body).unwrap();
+        }
+        let req = LocalWorkspaceRequest {
+            skills: vec!["implement".into(), "extra".into()],
+            host_skills: vec![
+                ("implement".into(), f.path("host/implement")),
+                ("extra".into(), f.path("host/extra")),
+            ],
+            ..f.request()
+        };
+        f.manager.build(&req).await.unwrap();
+        let skills = f.path("workspace/drive/w1/.ur/plugin/skills");
+        for (name, body) in [("implement", "host implement"), ("extra", "host extra")] {
+            assert_eq!(
+                fs::read_to_string(skills.join(name).join("SKILL.md")).unwrap(),
+                body
+            );
+        }
+
+        f.manager
+            .teardown("w1", &f.path("slot"), AgentType::Claude)
+            .await
+            .unwrap();
+        assert!(f.path("host/implement/SKILL.md").exists());
+        assert!(
+            f.path("shared/potential-skills/implement/SKILL.md")
+                .exists()
+        );
+
+        let missing = LocalWorkspaceRequest {
+            skills: vec!["extra".into()],
+            host_skills: vec![("extra".into(), f.path("host/missing"))],
+            ..f.request()
+        };
+        let msg = precondition_msg(f.manager.build(&missing).await.unwrap_err());
+        assert!(msg.contains("host/missing"), "{msg}");
     }
 
     #[tokio::test]

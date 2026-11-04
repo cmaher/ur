@@ -559,6 +559,12 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
         "      - \"${{UR_SERVER_PORT:-12321}}:${{UR_SERVER_PORT:-12321}}\""
     )
     .unwrap();
+    // Worker gRPC server, for host-local workers' `ur-workertools`; loopback only.
+    writeln!(
+        out,
+        "      - \"127.0.0.1:${{UR_WORKER_PORT:-12322}}:${{UR_WORKER_PORT:-12322}}\""
+    )
+    .unwrap();
 
     // Networks
     writeln!(out, "    networks:").unwrap();
@@ -579,7 +585,7 @@ fn write_networks(out: &mut String, params: &ComposeParams) {
 
 /// Build a `ComposeManager` from the resolved ur config.
 ///
-/// Forwards `UR_CONFIG`, `UR_WORKSPACE`, `UR_SERVER_PORT`, `UR_BUILDERD_PORT`,
+/// Forwards `UR_CONFIG`, `UR_WORKSPACE`, `UR_SERVER_PORT`, `UR_WORKER_PORT`, `UR_BUILDERD_PORT`,
 /// and optionally `UR_IMAGE_TAG` and `UR_CONTAINER` as environment variables
 /// so the compose file's variable interpolation picks them up.
 #[instrument(skip(config), fields(compose_file = %config.compose_file.display()))]
@@ -594,6 +600,7 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
             config.workspace.to_string_lossy().into_owned(),
         ),
         ("UR_SERVER_PORT".to_string(), config.server_port.to_string()),
+        ("UR_WORKER_PORT".to_string(), config.worker_port.to_string()),
         (
             "UR_BUILDERD_PORT".to_string(),
             config.builderd_port.to_string(),
@@ -748,6 +755,11 @@ mod tests {
         assert!(
             manager
                 .env_vars
+                .contains(&("UR_WORKER_PORT".to_string(), "10000".to_string()))
+        );
+        assert!(
+            manager
+                .env_vars
                 .contains(&("UR_LOGS_DIR".to_string(), "/test/config/logs".to_string()))
         );
     }
@@ -784,6 +796,25 @@ mod tests {
                 retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
             },
         }
+    }
+
+    /// Host-local workers reach the worker server on loopback only.
+    #[test]
+    fn generate_compose_publishes_worker_port_on_loopback() {
+        let config = test_config_for_compose();
+        let generated = generate_compose(
+            &config.network,
+            &config.proxy,
+            &config.ticket_db,
+            &config.workflow_db,
+            &config.config_dir,
+        );
+        assert!(
+            generated.contains(
+                "      - \"127.0.0.1:${UR_WORKER_PORT:-12322}:${UR_WORKER_PORT:-12322}\""
+            ),
+            "{generated}"
+        );
     }
 
     #[test]

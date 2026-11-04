@@ -43,10 +43,6 @@ pub enum CoreError {
     #[error("local runtime unsupported: {reason}")]
     LocalRuntimeUnsupported { reason: String },
 
-    /// A valid `runtime = local` launch; local launch is not implemented yet.
-    #[error("local runtime launch is not available yet — use runtime = \"container\"")]
-    LocalRuntimeLaunchUnavailable,
-
     #[error("pool slot acquisition failed: {reason}")]
     PoolSlotFailed { reason: String },
 
@@ -125,8 +121,7 @@ impl From<CoreError> for Status {
             CoreError::InvalidRuntime { .. } => {
                 simple_status(Code::InvalidArgument, &err, INVALID_ARGUMENT)
             }
-            CoreError::LocalRuntimeUnsupported { .. }
-            | CoreError::LocalRuntimeLaunchUnavailable => {
+            CoreError::LocalRuntimeUnsupported { .. } => {
                 simple_status(Code::FailedPrecondition, &err, INVALID_ARGUMENT)
             }
             CoreError::PoolSlotFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
@@ -360,6 +355,7 @@ struct ProjectLaunchFields {
     brain_dir: Option<String>,
     project_skills: Vec<String>,
     forge: Option<ur_config::ForgeType>,
+    allow_no_verify: bool,
 }
 
 impl LaunchManager {
@@ -704,6 +700,7 @@ impl LaunchManager {
                 brain_dir: proj.brain_dir.clone(),
                 project_skills: proj.skills.clone(),
                 forge: proj.resolve_forge(),
+                allow_no_verify: proj.git.allow_no_verify,
             },
             _ => ProjectLaunchFields::default(),
         }
@@ -743,12 +740,16 @@ impl LaunchManager {
         let (skills, extra_skill_mounts) =
             self.worker_manager
                 .merge_skills(strategy, mode_skills, &fields.project_skills);
-        let image_id = resolve_worker_image(
-            agent,
-            &req.image_id,
-            &fields.resolved_image,
-            &self.worker_image_tag,
-        )?;
+        // A local worker runs on the host: there is no image to resolve.
+        let image_id = match runtime {
+            ur_config::WorkerRuntime::Container => resolve_worker_image(
+                agent,
+                &req.image_id,
+                &fields.resolved_image,
+                &self.worker_image_tag,
+            )?,
+            ur_config::WorkerRuntime::Local => String::new(),
+        };
         let cpus = if req.cpus == 0 {
             ur_config::DEFAULT_WORKER_CPUS
         } else {
@@ -785,6 +786,7 @@ impl LaunchManager {
             workspace_brain_dir: self.workspace_brain_dir.clone(),
             forge: fields.forge,
             runtime,
+            allow_no_verify: fields.allow_no_verify,
         })
     }
 
@@ -808,7 +810,10 @@ impl LaunchManager {
         } = self.resolve_launch_workspace(&req).await?;
         let slot_id = slot_claim.as_ref().map(|claim| claim.slot_id().to_owned());
 
-        check_credentials_seeded(agent, &self.config_dir)?;
+        // A local agent uses the host's own credentials (OS keychain).
+        if runtime == ur_config::WorkerRuntime::Container {
+            check_credentials_seeded(agent, &self.config_dir)?;
+        }
 
         // For Manual mode, use the auto-generated process_id; otherwise use req.worker_id.
         let process_id = generated_process_id.unwrap_or_else(|| req.worker_id.clone());
@@ -880,7 +885,13 @@ impl LaunchManager {
         let stop_result = match WorkerId::parse(id) {
             Ok(worker_id) => {
                 let res = self.worker_manager.stop_by_worker_id(&worker_id).await;
-                if res.is_err() {
+                // A local worker's stop error is builderd's; a process-id
+                // retry would only mask it.
+                let local = matches!(
+                    self.worker_repo.get_worker(id).await,
+                    Ok(Some(w)) if w.runtime == ur_config::WorkerRuntime::Local
+                );
+                if res.is_err() && !local {
                     // worker_id parse can false-positive on process_ids like
                     // "ping-test" (suffix happens to be 4 lowercase chars).
                     // Fall back to process_id lookup.

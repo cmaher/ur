@@ -58,6 +58,17 @@ struct Cli {
     agent_shared: Option<PathBuf>,
 }
 
+/// builderd's address as a host process dials it: an unspecified bind
+/// (`0.0.0.0` / `::`) is reached on loopback.
+fn host_workerd_addr(addr: SocketAddr) -> String {
+    let ip = if addr.ip().is_unspecified() {
+        IpAddr::from([127, 0, 0, 1])
+    } else {
+        addr.ip()
+    };
+    SocketAddr::new(ip, addr.port()).to_string()
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -106,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
         local_registry.clone(),
         ur_config::LOCAL_TMUX_SOCKET.to_owned(),
         LOCAL_EXIT_POLL,
+        host_workerd_addr(addr),
         None,
     );
     let pool_handler = pool_handler::BuilderPoolHandler {
@@ -140,4 +152,23 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_workerd_addr_maps_unspecified_binds_to_loopback() {
+        let port = 12323;
+        for (bind, want) in [
+            ("0.0.0.0", "127.0.0.1:12323"),
+            ("::", "127.0.0.1:12323"),
+            ("127.0.0.1", "127.0.0.1:12323"),
+            ("172.17.0.1", "172.17.0.1:12323"),
+        ] {
+            let addr = SocketAddr::new(bind.parse().unwrap(), port);
+            assert_eq!(host_workerd_addr(addr), want, "{bind}");
+        }
+    }
 }

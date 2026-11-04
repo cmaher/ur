@@ -51,7 +51,7 @@ ur stop
 | Service | Default Port | Config Field | Derivation |
 |---------|-------------|-------------|------------|
 | ur-server (gRPC) | 12321 | `server_port` | Explicit or default |
-| Worker gRPC | 12322 | `worker_port` | `server_port + 1` |
+| Worker gRPC | 12322 | `worker_port` | `server_port + 1` (published on host `127.0.0.1` for local workers) |
 | builderd (gRPC) | 12323 | `builderd_port` | `server_port + 2` |
 
 All ports derive from `server_port` when not explicitly set, ensuring test isolation

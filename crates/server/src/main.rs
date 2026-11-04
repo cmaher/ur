@@ -682,6 +682,9 @@ async fn init_managers(
         worker_repo.clone(),
         cfg.global_skills.clone(),
         builder_container_client.clone(),
+        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
+            builderd_retry_channel.channel().clone(),
+        ),
     );
 
     reconcile_workers(&worker_repo, &builder_container_client).await?;

@@ -75,6 +75,7 @@ impl Fixture {
             registry.clone(),
             socket.clone(),
             exit_poll,
+            "127.0.0.1:2".into(),
             Some(root.join("bin/stub-agent")),
         );
         Fixture {
@@ -112,6 +113,7 @@ impl Fixture {
             memory_dir: None,
             brain_dir: None,
             skills: Vec::new(),
+            host_skills: Vec::new(),
             instruction_strategy: None,
             project_key: "p".into(),
             project_instruction_path: None,
@@ -128,7 +130,7 @@ impl Fixture {
             (ur_config::UR_WORKER_ID_ENV.into(), "spoofed".into()),
             (ur_config::UR_SERVER_ADDR_ENV.into(), "127.0.0.1:1".into()),
             (ur_config::UR_WORKER_SECRET_ENV.into(), "secret".into()),
-            (ur_config::UR_WORKERD_ADDR_ENV.into(), "127.0.0.1:2".into()),
+            (ur_config::UR_WORKERD_ADDR_ENV.into(), "spoofed:9".into()),
         ]
     }
 
@@ -201,6 +203,7 @@ async fn launch_routes_two_workers_independently_and_stops() {
             format!("UR_DRIVE={}", drive.display()),
             "UR_RUNTIME=local".into(),
             "UR_SERVER_ADDR=127.0.0.1:1".into(),
+            "UR_WORKERD_ADDR=127.0.0.1:2".into(),
         ] {
             assert!(env.lines().any(|l| l == line), "{id} env missing {line}");
         }
@@ -368,7 +371,6 @@ async fn rejects_tmux_renamed_ids_and_missing_server_env() {
     for key in [
         ur_config::UR_SERVER_ADDR_ENV,
         ur_config::UR_WORKER_SECRET_ENV,
-        ur_config::UR_WORKERD_ADDR_ENV,
     ] {
         for env in [
             f.env()
