@@ -5,7 +5,8 @@ use ur_rpc::proto::builder_local_worker::{LaunchLocalWorkerRequest, StopLocalWor
 
 /// Clone-able wrapper around the generated `BuilderLocalWorkerServiceClient`,
 /// sharing builderd's retry channel with the other builderd clients.
-/// builderd's `Status` is returned unchanged so it reaches the CLI as-is.
+/// builderd's error text is preserved; callers wrap it into a `String`, so
+/// the CLI sees the message but not the original `Status` code.
 #[derive(Clone)]
 pub struct BuilderLocalWorkerClient {
     inner: BuilderLocalWorkerServiceClient<tonic::transport::Channel>,

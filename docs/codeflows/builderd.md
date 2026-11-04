@@ -164,9 +164,8 @@ skill to its resolved source, and `check_assets` checks the same resolution.
 ### Server side
 
 `WorkerManager::run_and_record` branches on `WorkerConfig.runtime`; the local path lives in
-`crates/server/src/local_launch.rs` (`build_local_launch_request`, a child module of
-`worker.rs`). It inserts the provisional row (`container_id = ur-<id>`) → `LaunchLocalWorker`
-→ marks `running`; on failure it deletes the row and returns builderd's status, and
+`crates/server/src/local_launch.rs` (`build_local_launch_request`). It inserts the provisional row (`container_id = ur-<id>`) → `LaunchLocalWorker`
+→ marks `running`; on failure it deletes the row and returns builderd's error text, and
 `LaunchManager` drops the slot claim as for containers. No Docker network, Squid env, image
 or credential gate. Mounts, memory/brain dirs, instruction file and host skills are host
 paths (templates resolve against the host config dir). Stop marks the row `stopping`, calls

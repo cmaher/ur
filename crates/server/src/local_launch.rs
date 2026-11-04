@@ -17,11 +17,11 @@ use ur_rpc::proto::builder_local_worker::{
     EnvVar, HostSkill, LaunchLocalWorkerRequest, LocalMount,
 };
 
-use super::{
+use crate::run_opts_builder::{prepare_host_dir, resolve_mount_source};
+use crate::worker::{
     WorkerConfig, WorkerId, WorkerManager, context_mount_configs, resolve_brain_dir,
     resolve_memory_dir, resolve_project_instruction, worker_skills,
 };
-use crate::run_opts_builder::{prepare_host_dir, resolve_mount_source};
 
 /// Recorded as the row's `container_id`: builderd's tmux session name.
 fn local_session_name(worker_id: &WorkerId) -> String {
@@ -35,8 +35,8 @@ fn host_string(path: &Path) -> String {
 impl WorkerManager {
     /// `run_and_record` for `runtime = local`. On launch failure builderd has
     /// already torn the worker down; the provisional row is deleted and
-    /// builderd's error returned. Returns `(session_name, worker_secret)`.
-    pub(super) async fn run_and_record_local(
+    /// builderd's error text returned. Returns `(session_name, worker_secret)`.
+    pub(crate) async fn run_and_record_local(
         &self,
         config: WorkerConfig,
     ) -> Result<(String, String), String> {
@@ -86,8 +86,8 @@ impl WorkerManager {
     }
 
     /// Mark the row `stopping`, then tear the worker down via builderd. On
-    /// failure the row stays `stopping` and builderd's error is returned.
-    pub(super) async fn stop_local_worker(&self, worker_id: &WorkerId) -> Result<(), String> {
+    /// failure the row stays `stopping` and builderd's error text is returned.
+    pub(crate) async fn stop_local_worker(&self, worker_id: &WorkerId) -> Result<(), String> {
         self.worker_repo
             .update_worker_container_status(&worker_id.0, "stopping")
             .await

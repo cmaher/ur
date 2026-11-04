@@ -219,6 +219,10 @@ impl LocalWorkspaceManager {
             .map_err(io(format!("create {}", potential.display())))?;
         for skill in &req.skills {
             let link = potential.join(skill);
+            // A repeated name is installed once, as in containers.
+            if tokio::fs::symlink_metadata(&link).await.is_ok() {
+                continue;
+            }
             tokio::fs::symlink(self.skill_source(req, skill), &link)
                 .await
                 .map_err(io(format!("link skill source {}", link.display())))?;
@@ -939,6 +943,20 @@ mod tests {
         };
         let msg = precondition_msg(f.manager.build(&missing).await.unwrap_err());
         assert!(msg.contains("host/missing"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn duplicate_skill_names_install_once() {
+        let f = Fixture::new();
+        let req = LocalWorkspaceRequest {
+            skills: vec!["implement".into(), "implement".into()],
+            ..f.request()
+        };
+        f.manager.build(&req).await.unwrap();
+        assert!(
+            f.path("workspace/drive/w1/.ur/plugin/skills/implement/SKILL.md")
+                .exists()
+        );
     }
 
     #[tokio::test]

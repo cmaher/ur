@@ -11,6 +11,7 @@ pub mod grpc_server;
 pub mod grpc_ticket;
 pub mod hostexec;
 pub mod launch_runtime;
+pub mod local_launch;
 pub mod log_cleanup;
 pub mod logging;
 pub mod network_manager;

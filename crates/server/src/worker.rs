@@ -23,9 +23,6 @@ use crate::builder_local_worker_client::BuilderLocalWorkerClient;
 use crate::run_opts_builder::RunOptsBuilder;
 use crate::strategy::WorkerStrategy;
 
-#[path = "local_launch.rs"]
-mod local_launch;
-
 /// Unique identifier for a running worker, format: `{process_id}-{4 random [a-z0-9]}`.
 ///
 /// The random suffix prevents collisions when the same process_id is reused
@@ -655,7 +652,7 @@ pub struct WorkerManager {
     workspace: PathBuf,
     /// Host-side config directory path, used to construct volume mounts for
     /// worker containers (e.g., shared credentials file).
-    host_config_dir: PathBuf,
+    pub(crate) host_config_dir: PathBuf,
     /// Locally-accessible config directory path, used for filesystem existence
     /// checks. Equals `host_config_dir` when the server runs natively; differs
     /// when the server runs inside a container where the config dir is mounted
@@ -673,14 +670,14 @@ pub struct WorkerManager {
     network_config: NetworkConfig,
     /// TCP port the shared worker gRPC server listens on.
     /// Injected into containers as part of `UR_SERVER_ADDR`.
-    worker_port: u16,
+    pub(crate) worker_port: u16,
     worker_modes: WorkerModesConfig,
-    worker_repo: WorkerRepo,
+    pub(crate) worker_repo: WorkerRepo,
     global_skills: GlobalSkillsConfig,
     /// gRPC client for launching/stopping containers via builderd on the host.
     builder_container_client: BuilderContainerClient,
     /// gRPC client for launching/stopping `runtime = local` workers via builderd.
-    builder_local_worker_client: BuilderLocalWorkerClient,
+    pub(crate) builder_local_worker_client: BuilderLocalWorkerClient,
 }
 
 impl WorkerManager {
@@ -1122,7 +1119,7 @@ impl WorkerManager {
 
     /// Persist the worker credential before container launch so workerd can
     /// authenticate while builderd waits for its health endpoint.
-    async fn record_provisioning_worker(
+    pub(crate) async fn record_provisioning_worker(
         &self,
         config: &WorkerConfig,
         container_name: &str,
@@ -1159,7 +1156,7 @@ impl WorkerManager {
 
     /// Store Docker's immutable container ID, mark the worker running, and
     /// link it to its pool slot after startup succeeds.
-    async fn finalize_worker_launch(
+    pub(crate) async fn finalize_worker_launch(
         &self,
         config: &WorkerConfig,
         container_id: &str,
@@ -1179,7 +1176,11 @@ impl WorkerManager {
         Ok(())
     }
 
-    async fn remove_provisioning_worker(&self, worker_id: &WorkerId, error: String) -> String {
+    pub(crate) async fn remove_provisioning_worker(
+        &self,
+        worker_id: &WorkerId,
+        error: String,
+    ) -> String {
         match self.worker_repo.delete_worker(&worker_id.0).await {
             Ok(_) => error,
             Err(cleanup) => format!("{error}; failed to remove provisional worker: {cleanup}"),
@@ -1490,7 +1491,7 @@ fn build_worker_env_vars(
 }
 
 /// The worker's skill names: `config.skills`, plus `gitea` for a Gitea forge.
-fn worker_skills(config: &WorkerConfig) -> Vec<String> {
+pub(crate) fn worker_skills(config: &WorkerConfig) -> Vec<String> {
     let mut skills = config.skills.clone();
     if config.forge == Some(ur_config::ForgeType::Gitea) && !skills.iter().any(|s| s == "gitea") {
         skills.push("gitea".to_string());
@@ -1554,7 +1555,7 @@ fn remap_to_container_config(
 /// When `instruction_md` is None and a non-empty `project_key` is provided,
 /// checks `<host_config_dir>/projects/<project_key>/{agent.instruction_filename()}`
 /// — if it exists, returns the absolute path as a host path string.
-fn resolve_project_instruction(
+pub(crate) fn resolve_project_instruction(
     instruction_md: &Option<String>,
     project_key: &str,
     host_config_dir: &std::path::Path,
@@ -1583,7 +1584,7 @@ fn resolve_project_instruction(
 /// When `memory_dir` is None and a non-empty `project_key` is provided, checks
 /// `<host_config_dir>/projects/<project_key>/memory/` — if it exists, returns
 /// the absolute path as a host path string.
-fn resolve_memory_dir(
+pub(crate) fn resolve_memory_dir(
     memory_dir: &Option<String>,
     project_key: &str,
     host_config_dir: &std::path::Path,
@@ -1615,7 +1616,7 @@ fn resolve_memory_dir(
 ///    explicitly so an upgrade never starts mounting a brain nobody asked for.
 /// 3. `<host_config_dir>/projects/<project_key>/brain/` if it exists on disk.
 /// 4. None — no brain mount.
-fn resolve_brain_dir(
+pub(crate) fn resolve_brain_dir(
     brain_dir: &Option<String>,
     workspace_brain_dir: &Option<String>,
     project_key: &str,
@@ -1658,7 +1659,9 @@ fn brain_host_path(config: &WorkerConfig, host_config_dir: &std::path::Path) -> 
 ///
 /// Each context repo is mounted read-only at `/context/<project_key>` inside
 /// the container. The host path is an absolute path to the shared pool slot.
-fn context_mount_configs(context_mounts: &[(String, PathBuf)]) -> Vec<ur_config::MountConfig> {
+pub(crate) fn context_mount_configs(
+    context_mounts: &[(String, PathBuf)],
+) -> Vec<ur_config::MountConfig> {
     context_mounts
         .iter()
         .map(|(project_key, host_path)| ur_config::MountConfig {

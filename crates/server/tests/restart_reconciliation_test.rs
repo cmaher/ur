@@ -471,6 +471,7 @@ async fn insert_worker_with_slot(
     secret: &str,
     process_id: &str,
     container_id: &str,
+    runtime: workflow_db::model::WorkerRuntime,
 ) {
     let slot = workflow_db::model::Slot {
         id: slot_id.to_owned(),
@@ -497,7 +498,7 @@ async fn insert_worker_with_slot(
         updated_at: chrono::Utc::now().to_rfc3339(),
         idle_redispatch_count: 0,
         brain_path: None,
-        runtime: workflow_db::model::WorkerRuntime::Container,
+        runtime,
     };
     worker_repo.insert_worker(&worker).await.unwrap();
     worker_repo
@@ -533,6 +534,7 @@ async fn restart_mixed_live_and_dead_workers() {
         live_secret,
         "proc-live",
         "container-alive",
+        workflow_db::model::WorkerRuntime::Container,
     )
     .await;
 
@@ -545,6 +547,7 @@ async fn restart_mixed_live_and_dead_workers() {
         dead_secret,
         "proc-dead",
         "container-dead",
+        workflow_db::model::WorkerRuntime::Container,
     )
     .await;
 
@@ -628,6 +631,7 @@ async fn restart_with_unreachable_runtime_leaves_workers_untouched() {
         "secret-unreachable",
         "proc-unreachable",
         "container-unreachable",
+        workflow_db::model::WorkerRuntime::Container,
     )
     .await;
 
@@ -653,5 +657,69 @@ async fn restart_with_unreachable_runtime_leaves_workers_untouched() {
     assert!(
         slot_link.is_some(),
         "slot must stay held while liveness is unknown"
+    );
+}
+
+/// Scenario 5: a live `runtime = local` worker has no container, so a Docker
+/// probe would report it dead. Reconciliation must leave it running with its
+/// slot, while a container row is still reconciled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restart_leaves_local_workers_untouched() {
+    let test_db = ur_db_test::TestDb::new().await;
+    let worker_repo = workflow_db::WorkerRepo::new(test_db.workflow_pool().clone());
+
+    insert_worker_with_slot(
+        &worker_repo,
+        "slot-local",
+        "0",
+        "/tmp/local/0",
+        "worker-local",
+        "secret-local",
+        "proc-local",
+        "ur-worker-local",
+        workflow_db::model::WorkerRuntime::Local,
+    )
+    .await;
+    insert_worker_with_slot(
+        &worker_repo,
+        "slot-container",
+        "1",
+        "/tmp/local/1",
+        "worker-container",
+        "secret-container",
+        "proc-container",
+        "container-dead",
+        workflow_db::model::WorkerRuntime::Container,
+    )
+    .await;
+
+    let probed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let result = worker_repo
+        .reconcile_workers(|cid| {
+            let probed = probed.clone();
+            async move {
+                probed.lock().unwrap().push(cid);
+                Ok(false)
+            }
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.indeterminate, vec!["worker-local"]);
+    assert_eq!(result.marked_stopped, vec!["worker-container"]);
+    assert_eq!(*probed.lock().unwrap(), vec!["container-dead"]);
+    let local = worker_repo
+        .get_worker("worker-local")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(local.container_status, "running");
+    assert!(
+        worker_repo
+            .get_worker_slot("worker-local")
+            .await
+            .unwrap()
+            .is_some(),
+        "a local worker keeps its slot"
     );
 }
