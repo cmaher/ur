@@ -42,10 +42,7 @@ message LaunchLocalWorkerRequest {
   bool allow_no_verify = 14;
 }
 
-message LaunchLocalWorkerResponse {
-  string session_name = 1;
-  string drive = 2;
-}
+message LaunchLocalWorkerResponse {}
 
 message StopLocalWorkerRequest {
   string worker_id = 1;

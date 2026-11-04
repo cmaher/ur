@@ -1,7 +1,8 @@
 //! Lifecycle of host-local workers: a tmux session in the pool slot running
 //! the agent, plus the worker's in-process `WorkerDaemonServiceImpl`.
 //!
-//! Launch order (ur-4p34c): validate agent → build drive → sync startup hooks
+//! Launch order (ur-4p34c): validate id/env → build drive (validates agent)
+//! → sync startup hooks
 //! → tmux session → background hooks in window `:bg` → registry insert →
 //! agent argv typed into window 0. Any failure after the drive build runs the
 //! full teardown before the error is returned.
@@ -47,7 +48,6 @@ pub fn session_name(worker_id: &str) -> String {
 /// One running local worker.
 struct LocalWorker {
     daemon: WorkerDaemonServiceImpl,
-    session: tmux::Session,
     slot_path: PathBuf,
     agent: AgentType,
     watcher: AbortHandle,
@@ -77,14 +77,10 @@ impl LocalWorkerRegistry {
         self.read().contains_key(worker_id)
     }
 
-    /// Registered ids (sorted) with their sessions.
-    fn sessions(&self) -> Vec<(String, tmux::Session)> {
-        let mut out: Vec<_> = self
-            .read()
-            .iter()
-            .map(|(id, w)| (id.clone(), w.session.clone()))
-            .collect();
-        out.sort_by(|a, b| a.0.cmp(&b.0));
+    /// Registered ids, sorted.
+    fn ids(&self) -> Vec<String> {
+        let mut out: Vec<_> = self.read().keys().cloned().collect();
+        out.sort();
         out
     }
 
@@ -97,10 +93,10 @@ impl LocalWorkerRegistry {
     }
 
     /// What teardown needs, without removing the entry.
-    fn teardown_target(&self, worker_id: &str) -> Option<(tmux::Session, PathBuf, AgentType)> {
+    fn teardown_target(&self, worker_id: &str) -> Option<(PathBuf, AgentType)> {
         self.read()
             .get(worker_id)
-            .map(|w| (w.session.clone(), w.slot_path.clone(), w.agent))
+            .map(|w| (w.slot_path.clone(), w.agent))
     }
 }
 
@@ -151,12 +147,6 @@ impl LocalWorkerManager {
         req: &LocalWorkspaceRequest,
         env: Vec<(String, String)>,
     ) -> Result<PathBuf> {
-        if !req.agent.supports_local_runtime() {
-            return Err(Status::failed_precondition(format!(
-                "agent '{}' does not support the local runtime",
-                req.agent.name()
-            )));
-        }
         validate_launch(&req.worker_id, &env)?;
         let session = self.session(&req.worker_id);
         let orphan = session
@@ -177,7 +167,6 @@ impl LocalWorkerManager {
                 let cleanup = self
                     .teardown(
                         &req.worker_id,
-                        &session,
                         &req.slot_path,
                         req.agent,
                         TeardownCaller::Stop,
@@ -213,7 +202,11 @@ impl LocalWorkerManager {
             .resolve(HookKind::Background)
             .map_err(step("resolve background startup hooks"))?;
 
-        let identity = identity(&req.worker_id, &env);
+        let identity = WorkerIdentity {
+            server_addr: env_value(&env, ur_config::UR_SERVER_ADDR_ENV).to_owned(),
+            worker_id: req.worker_id.clone(),
+            worker_secret: env_value(&env, ur_config::UR_WORKER_SECRET_ENV).to_owned(),
+        };
         let session = tmux::Session::create(tmux::CreateOptions {
             name: session_name(&req.worker_id),
             socket: Some(self.tmux_socket.clone()),
@@ -256,7 +249,6 @@ impl LocalWorkerManager {
             req.worker_id.clone(),
             LocalWorker {
                 daemon,
-                session: session.clone(),
                 slot_path: req.slot_path.clone(),
                 agent: req.agent,
                 watcher,
@@ -309,11 +301,10 @@ impl LocalWorkerManager {
     }
 
     async fn teardown_known(&self, worker_id: &str, caller: TeardownCaller) -> Result<()> {
-        let Some((session, slot_path, agent)) = self.registry.teardown_target(worker_id) else {
+        let Some((slot_path, agent)) = self.registry.teardown_target(worker_id) else {
             return Ok(());
         };
-        self.teardown(worker_id, &session, &slot_path, agent, caller)
-            .await
+        self.teardown(worker_id, &slot_path, agent, caller).await
     }
 
     /// Kill the session, deregister, tear down the workspace. Every step is
@@ -321,12 +312,12 @@ impl LocalWorkerManager {
     async fn teardown(
         &self,
         worker_id: &str,
-        session: &tmux::Session,
         slot_path: &Path,
         agent: AgentType,
         caller: TeardownCaller,
     ) -> Result<()> {
-        let mut first_err = session
+        let mut first_err = self
+            .session(worker_id)
             .kill()
             .await
             .err()
@@ -345,11 +336,11 @@ impl LocalWorkerManager {
     /// Registered workers (sorted by id) and whether each session is alive.
     pub async fn list(&self) -> Result<Vec<(String, bool)>> {
         let mut out = Vec::new();
-        for (id, session) in self.registry.sessions() {
-            let alive = session
-                .exists()
-                .await
-                .map_err(|e| Status::internal(format!("check tmux session for '{id}': {e:#}")))?;
+        for id in self.registry.ids() {
+            let alive =
+                self.session(&id).exists().await.map_err(|e| {
+                    Status::internal(format!("check tmux session for '{id}': {e:#}"))
+                })?;
             out.push((id, alive));
         }
         Ok(out)
@@ -407,15 +398,6 @@ fn env_value<'a>(env: &'a [(String, String)], key: &str) -> &'a str {
         .rev()
         .find(|(k, _)| k == key)
         .map_or("", |(_, v)| v.as_str())
-}
-
-/// The daemon's server identity, from the server-supplied env.
-fn identity(worker_id: &str, env: &[(String, String)]) -> WorkerIdentity {
-    WorkerIdentity {
-        server_addr: env_value(env, ur_config::UR_SERVER_ADDR_ENV).to_owned(),
-        worker_id: worker_id.to_owned(),
-        worker_secret: env_value(env, ur_config::UR_WORKER_SECRET_ENV).to_owned(),
-    }
 }
 
 /// Request env, minus anything builderd sets, followed by builderd's own.

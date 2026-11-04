@@ -24,12 +24,9 @@ impl WorkerdRouter {
         let id = request
             .metadata()
             .get(ur_config::WORKER_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
             .ok_or_else(|| {
-                Status::invalid_argument(format!("missing {} header", ur_config::WORKER_ID_HEADER))
-            })?
-            .to_str()
-            .map_err(|e| {
-                Status::invalid_argument(format!("bad {} header: {e}", ur_config::WORKER_ID_HEADER))
+                Status::invalid_argument(format!("missing {}", ur_config::WORKER_ID_HEADER))
             })?;
         self.registry
             .daemon(id)

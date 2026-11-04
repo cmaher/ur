@@ -10,7 +10,7 @@ use ur_rpc::proto::builder_local_worker::{
     ListLocalWorkersResponse, LocalWorkerStatus, StopLocalWorkerRequest, StopLocalWorkerResponse,
 };
 
-use crate::local_worker::{LocalWorkerManager, session_name};
+use crate::local_worker::LocalWorkerManager;
 use crate::local_workspace::{LocalMount, LocalWorkspaceRequest};
 
 #[derive(Clone)]
@@ -67,29 +67,15 @@ impl BuilderLocalWorkerService for BuilderLocalWorkerHandler {
         request: Request<LaunchLocalWorkerRequest>,
     ) -> Result<Response<LaunchLocalWorkerResponse>, Status> {
         let (req, env) = workspace_request(request.into_inner())?;
-        let drive = self.manager.launch(&req, env).await.map_err(|e| {
-            Status::new(
-                e.code(),
-                format!("launch local worker '{}': {}", req.worker_id, e.message()),
-            )
-        })?;
-        Ok(Response::new(LaunchLocalWorkerResponse {
-            session_name: session_name(&req.worker_id),
-            drive: drive.to_string_lossy().into_owned(),
-        }))
+        self.manager.launch(&req, env).await?;
+        Ok(Response::new(LaunchLocalWorkerResponse {}))
     }
 
     async fn stop_local_worker(
         &self,
         request: Request<StopLocalWorkerRequest>,
     ) -> Result<Response<StopLocalWorkerResponse>, Status> {
-        let worker_id = request.into_inner().worker_id;
-        self.manager.stop(&worker_id).await.map_err(|e| {
-            Status::new(
-                e.code(),
-                format!("stop local worker '{worker_id}': {}", e.message()),
-            )
-        })?;
+        self.manager.stop(&request.into_inner().worker_id).await?;
         Ok(Response::new(StopLocalWorkerResponse {}))
     }
 

@@ -136,11 +136,11 @@ pool slot inside a tmux session `ur-<id>` on builderd's dedicated socket
 `LocalWorkerManager::launch` (`crates/builderd/src/local_worker.rs`):
 
 ```
-validate agent (supports_local_runtime, else FailedPrecondition)
-  → InvalidArgument if the id contains '.' or ':' (tmux would rename the session) or the
+InvalidArgument if the id contains '.' or ':' (tmux would rename the session) or the
     request env lacks UR_SERVER_ADDR / UR_WORKER_SECRET / UR_WORKERD_ADDR
   → AlreadyExists if the id is registered or its session exists (live worker untouched)
-  → LocalWorkspaceManager.build (drive, memory link, .ur/ customization; self-cleans)
+  → LocalWorkspaceManager.build: agent check (supports_local_runtime, else FailedPrecondition
+    before any fs work), then drive, memory link, .ur/ customization; self-cleans
   → sync startup hooks in the slot (failure → FailedPrecondition with hook stderr)
   → tmux -L ur new-session -d -s ur-<id> -c <slot> -e <env…>
   → background startup hooks in window :bg (new-window -c <slot>)
