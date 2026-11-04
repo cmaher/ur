@@ -50,6 +50,10 @@ pub mod proto {
         tonic::include_proto!("ur.builder_pool");
     }
     #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
+    pub mod builder_local_worker {
+        tonic::include_proto!("ur.builder_local_worker");
+    }
+    #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
     pub mod ticket {
         tonic::include_proto!("ur.ticket");
     }

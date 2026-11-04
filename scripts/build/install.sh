@@ -33,4 +33,17 @@ cp "$TARGET_DIR/urui" "$INSTALL_DIR/urui"
 cp "$TARGET_DIR/builderd" "$INSTALL_DIR/builderd"
 cp "$TARGET_DIR/ur-workertools" "$INSTALL_DIR/ur-workertools"
 echo "Installed ur, urui, builderd, ur-workertools to $INSTALL_DIR/"
+
+# Agent assets for local workers (builderd --agent-shared), replacing the
+# previous copy. Same order and override as containers/worker-base/Dockerfile:
+# the repo's skills land after the vendored ones and win a name collision.
+AGENT_SHARED="${UR_CONFIG:-$HOME/.ur}/agent-shared"
+BASE=containers/worker-base
+rm -rf "$AGENT_SHARED"
+mkdir -p "$AGENT_SHARED/potential-skills"
+cp -R "$BASE/vendor/superpowers/skills/." "$AGENT_SHARED/potential-skills/"
+cp -R "$BASE/potential-skills/." "$AGENT_SHARED/potential-skills/"
+cp -R "$BASE/instructions" "$AGENT_SHARED/instructions"
+cp -R "$BASE/shared-instructions" "$AGENT_SHARED/shared-instructions"
+echo "Installed agent assets to $AGENT_SHARED/"
 echo "Run 'ur server start' to launch the server"

@@ -9,7 +9,7 @@ pub use inputs::{InstructionInputs, ProjectInstruction, ProjectInstructionMode, 
 pub use instructions::InitInstructionsManager;
 pub use settings::InitSettingsManager;
 pub use skills::InitSkillsManager;
-pub use startup_hooks::StartupHooksManager;
+pub use startup_hooks::{HookKind, StartupHooksManager};
 
 use std::path::{Path, PathBuf};
 

@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=../../proto/builder.proto");
     println!("cargo:rerun-if-changed=../../proto/builder_container.proto");
     println!("cargo:rerun-if-changed=../../proto/builder_pool.proto");
+    println!("cargo:rerun-if-changed=../../proto/builder_local_worker.proto");
     println!("cargo:rerun-if-changed=../../proto/ticket.proto");
     println!("cargo:rerun-if-changed=../../proto/workerd.proto");
     println!("cargo:rerun-if-changed=../../proto/remote_repo.proto");
@@ -19,6 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         proto_dir.join("builder.proto"),
         proto_dir.join("builder_container.proto"),
         proto_dir.join("builder_pool.proto"),
+        proto_dir.join("builder_local_worker.proto"),
         proto_dir.join("ticket.proto"),
         proto_dir.join("workerd.proto"),
         proto_dir.join("remote_repo.proto"),

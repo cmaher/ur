@@ -7,19 +7,24 @@ use tracing::info;
 
 use ur_rpc::proto::builder::builder_daemon_service_server::BuilderDaemonServiceServer;
 use ur_rpc::proto::builder_container::builder_container_service_server::BuilderContainerServiceServer;
+use ur_rpc::proto::builder_local_worker::builder_local_worker_service_server::BuilderLocalWorkerServiceServer;
 use ur_rpc::proto::builder_pool::builder_pool_service_server::BuilderPoolServiceServer;
+use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonServiceServer;
 
 mod container_handler;
 mod handler;
-// Wired into BuilderLocalWorkerService by ur-4p34c.
-#[allow(dead_code)]
 mod local_settings;
-#[allow(dead_code)]
+mod local_worker;
+mod local_worker_handler;
 mod local_workspace;
 mod logging;
 mod overlay;
 mod pool_handler;
 mod registry;
+mod workerd_router;
+
+/// How often a local worker's exit watcher polls its agent pane.
+const LOCAL_EXIT_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Parser)]
 #[command(name = "builderd", about = "Ur builder execution daemon")]
@@ -45,6 +50,12 @@ struct Cli {
     /// Defaults to `~/.ur` (same as $UR_CONFIG). Overrides the UR_CONFIG env var.
     #[arg(long)]
     config_dir: Option<PathBuf>,
+
+    /// Agent asset root for local workers (`potential-skills/`, `instructions/`,
+    /// `shared-instructions/`), installed by `scripts/build/install.sh`.
+    /// Defaults to `<config_dir>/agent-shared`.
+    #[arg(long)]
+    agent_shared: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -79,6 +90,24 @@ async fn main() -> anyhow::Result<()> {
         config_dir: config_dir.clone(),
         active: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
+    let local_registry = local_worker::LocalWorkerRegistry::default();
+    let local_workers = local_worker::LocalWorkerManager::new(
+        local_workspace::LocalWorkspaceManager::new(
+            config_dir.clone(),
+            pool_workspace.clone(),
+            home,
+            cli.agent_shared
+                .unwrap_or_else(|| config_dir.join("agent-shared")),
+            local_settings::LocalSettingsManager,
+        ),
+        local_registry.clone(),
+        ur_config::LOCAL_TMUX_SOCKET.to_owned(),
+        LOCAL_EXIT_POLL,
+        None,
+    );
     let pool_handler = pool_handler::BuilderPoolHandler {
         workspace: pool_workspace,
         overlays: overlays.clone(),
@@ -97,6 +126,16 @@ async fn main() -> anyhow::Result<()> {
         .add_service(BuilderDaemonServiceServer::new(handler))
         .add_service(BuilderContainerServiceServer::new(container_handler))
         .add_service(BuilderPoolServiceServer::new(pool_handler))
+        .add_service(BuilderLocalWorkerServiceServer::new(
+            local_worker_handler::BuilderLocalWorkerHandler {
+                manager: local_workers,
+            },
+        ))
+        .add_service(WorkerDaemonServiceServer::new(
+            workerd_router::WorkerdRouter {
+                registry: local_registry,
+            },
+        ))
         .serve(addr)
         .await?;
 

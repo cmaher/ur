@@ -190,7 +190,7 @@ impl LocalWorkspaceManager {
     }
 
     /// `WorkerPaths` rooted at the slot (workspace) and the drive's `.ur/`.
-    fn worker_paths(&self, drive: &Path, req: &LocalWorkspaceRequest) -> WorkerPaths {
+    pub(crate) fn worker_paths(&self, drive: &Path, req: &LocalWorkspaceRequest) -> WorkerPaths {
         let ur_dir = drive.join(UR_DIR);
         WorkerPaths {
             workspace: req.slot_path.clone(),

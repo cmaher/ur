@@ -120,6 +120,52 @@ clone-able wrapper used by the server. It connects to builderd via the same
 
 Proto: `proto/builder_container.proto` (`ur.builder_container` package).
 
+## BuilderLocalWorkerService and the routed WorkerDaemonService
+
+Builderd also hosts host-local workers (`runtime = "local"`): the agent runs natively in a
+pool slot inside a tmux session `ur-<id>` on builderd's dedicated socket
+(`tmux -L ur`, `ur_config::LOCAL_TMUX_SOCKET`), and builderd serves each worker's
+`WorkerDaemonServiceImpl` (workerd lib) in-process.
+
+| RPC | Purpose | Handler |
+|---|---|---|
+| `LaunchLocalWorker` | Build the drive, run startup hooks, start the session and agent | `crates/builderd/src/local_worker_handler.rs` |
+| `StopLocalWorker` | Teardown; unknown/already-stopped ids succeed | `crates/builderd/src/local_worker_handler.rs` |
+| `ListLocalWorkers` | Registered ids with tmux session liveness | `crates/builderd/src/local_worker_handler.rs` |
+
+`LocalWorkerManager::launch` (`crates/builderd/src/local_worker.rs`):
+
+```
+validate agent (supports_local_runtime, else FailedPrecondition)
+  → AlreadyExists if the id is registered or its session exists (live worker untouched)
+  → LocalWorkspaceManager.build (drive, memory link, .ur/ customization; self-cleans)
+  → sync startup hooks in the slot (failure → FailedPrecondition with hook stderr)
+  → tmux -L ur new-session -d -s ur-<id> -c <slot> -e <env…>
+  → background startup hooks in window :bg
+  → LocalWorkerRegistry insert + exit watcher   (before the agent: SessionStart calls NotifyIdle)
+  → agent argv typed into window 0
+any failure after build → teardown → error
+```
+
+Session env: the request env (the server supplies `UR_WORKER_SECRET`, `UR_SERVER_ADDR`,
+`UR_WORKERD_ADDR`, `UR_GH_REPO`, …) followed by builderd's own `UR_WORKER_ID`,
+`UR_AGENT_TYPE`, `UR_DRIVE`, `UR_RUNTIME=local`, which the request cannot override.
+
+Teardown (stop, failed launch, agent exit): kill the session → deregister (abort the exit
+watcher, unless the watcher itself is tearing down) → `LocalWorkspaceManager.teardown`.
+Every step is attempted; the first error is returned. The exit sink only tears down;
+notifying the server, the session watcher, and restart reconciliation are ur-j5puq.
+
+The routed `WorkerDaemonService` (`crates/builderd/src/workerd_router.rs`, `WorkerdRouter`)
+reads the `ur-worker-id` header (`ur_config::WORKER_ID_HEADER`) and delegates to that
+worker's daemon: missing header → `InvalidArgument`, unknown id → `NotFound`. It adds no auth;
+builderd is unauthenticated and already exposes `Exec`.
+
+Agent assets come from `--agent-shared` (default `$UR_CONFIG/agent-shared`), which
+`scripts/build/install.sh` fills in the same order as `containers/worker-base/Dockerfile`.
+
+Proto: `proto/builder_local_worker.proto` (`ur.builder_local_worker` package).
+
 ## Client Paths
 
 Builderd has three clients in the server, serving different use cases:
@@ -193,6 +239,16 @@ service BuilderPoolService {
 }
 ```
 
+### BuilderLocalWorkerService (`proto/builder_local_worker.proto`, package `ur.builder_local_worker`)
+
+```protobuf
+service BuilderLocalWorkerService {
+  rpc LaunchLocalWorker(LaunchLocalWorkerRequest) returns (LaunchLocalWorkerResponse);
+  rpc StopLocalWorker(StopLocalWorkerRequest) returns (StopLocalWorkerResponse);
+  rpc ListLocalWorkers(ListLocalWorkersRequest) returns (ListLocalWorkersResponse);
+}
+```
+
 ## Connection Path
 
 ```
@@ -204,10 +260,13 @@ ur-server container
 
 ## Key Files
 
-- `crates/builderd/src/main.rs` — CLI, gRPC server setup (all three services)
+- `crates/builderd/src/main.rs` — CLI, gRPC server setup (all five services)
 - `crates/builderd/src/handler.rs` — BuilderDaemonHandler, %WORKSPACE% resolution
 - `crates/builderd/src/container_handler.rs` — BuilderContainerHandler (launch/stop/exec/network)
 - `crates/builderd/src/pool_handler.rs` — BuilderPoolHandler (clone/reset/clean/checkout slots)
+- `crates/builderd/src/local_worker.rs` — LocalWorkerManager, LocalWorkerRegistry (local worker lifecycle)
+- `crates/builderd/src/local_worker_handler.rs` — BuilderLocalWorkerHandler
+- `crates/builderd/src/workerd_router.rs` — WorkerdRouter (routed WorkerDaemonService)
 - `crates/server/src/builderd_client.rs` — Shared BuilderdClient (worker hostexec helper)
 - `crates/server/src/builder_container_client.rs` — Shared BuilderContainerClient (container ops)
 - `crates/server/src/builder_pool_client.rs` — Shared BuilderPoolClient (pool slot ops)
@@ -216,4 +275,5 @@ ur-server container
 - `proto/builder.proto` — BuilderDaemonService proto
 - `proto/builder_container.proto` — BuilderContainerService proto
 - `proto/builder_pool.proto` — BuilderPoolService proto
+- `proto/builder_local_worker.proto` — BuilderLocalWorkerService proto
 - `crates/ur/src/builderd.rs` — Host lifecycle (start/stop)
