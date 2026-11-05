@@ -38,7 +38,9 @@ pub struct AttachManager {
     worker_prefix: String,
     /// tmux server socket of local workers (`ur_config::LOCAL_TMUX_SOCKET`).
     tmux_socket: String,
-    /// Host program run for a local attach (`tmux` in production).
+    /// Host program for the interactive local attach exec only (`tmux` in
+    /// production). The pre-attach `session.exists()` check always runs
+    /// `tmux` from PATH.
     tmux_program: PathBuf,
 }
 
@@ -68,10 +70,7 @@ impl AttachManager {
             .await?
             .into_inner()
             .workers;
-        let Some(worker) = workers.iter().rev().find(|w| w.worker_id == worker_id) else {
-            bail!("unknown worker: {worker_id} (run `ur worker list` to see running workers)");
-        };
-        Ok(self.plan_for(worker))
+        Ok(self.plan_for(select_worker(&workers, worker_id)?))
     }
 
     pub fn plan_for(&self, worker: &WorkerSummary) -> AttachPlan {
@@ -134,11 +133,7 @@ impl AttachManager {
                     session = session.name(),
                     "attaching to local agent session"
                 );
-                let argv = session.attach_command();
-                let mut cmd = Command::new(&self.tmux_program);
-                // Like the container attach, nest inside the user's own tmux
-                // rather than refusing with "sessions should be nested".
-                cmd.args(&argv[1..]).env_remove("TMUX");
+                let mut cmd = self.local_attach_command(&session);
                 tokio::task::spawn_blocking(move || {
                     let status = cmd.status().context("failed to exec tmux attach")?;
                     Ok(status.code().unwrap_or(1))
@@ -147,6 +142,16 @@ impl AttachManager {
                 .context("attach task panicked")?
             }
         }
+    }
+
+    /// The host attach for a local session. `TMUX` is inherited on purpose:
+    /// attaching from the user's own tmux (another server) works with it set,
+    /// and it keeps tmux's guard against nesting the `ur` server in itself.
+    fn local_attach_command(&self, session: &tmux::Session) -> Command {
+        let argv = session.attach_command();
+        let mut cmd = Command::new(&self.tmux_program);
+        cmd.args(&argv[1..]);
+        cmd
     }
 
     /// Attach for `--rm`, then run `stop` once the attach ends.
@@ -182,6 +187,18 @@ impl AttachManager {
         stop().await?;
         Ok(exit_code)
     }
+}
+
+/// The newest running row for `worker_id` (`WorkerList` lists oldest first
+/// per process id, like `worker stop` relies on).
+fn select_worker<'a>(workers: &'a [WorkerSummary], worker_id: &str) -> Result<&'a WorkerSummary> {
+    workers
+        .iter()
+        .rev()
+        .find(|w| w.worker_id == worker_id)
+        .with_context(|| {
+            format!("unknown worker: {worker_id} (run `ur worker list` to see running workers)")
+        })
 }
 
 /// Wait for a container's Docker HEALTHCHECK to report "healthy".
@@ -342,6 +359,45 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&args).unwrap().trim(),
             format!("-L {socket} -u attach-session -t =ur-w1-ab12")
+        );
+    }
+
+    #[test]
+    fn select_worker_takes_newest_row_for_the_id() {
+        let row = |id: &str, full: &str, runtime: &str| WorkerSummary {
+            worker_id: id.into(),
+            worker_id_full: full.into(),
+            runtime: runtime.into(),
+            ..Default::default()
+        };
+        let workers = [
+            row("w1", "w1-old1", ur_rpc::runtime::CONTAINER),
+            row("w1", "w1-new1", ur_rpc::runtime::LOCAL),
+            row("w2", "w2-aaaa", ur_rpc::runtime::CONTAINER),
+        ];
+        let picked = select_worker(&workers, "w1").unwrap();
+        assert_eq!(picked.worker_id_full, "w1-new1");
+        assert_eq!(picked.runtime, ur_rpc::runtime::LOCAL);
+
+        let err = select_worker(&workers, "w3").unwrap_err().to_string();
+        assert!(err.contains("unknown worker: w3"), "{err}");
+    }
+
+    /// `TMUX` must reach the attach: unsetting it disables tmux's refusal to
+    /// nest the `ur` server inside one of its own panes.
+    #[test]
+    fn local_attach_inherits_tmux_env() {
+        let m = manager("ur", "/fake/tmux".into());
+        let cmd = m.local_attach_command(&tmux::Session::on_socket("ur", "ur-w1-ab12"));
+        assert_eq!(cmd.get_program(), "/fake/tmux");
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(
+            args,
+            ["-L", "ur", "-u", "attach-session", "-t", "=ur-w1-ab12"]
+        );
+        assert!(
+            cmd.get_envs().all(|(k, _)| k != "TMUX"),
+            "TMUX must be inherited unchanged"
         );
     }
 
