@@ -221,21 +221,17 @@ impl WorkerRepo {
     }
 
     /// Move an active (`provisioning`/`running`/`stopping`) worker to
-    /// `stopping`, returning the status it had. `None` when the row is gone or
-    /// already `stopped`, so a stale stopper can tell it has nothing to stop.
-    pub async fn begin_stopping(&self, worker_id: &str) -> Result<Option<String>, sqlx::Error> {
-        let now = Utc::now().to_rfc3339();
-        sqlx::query_scalar::<_, String>(
-            "UPDATE worker w SET container_status = 'stopping', updated_at = $1
-             FROM (SELECT container_status FROM worker WHERE worker_id = $2 FOR UPDATE) old
-             WHERE w.worker_id = $2
-               AND old.container_status IN ('provisioning', 'running', 'stopping')
-             RETURNING old.container_status",
+    /// `stopping`. `false` when the row is gone or already `stopped`.
+    pub async fn begin_stopping(&self, worker_id: &str) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE worker SET container_status = 'stopping', updated_at = $1
+             WHERE worker_id = $2 AND container_status IN ('provisioning', 'running', 'stopping')",
         )
-        .bind(&now)
+        .bind(Utc::now().to_rfc3339())
         .bind(worker_id)
-        .fetch_optional(&self.pool)
-        .await
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// `stopping → stopped` and delete the worker's slot link, together.
@@ -968,9 +964,9 @@ mod tests {
                 .unwrap()
         );
 
-        assert_eq!(
-            repo.begin_stopping("w1").await.unwrap().as_deref(),
-            Some("provisioning")
+        assert!(
+            repo.begin_stopping("w1").await.unwrap(),
+            "from provisioning"
         );
         assert!(
             !repo.finalize_worker_launch("w1", "c1").await.unwrap(),
@@ -986,13 +982,12 @@ mod tests {
         );
         assert!(repo.finish_stop("w1").await.unwrap());
         assert!(repo.get_worker_slot("w1").await.unwrap().is_none());
-        assert_eq!(
-            repo.begin_stopping("w1").await.unwrap(),
-            None,
+        assert!(
+            !repo.begin_stopping("w1").await.unwrap(),
             "stopped is final"
         );
         assert!(!repo.finish_stop("w1").await.unwrap());
-        assert_eq!(repo.begin_stopping("nope").await.unwrap(), None);
+        assert!(!repo.begin_stopping("nope").await.unwrap());
 
         slot_row(&repo, "slot-1").await;
         assert!(
@@ -1003,10 +998,7 @@ mod tests {
         assert!(!repo.finish_stop("w2").await.unwrap(), "only from stopping");
         assert!(repo.get_worker_slot("w2").await.unwrap().is_some());
         assert!(repo.finalize_worker_launch("w2", "c2").await.unwrap());
-        assert_eq!(
-            repo.begin_stopping("w2").await.unwrap().as_deref(),
-            Some("running")
-        );
+        assert!(repo.begin_stopping("w2").await.unwrap(), "from running");
     }
 
     /// Migration 005's rule: links of non-active workers go; a slot linked

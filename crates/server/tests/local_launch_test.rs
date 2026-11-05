@@ -66,6 +66,10 @@ struct FakeBuilderd {
     /// Every `BuilderContainerService` StopWorker; any other container RPC
     /// is refused (local workers must never use the container service).
     container_stops: Arc<Mutex<Vec<StopWorkerRequest>>>,
+    /// LaunchWorker answer; refused (unimplemented) when unset.
+    container_launch: Arc<Mutex<Option<Result<String, Status>>>>,
+    /// Error for StopWorker calls that carry a worker id.
+    container_stop_error: Arc<Mutex<Option<Status>>>,
 }
 
 #[tonic::async_trait]
@@ -74,17 +78,23 @@ impl BuilderContainerService for FakeBuilderd {
         &self,
         _: Request<LaunchWorkerRequest>,
     ) -> Result<Response<LaunchWorkerResponse>, Status> {
-        Err(Status::unimplemented("launch_worker"))
+        match self.container_launch.lock().unwrap().clone() {
+            Some(Ok(container_id)) => Ok(Response::new(LaunchWorkerResponse { container_id })),
+            Some(Err(status)) => Err(status),
+            None => Err(Status::unimplemented("launch_worker")),
+        }
     }
     async fn stop_worker(
         &self,
         request: Request<StopWorkerRequest>,
     ) -> Result<Response<StopWorkerResponse>, Status> {
-        self.container_stops
-            .lock()
-            .unwrap()
-            .push(request.into_inner());
-        Ok(Response::new(StopWorkerResponse {}))
+        let req = request.into_inner();
+        let barrier = !req.worker_id.is_empty();
+        self.container_stops.lock().unwrap().push(req);
+        match self.container_stop_error.lock().unwrap().clone() {
+            Some(status) if barrier => Err(status),
+            _ => Ok(Response::new(StopWorkerResponse {})),
+        }
     }
     async fn exec_container(
         &self,
@@ -96,7 +106,7 @@ impl BuilderContainerService for FakeBuilderd {
         &self,
         _: Request<InspectNetworkRequest>,
     ) -> Result<Response<InspectNetworkResponse>, Status> {
-        Err(Status::unimplemented("inspect_network"))
+        Ok(Response::new(InspectNetworkResponse { exists: true }))
     }
     async fn inspect_worker(
         &self,
@@ -368,7 +378,7 @@ fn local_config(h: &Harness, worker_id: &str) -> ur_server::WorkerConfig {
 }
 
 #[tokio::test]
-async fn failed_local_launch_deletes_row_and_returns_builderd_error() {
+async fn failed_local_launch_is_stopped_and_returns_builderd_error() {
     let h = harness().await;
     *h.fake.launch_error.lock().unwrap() = Some(Status::failed_precondition(
         "sync startup hooks: hook-stderr-text",
@@ -382,14 +392,8 @@ async fn failed_local_launch_deletes_row_and_returns_builderd_error() {
     assert!(err.contains("hook-stderr-text"), "{err}");
     assert!(err.contains("FailedPrecondition"), "{err}");
     assert_eq!(h.fake.launches.lock().unwrap().len(), 1);
-    assert!(
-        h.worker_repo
-            .get_worker("local-1-aaaa")
-            .await
-            .unwrap()
-            .is_none(),
-        "provisional row must be deleted"
-    );
+    assert_eq!(*h.fake.stops.lock().unwrap(), vec!["local-1-aaaa"]);
+    assert_eq!(status_of(&h, "local-1-aaaa").await, "stopped");
 }
 
 #[tokio::test]
@@ -709,10 +713,12 @@ async fn stale_stop_leaves_the_slots_new_owner_untouched() {
     launch_in_slot(&h, "local-1-new2", &slot).await.unwrap();
     let stops_before = h.fake.stops.lock().unwrap().len();
 
-    // Stopped row: the stale stop is a no-op (no builderd call, no release).
+    // Stopped row: the stale stop repeats builderd's (idempotent) Stop of W1
+    // and releases nothing.
     h.worker_manager.stop_by_worker_id(&w1).await.unwrap();
-    assert_eq!(h.fake.stops.lock().unwrap().len(), stops_before);
+    assert_eq!(h.fake.stops.lock().unwrap().len(), stops_before + 1);
     assert_eq!(status_of(&h, "local-1-old1").await, "stopped");
+    assert_eq!(slot_owner(&h, "local-1-new2").await, Some(slot.clone()));
 
     // Even an active stale row must not release a slot it no longer holds.
     h.worker_repo
@@ -725,8 +731,8 @@ async fn stale_stop_leaves_the_slots_new_owner_untouched() {
     assert_eq!(status_of(&h, "local-1-new2").await, "running");
 }
 
-/// A2: a failed launch drops its row only once builderd confirms the
-/// worker gone; otherwise the row is `stopping` and holds the slot.
+/// A2: a failed launch releases its slot (row `stopped`) only once
+/// builderd confirms the worker gone; otherwise it stays `stopping`.
 #[tokio::test]
 async fn failed_launch_keeps_slot_until_cleanup_is_confirmed() {
     let h = harness().await;
@@ -735,13 +741,8 @@ async fn failed_launch_keeps_slot_until_cleanup_is_confirmed() {
 
     let err = launch_in_slot(&h, "local-1-lfok", &slot).await.unwrap_err();
     assert!(err.contains("boom"), "{err}");
-    assert!(
-        h.worker_repo
-            .get_worker("local-1-lfok")
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert_eq!(status_of(&h, "local-1-lfok").await, "stopped");
+    assert_eq!(slot_owner(&h, "local-1-lfok").await, None);
     assert_eq!(*h.fake.stops.lock().unwrap(), vec!["local-1-lfok"]);
 
     *h.fake.stop_error.lock().unwrap() = Some(Status::internal("kill tmux session: no"));
@@ -864,7 +865,7 @@ async fn concurrent_stoppers_leave_a_reacquired_slot_alone() {
 }
 
 /// M7: a stale stop of a `stopped` local row with a lingering slot link
-/// calls no StopLocalWorker and releases nothing.
+/// (re)stops it in builderd but releases nothing.
 #[tokio::test]
 async fn stale_stop_of_stopped_row_with_lingering_link_releases_nothing() {
     let h = harness().await;
@@ -879,7 +880,8 @@ async fn stale_stop_of_stopped_row_with_lingering_link_releases_nothing() {
         .stop_by_worker_id(&ur_server::WorkerId("local-1-lngr".into()))
         .await
         .unwrap();
-    assert!(h.fake.stops.lock().unwrap().is_empty());
+    assert_eq!(*h.fake.stops.lock().unwrap(), vec!["local-1-lngr"]);
+    assert_eq!(status_of(&h, "local-1-lngr").await, "stopped");
     assert_eq!(slot_owner(&h, "local-1-lngr").await, Some(slot));
 }
 
@@ -1097,7 +1099,7 @@ async fn acquire_moves_on_when_a_rival_claims_the_candidate_first() {
 }
 
 /// A claimed launch stopped before anything was started never reaches
-/// builderd, and its stop is finished on the spot.
+/// builderd: its stopper already finished the stop.
 #[tokio::test]
 async fn launch_stopped_before_start_never_reaches_builderd() {
     let h = harness().await;
@@ -1112,7 +1114,7 @@ async fn launch_stopped_before_start_never_reaches_builderd() {
         .run_and_record(pool_config(&h, "local-1-early"))
         .await
         .unwrap_err();
-    assert!(err.contains("stopped during launch"), "{err}");
+    assert!(err.contains("failed to record worker"), "{err}");
     assert!(h.fake.launches.lock().unwrap().is_empty());
     assert_eq!(status_of(&h, "local-1-early").await, "stopped");
     assert_eq!(slot_owner(&h, "local-1-early").await, None);
@@ -1142,4 +1144,63 @@ async fn container_stop_mid_launch_uses_the_builderd_barrier() {
     );
     assert_eq!(status_of(&h, "proj-1-cont").await, "stopped");
     assert_eq!(slot_owner(&h, "proj-1-cont").await, None);
+}
+
+/// A failed container launch may still have left a live container (e.g. the
+/// health wait failed after `docker run`), so the slot is released only once
+/// builderd's StopWorker for the worker is Ok; until then the row stays
+/// `stopping`, holding the slot.
+#[tokio::test]
+async fn failed_container_launch_releases_its_slot_only_after_stop() {
+    let h = harness().await;
+    let slot = pool_slot(&h).await;
+    let row = workflow_db::model::Worker {
+        runtime: ur_config::WorkerRuntime::Container,
+        ..claim_row(&h, "proj-1-cfai")
+    };
+    assert!(h.worker_repo.claim_slot(&row, &slot).await.unwrap());
+    *h.fake.container_launch.lock().unwrap() = Some(Err(Status::failed_precondition(
+        "worker exited during startup",
+    )));
+    *h.fake.container_stop_error.lock().unwrap() = Some(Status::internal("docker stop: busy"));
+    let config = ur_server::WorkerConfig {
+        image_id: "img".into(),
+        runtime: ur_config::WorkerRuntime::Container,
+        ..pool_config(&h, "proj-1-cfai")
+    };
+
+    let err = h.worker_manager.run_and_record(config).await.unwrap_err();
+    assert!(
+        err.contains("worker exited during startup") && err.contains("busy"),
+        "{err}"
+    );
+    assert_eq!(status_of(&h, "proj-1-cfai").await, "stopping");
+    assert_eq!(slot_owner(&h, "proj-1-cfai").await, Some(slot.clone()));
+    assert!(
+        h.worker_repo
+            .find_available_slots(PROJECT)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    *h.fake.container_stop_error.lock().unwrap() = None;
+    h.worker_manager
+        .stop_by_worker_id(&ur_server::WorkerId("proj-1-cfai".into()))
+        .await
+        .unwrap();
+    assert_eq!(status_of(&h, "proj-1-cfai").await, "stopped");
+    assert_eq!(slot_owner(&h, "proj-1-cfai").await, None);
+    let barrier_stops = h
+        .fake
+        .container_stops
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| s.worker_id == "proj-1-cfai")
+        .count();
+    assert_eq!(
+        barrier_stops, 2,
+        "the failed launch was stopped through the barrier"
+    );
 }

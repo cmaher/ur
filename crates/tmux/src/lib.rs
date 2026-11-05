@@ -671,6 +671,7 @@ static PROGRAM_OVERRIDES: std::sync::LazyLock<
 /// Run `program` instead of `tmux` for every invocation on `socket` (`-L`).
 /// A test seam for fault injection that leaves other sockets (and the
 /// process environment) untouched.
+#[doc(hidden)]
 pub fn override_program_for_socket(socket: &str, program: PathBuf) {
     PROGRAM_OVERRIDES
         .write()

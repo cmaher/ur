@@ -1009,9 +1009,7 @@ impl WorkerManager {
             Ok(response) => response,
             Err(status) => {
                 let error = format!("launch_worker gRPC error: {status}");
-                return Err(self
-                    .remove_provisioning_worker(&config.worker_id, error)
-                    .await);
+                return Err(self.abandon_launch(&config.worker_id, error).await);
             }
         };
         let container_id = launch_resp.container_id;
@@ -1023,35 +1021,15 @@ impl WorkerManager {
             "process launched"
         );
 
-        let finalized = self.finalize_worker_launch(&config, &container_id).await;
-        if !matches!(finalized, Ok(true)) {
-            let stopped = tolerate_missing(
-                self.builder_container_client
-                    .stop_worker(StopWorkerRequest {
-                        container_id: container_id.clone(),
-                        worker_id: config.worker_id.0.clone(),
-                    })
-                    .await,
-                &container_id,
-                "stop_worker",
-            );
-            return Err(match finalized {
-                Ok(_) => self.finish_stopped_launch(&config.worker_id, stopped).await,
-                Err(error) => {
-                    let stop_error = stopped
-                        .err()
-                        .map(|e| format!("; failed to clean up container: {e}"))
-                        .unwrap_or_default();
-                    self.remove_provisioning_worker(
-                        &config.worker_id,
-                        format!("{error}{stop_error}"),
-                    )
-                    .await
-                }
-            });
+        match self.finalize_worker_launch(&config, &container_id).await {
+            Ok(true) => Ok((container_id, worker_secret)),
+            // Its stopper's builderd Stop waits for this launch and tears it down.
+            Ok(false) => Err(format!(
+                "worker {} was stopped during launch",
+                config.worker_id
+            )),
+            Err(error) => Err(self.abandon_launch(&config.worker_id, error).await),
         }
-
-        Ok((container_id, worker_secret))
     }
 
     /// Resolve all host paths and configuration needed by builderd to launch
@@ -1159,6 +1137,7 @@ impl WorkerManager {
         };
         let db = |e: sqlx::Error| format!("failed to record worker: {e}");
         // A pool launch claimed its slot with this row already; refresh it.
+        // A claim row stopped meanwhile fails the insert below.
         if self
             .worker_repo
             .update_provisioning_worker(&worker)
@@ -1167,25 +1146,12 @@ impl WorkerManager {
         {
             return Ok(());
         }
-        if self
-            .worker_repo
-            .get_worker(&worker.worker_id)
-            .await
-            .map_err(db)?
-            .is_some()
-        {
-            // Stopped before anything was started; its stopper finishes it.
-            return Err(format!(
-                "worker {} was stopped during launch",
-                config.worker_id
-            ));
-        }
         self.worker_repo.insert_worker(&worker).await.map_err(db)
     }
 
     /// `provisioning → running` with Docker's immutable container ID (or the
-    /// session name). `Ok(false)`: the worker was stopped mid-launch; the
-    /// caller ensures the stop with [`Self::finish_stopped_launch`].
+    /// session name). `Ok(false)`: the worker was stopped mid-launch; its
+    /// stopper finishes the stop.
     pub(crate) async fn finalize_worker_launch(
         &self,
         config: &WorkerConfig,
@@ -1197,23 +1163,14 @@ impl WorkerManager {
             .map_err(|e| format!("failed to finalize worker launch: {e}"))
     }
 
-    /// A launch whose worker was stopped mid-launch ensures the stop (`stop`,
-    /// the builderd Stop it issued) and exits. Usually its stopper already
-    /// finished it (builderd's Stop waits for the launch and tears it down);
-    /// `finish_stop` is then a no-op. A failed stop leaves the row `stopping`
-    /// with its slot linked for a retry. Returns the launch error.
-    pub(crate) async fn finish_stopped_launch(
-        &self,
-        worker_id: &WorkerId,
-        stop: Result<(), String>,
-    ) -> String {
-        let error = format!("worker {worker_id} was stopped during launch");
-        match stop {
-            Err(e) => format!("{error}; stopping it failed, left stopping: {e}"),
-            Ok(()) => match self.worker_repo.finish_stop(&worker_id.0).await {
-                Ok(_) => error,
-                Err(e) => format!("{error}; failed to mark it stopped: {e}"),
-            },
+    /// Clean up after a failed launch: stop it like any other worker, since
+    /// a failed launch may still have left a live worker. Releases the slot
+    /// (row `stopped`) only once builderd's Stop is Ok; otherwise the row
+    /// stays `stopping`, still holding the slot. Returns the launch error.
+    pub(crate) async fn abandon_launch(&self, worker_id: &WorkerId, error: String) -> String {
+        match self.stop_by_worker_id(worker_id).await {
+            Ok(()) => error,
+            Err(e) => format!("{error}; failed to clean up, left stopping: {e}"),
         }
     }
 
@@ -1244,22 +1201,16 @@ impl WorkerManager {
             "stopping container"
         );
 
-        // Any stopper finishes any stop: compare-and-set to `stopping` (`None`:
-        // already stopped), builderd Stop, then `finish_stop` on Ok. builderd's
-        // Stop is a barrier per worker id: it waits for an in-flight launch
-        // (or refuses a later one), so Ok means the worker is not running and
-        // never will be, even mid-launch.
-        let previous = self
-            .worker_repo
+        // Any stopper finishes any stop: `stopping` (if active), builderd
+        // Stop, then `finish_stop` (a no-op unless `stopping`). builderd's Stop
+        // is a barrier per worker id: it waits for an in-flight launch (or
+        // refuses a later one), so Ok means the worker is not running and
+        // never will be, even mid-launch. A stopped row is still stopped in
+        // builderd (a drifted row may own a live container); nothing to release.
+        self.worker_repo
             .begin_stopping(&worker_id.0)
             .await
             .map_err(|e| format!("failed to update worker status: {e}"))?;
-
-        // Stop the worker via builderd. A container stop tolerates
-        // already-missing containers: external forces (docker restart, manual
-        // `docker rm`, machine reboot) can delete it under a row that still
-        // says running. A stopped row's container is still stopped (a drifted
-        // row may own a live one) but releases nothing.
         match worker.runtime {
             ur_config::WorkerRuntime::Container => tolerate_missing(
                 self.builder_container_client
@@ -1271,17 +1222,8 @@ impl WorkerManager {
                 &worker.container_id,
                 "stop_worker",
             )?,
-            ur_config::WorkerRuntime::Local if previous.is_some() => {
-                self.stop_local_worker(worker_id).await?;
-            }
-            ur_config::WorkerRuntime::Local => {}
+            ur_config::WorkerRuntime::Local => self.stop_local_worker(worker_id).await?,
         }
-        if previous.is_none() {
-            info!(%worker_id, "worker already stopped; nothing to release");
-            return Ok(());
-        }
-
-        // Confirmed gone: `stopped` and the slot link deleted together.
         self.worker_repo
             .finish_stop(&worker_id.0)
             .await

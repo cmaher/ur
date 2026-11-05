@@ -11,8 +11,9 @@
 //! run, a `ur-<id>` session on the socket whose `UR_DRIVE` is under this
 //! builderd's drive root exists only while `<id>` is registered. Every ur
 //! instance on the host shares the socket; sessions with a drive elsewhere
-//! belong to another instance and are never adopted, killed or listed. Teardown kills the session first and deregisters last, so a
-//! failed kill or drive removal leaves the worker listed for a retried Stop.
+//! belong to another instance and are never adopted, killed or listed.
+//! Teardown kills the session first and deregisters last, so a failed kill
+//! or drive removal leaves the worker listed for a retried Stop.
 //!
 //! # Known limits
 //!

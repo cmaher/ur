@@ -33,11 +33,10 @@ fn host_string(path: &Path) -> String {
 }
 
 impl WorkerManager {
-    /// `run_and_record` for `runtime = local`. On launch failure the row is
-    /// deleted only once `StopLocalWorker` confirms builderd holds nothing;
-    /// otherwise see [`Self::abandon_local_launch`]. A stop that lands
-    /// mid-launch makes finalize fail; the launch then stops the worker
-    /// itself. builderd's error text is returned either way. Returns
+    /// `run_and_record` for `runtime = local`. A failed launch is stopped
+    /// like any worker ([`Self::abandon_launch`]); a stop that lands
+    /// mid-launch makes finalize fail and its stopper finishes it.
+    /// builderd's error text is returned either way. Returns
     /// `(session_name, worker_secret)`.
     pub(crate) async fn run_and_record_local(
         &self,
@@ -62,7 +61,7 @@ impl WorkerManager {
             .await
         {
             let error = format!("launch_local_worker gRPC error: {status}");
-            return Err(self.abandon_local_launch(&config, error).await);
+            return Err(self.abandon_launch(&config.worker_id, error).await);
         }
         info!(
             process_id = config.process_id,
@@ -73,29 +72,13 @@ impl WorkerManager {
 
         match self.finalize_worker_launch(&config, &session).await {
             Ok(true) => Ok((session, worker_secret)),
-            Ok(false) => {
-                let stopped = self.stop_local_worker(&config.worker_id).await;
-                Err(self.finish_stopped_launch(&config.worker_id, stopped).await)
-            }
-            Err(error) => Err(self.abandon_local_launch(&config, error).await),
+            // Its stopper's builderd Stop waits for this launch and tears it down.
+            Ok(false) => Err(format!(
+                "worker {} was stopped during launch",
+                config.worker_id
+            )),
+            Err(error) => Err(self.abandon_launch(&config.worker_id, error).await),
         }
-    }
-
-    /// Clean up after a failed launch. A failed launch may still have left a
-    /// live session (e.g. its teardown failed), so the row (and its slot
-    /// link) is deleted only once `StopLocalWorker` succeeds; otherwise the
-    /// row becomes `stopping`, still holding its slot, and the reconcile
-    /// loop retries the stop.
-    async fn abandon_local_launch(&self, config: &WorkerConfig, error: String) -> String {
-        let worker_id = &config.worker_id;
-        let Err(status) = self.stop_local_worker(worker_id).await else {
-            return self.remove_provisioning_worker(worker_id, error).await;
-        };
-        let mut error = format!("{error}; failed to clean up local worker: {status}");
-        if let Err(e) = self.worker_repo.begin_stopping(&worker_id.0).await {
-            error.push_str(&format!("; failed to mark worker stopping: {e}"));
-        }
-        error
     }
 
     /// Tear the worker down via builderd (Stop of an unknown id still kills
