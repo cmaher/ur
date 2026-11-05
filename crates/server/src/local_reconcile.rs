@@ -27,8 +27,9 @@
 //! launch the previous server never finished (its agent may be live). It is
 //! marked `stopping` (its slot link, inserted with the row at launch start,
 //! keeps the slot out of the pool), so the ordinary stopping path converges
-//! it. While the server runs, a launch owns its `provisioning` row: a stop
-//! only marks it `stopping` and the launch's failed finalize stops it.
+//! it. While the server runs, a stop of a `provisioning` row goes through
+//! builderd's Stop barrier like any other (it waits for the in-flight
+//! launch), so the periodic pass simply leaves `provisioning` rows alone.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;

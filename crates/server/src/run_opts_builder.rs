@@ -488,6 +488,8 @@ impl RunOptsBuilder {
     /// Produce the final [`LaunchWorkerRequest`].
     pub fn build(self) -> LaunchWorkerRequest {
         LaunchWorkerRequest {
+            // Set by the caller (`WorkerManager::run_and_record`).
+            worker_id: String::new(),
             image: self.image,
             name: self.name,
             cpus: self.cpus,

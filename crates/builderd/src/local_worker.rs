@@ -38,6 +38,7 @@ use workerd::{
     WorkerDaemonServiceImpl, WorkerIdentity,
 };
 
+use crate::barrier::WorkerBarrier;
 use crate::local_workspace::{LocalWorkspaceManager, LocalWorkspaceRequest};
 
 /// Path of the worker's drive (`<workspace>/drive/<id>`).
@@ -142,9 +143,12 @@ pub struct LocalWorkerManager {
     workerd_addr: String,
     /// Replaces the agent program (argv[0]); `None` in production.
     agent_program: Option<PathBuf>,
+    /// Orders Launch and Stop per worker id (Stop is a barrier).
+    barrier: WorkerBarrier,
 }
 
 impl LocalWorkerManager {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         workspace: LocalWorkspaceManager,
         registry: LocalWorkerRegistry,
@@ -152,6 +156,7 @@ impl LocalWorkerManager {
         exit_poll_interval: Duration,
         workerd_addr: String,
         agent_program: Option<PathBuf>,
+        barrier: WorkerBarrier,
     ) -> Self {
         LocalWorkerManager {
             workspace,
@@ -160,6 +165,7 @@ impl LocalWorkerManager {
             exit_poll_interval,
             workerd_addr,
             agent_program,
+            barrier,
         }
     }
 
@@ -169,7 +175,26 @@ impl LocalWorkerManager {
 
     /// Launch a worker. `env` is exported into the session after builderd's
     /// own variables, which it cannot override. Returns the drive path.
+    ///
+    /// Runs on its own task under the id's barrier lock, so a cancelled RPC
+    /// cannot abandon a launch halfway, and a Stop of the id (before or
+    /// during) either refuses it (FailedPrecondition) or waits for it and
+    /// then tears it down.
     pub async fn launch(
+        &self,
+        req: &LocalWorkspaceRequest,
+        env: Vec<(String, String)>,
+    ) -> Result<PathBuf> {
+        let (this, req) = (self.clone(), req.clone());
+        tokio::spawn(async move {
+            let _launching = this.barrier.begin_launch(&req.worker_id).await?;
+            this.launch_locked(&req, env).await
+        })
+        .await
+        .map_err(|e| Status::internal(format!("launch task failed: {e}")))?
+    }
+
+    async fn launch_locked(
         &self,
         req: &LocalWorkspaceRequest,
         env: Vec<(String, String)>,
@@ -327,20 +352,55 @@ impl LocalWorkerManager {
         .abort_handle()
     }
 
-    /// Stop a worker. Unknown or already-stopped ids succeed once their
-    /// session is gone.
+    /// Stop a worker. Ok means: `worker_id` is not running in this builderd
+    /// and never will be. The id is tombstoned first (a later Launch is
+    /// refused), then Stop waits for any in-flight Launch of it before
+    /// tearing down.
     ///
     /// An unregistered id still has its `ur-<id>` session killed (a failed
-    /// launch whose own cleanup kill failed can leave one): Stop never
-    /// succeeds while that session may be alive.
+    /// launch whose own cleanup kill failed can leave one) unless that
+    /// session belongs to another ur instance, and a drive it left is torn
+    /// down.
     pub async fn stop(&self, worker_id: &str) -> Result<()> {
+        let _stopping = self.barrier.begin_stop(worker_id).await;
         if self.registry.contains(worker_id) {
             return self.teardown_known(worker_id, TeardownCaller::Stop).await;
         }
-        self.session(worker_id)
-            .kill()
+        self.stop_unregistered(worker_id).await
+    }
+
+    async fn stop_unregistered(&self, worker_id: &str) -> Result<()> {
+        let session = self.session(worker_id);
+        let tmux_err =
+            |what: &'static str| move |e: anyhow::Error| Status::internal(format!("{what}: {e:#}"));
+        if session
+            .exists()
             .await
-            .map_err(|e| Status::internal(format!("kill tmux session: {e:#}")))
+            .map_err(tmux_err("check tmux session"))?
+        {
+            let env = session
+                .environment()
+                .await
+                .map_err(tmux_err("read session env"))?;
+            let drive = env_value(&env, UR_DRIVE_ENV);
+            if !drive.is_empty() && !Path::new(drive).starts_with(self.workspace.drive_root()) {
+                info!(
+                    worker_id,
+                    drive, "session belongs to another ur instance; leaving it"
+                );
+                return Ok(());
+            }
+            session
+                .kill()
+                .await
+                .map_err(tmux_err("kill tmux session"))?;
+        }
+        if self.workspace.drive_path(worker_id).exists() {
+            self.workspace
+                .teardown_orphan(worker_id, &self.registry.slots())
+                .await?;
+        }
+        Ok(())
     }
 
     async fn teardown_known(&self, worker_id: &str, caller: TeardownCaller) -> Result<()> {

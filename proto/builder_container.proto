@@ -55,6 +55,9 @@ message LaunchWorkerRequest {
   string workdir = 8;
   string network = 9;
   repeated AddHost add_hosts = 10;
+  // The worker this container runs. builderd orders LaunchWorker and
+  // StopWorker per worker id: a StopWorker for it refuses a later launch.
+  string worker_id = 11;
 }
 
 message LaunchWorkerResponse {
@@ -63,6 +66,12 @@ message LaunchWorkerResponse {
 
 message StopWorkerRequest {
   string container_id = 1;
+  // When set, Stop is a barrier for this worker: it waits for an in-flight
+  // LaunchWorker of it, also stops the container that launch started, and
+  // refuses any later LaunchWorker of it. Ok then means the worker is not
+  // running and never will be (a missing container is Ok). Empty: a plain
+  // stop of `container_id` (e.g. pre-launch name cleanup).
+  string worker_id = 2;
 }
 
 message StopWorkerResponse {}

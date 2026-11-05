@@ -1010,7 +1010,8 @@ mod tests {
     }
 
     /// Migration 005's rule: links of non-active workers go; a slot linked
-    /// twice keeps the newest active worker's link.
+    /// twice keeps a `running` worker over a newer `provisioning` one (else
+    /// the newest), and each loser is moved to `stopping` without a link.
     #[tokio::test]
     async fn one_owner_migration_resolves_stale_and_duplicate_links() {
         let test_db = TestDb::new().await;
@@ -1020,7 +1021,7 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
-        for slot in ["slot-0", "slot-1"] {
+        for slot in ["slot-0", "slot-1", "slot-2"] {
             slot_row(&repo, slot).await;
         }
         let at = |w: &str, created: &str, status: &str| Worker {
@@ -1029,10 +1030,14 @@ mod tests {
             ..test_worker(w, "claude")
         };
         for (w, created, status, slot) in [
-            ("old", "2026-01-01T00:00:00Z", "running", "slot-0"),
-            ("new", "2026-02-01T00:00:00Z", "running", "slot-0"),
+            // Older live worker vs newer stale launch: the live one keeps it.
+            ("live", "2026-01-01T00:00:00Z", "running", "slot-0"),
+            ("stale", "2026-02-01T00:00:00Z", "provisioning", "slot-0"),
             ("gone", "2026-03-01T00:00:00Z", "stopped", "slot-0"),
-            ("only", "2026-01-01T00:00:00Z", "stopping", "slot-1"),
+            // Two running workers: the newest wins.
+            ("old", "2026-01-01T00:00:00Z", "running", "slot-1"),
+            ("new", "2026-02-01T00:00:00Z", "running", "slot-1"),
+            ("only", "2026-01-01T00:00:00Z", "stopping", "slot-2"),
         ] {
             repo.insert_worker(&at(w, created, status)).await.unwrap();
             repo.link_worker_slot(w, slot).await.unwrap();
@@ -1044,10 +1049,17 @@ mod tests {
         .await
         .unwrap();
         let owner = async |w: &str| repo.get_worker_slot(w).await.unwrap().map(|l| l.slot_id);
-        assert_eq!(owner("new").await.as_deref(), Some("slot-0"));
-        assert_eq!(owner("old").await, None);
+        let status = async |w: &str| repo.get_worker(w).await.unwrap().unwrap().container_status;
+        assert_eq!(owner("live").await.as_deref(), Some("slot-0"));
+        assert_eq!(status("live").await, "running");
+        assert_eq!(owner("stale").await, None);
+        assert_eq!(status("stale").await, "stopping", "loser moved to stopping");
         assert_eq!(owner("gone").await, None);
-        assert_eq!(owner("only").await.as_deref(), Some("slot-1"));
+        assert_eq!(status("gone").await, "stopped");
+        assert_eq!(owner("new").await.as_deref(), Some("slot-1"));
+        assert_eq!(owner("old").await, None);
+        assert_eq!(status("old").await, "stopping");
+        assert_eq!(owner("only").await.as_deref(), Some("slot-2"));
     }
 
     #[tokio::test]

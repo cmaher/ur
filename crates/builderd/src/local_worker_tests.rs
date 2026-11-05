@@ -79,6 +79,7 @@ impl Fixture {
             exit_poll,
             "127.0.0.1:2".into(),
             Some(root.join("bin/stub-agent")),
+            WorkerBarrier::new(crate::barrier::TOMBSTONE_TTL),
         );
         Fixture {
             tmp,
@@ -824,4 +825,121 @@ async fn adoption_leaves_other_instances_sessions_alone() {
     );
     assert!(!registry_b.contains("w1"));
     f.manager.stop("w1").await.unwrap();
+}
+
+// ---- Stop is a barrier (ur-j5puq batch 4) ----
+
+/// Stop arriving before Launch: the launch is refused and no session or
+/// drive ever exists.
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_before_launch_refuses_it() {
+    let f = Fixture::new("tomb", Duration::from_secs(3600));
+    let slot = f.slot("slot");
+    f.manager.stop("w1").await.unwrap();
+    let err = f
+        .manager
+        .launch(&f.request("w1", &slot), f.env())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition, "{err}");
+    f.assert_gone("w1").await;
+}
+
+/// Adapted from review pass 4's probe (20 runs): a stop lands while a
+/// launch is in its sync startup hook, and a second stopper follows. Every
+/// Ok from Stop must mean the session is gone and never comes up.
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_during_launch_returns_only_once_the_worker_is_gone() {
+    for run in 0..20 {
+        let f = Fixture::new(&format!("bar{run}"), Duration::from_secs(3600));
+        let slot = f.slot("slot");
+        write_exec(
+            &slot.join("ur-hooks/startup/10-slow"),
+            "#!/bin/sh\nsleep 0.3\n",
+        );
+        let (manager, req, env) = (f.manager.clone(), f.request("w1", &slot), f.env());
+        let launch = tokio::spawn(async move { manager.launch(&req, env).await });
+        let drive = f.drive("w1");
+        wait_for("launch in its sync hook", async || drive.exists()).await;
+
+        let (a, b) = (f.manager.clone(), f.manager.clone());
+        let first = tokio::spawn(async move { a.stop("w1").await });
+        let second = tokio::spawn(async move { b.stop("w1").await });
+        for stop in [first, second] {
+            stop.await.unwrap().unwrap();
+            assert!(
+                !f.session("w1").exists().await.unwrap(),
+                "run {run}: Ok while alive"
+            );
+        }
+        let _ = launch.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        f.assert_gone("w1").await;
+    }
+}
+
+/// Dropping the Launch RPC mid-launch cannot abandon it: the launch
+/// completes (registered, live) and a Stop then removes it; no drive leaks.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelled_launch_rpc_does_not_leak_a_drive() {
+    let f = Fixture::new("cancel", Duration::from_secs(3600));
+    let slot = f.slot("slot");
+    write_exec(
+        &slot.join("ur-hooks/startup/10-slow"),
+        "#!/bin/sh\nsleep 0.3\n",
+    );
+    let (manager, req, env) = (f.manager.clone(), f.request("w1", &slot), f.env());
+    let rpc = tokio::spawn(async move { manager.launch(&req, env).await });
+    let drive = f.drive("w1");
+    wait_for("launch in its sync hook", async || drive.exists()).await;
+    rpc.abort();
+    wait_for("launch completes anyway", async || {
+        f.registry.contains("w1")
+    })
+    .await;
+    assert!(f.session("w1").exists().await.unwrap());
+    f.manager.stop("w1").await.unwrap();
+    f.assert_gone("w1").await;
+}
+
+/// Stop of an id this builderd never registered: another instance's session
+/// is left alone (Ok: it is not running here); our own stray session and
+/// drive are torn down.
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_of_unregistered_ids_respects_other_instances() {
+    let f = Fixture::new("unreg", Duration::from_secs(3600));
+    let slot = f.slot("slot");
+    f.manager
+        .launch(&f.request("w1", &slot), f.env())
+        .await
+        .unwrap();
+    fs::create_dir_all(f.path("workspace-b")).unwrap();
+    let other = LocalWorkerManager {
+        workspace: LocalWorkspaceManager::new(
+            f.path("config"),
+            f.path("workspace-b"),
+            f.path("home"),
+            f.path("shared"),
+            LocalSettingsManager,
+        ),
+        registry: LocalWorkerRegistry::default(),
+        barrier: WorkerBarrier::new(crate::barrier::TOMBSTONE_TTL),
+        ..f.manager.clone()
+    };
+    other.stop("w1").await.unwrap();
+    assert!(
+        f.session("w1").exists().await.unwrap(),
+        "A's worker untouched"
+    );
+    assert!(f.drive("w1").join("ctx").is_symlink());
+
+    // Ours but unregistered (a restarted builderd before adoption).
+    let (restarted, _registry) = f.restarted();
+    let restarted = LocalWorkerManager {
+        barrier: WorkerBarrier::new(crate::barrier::TOMBSTONE_TTL),
+        ..restarted
+    };
+    restarted.stop("w1").await.unwrap();
+    assert!(!f.session("w1").exists().await.unwrap());
+    assert!(!f.drive("w1").exists(), "stray drive torn down");
 }

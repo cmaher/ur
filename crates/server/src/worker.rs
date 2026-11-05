@@ -986,13 +986,16 @@ impl WorkerManager {
             self.builder_container_client
                 .stop_worker(StopWorkerRequest {
                     container_id: container_name.clone(),
+                    worker_id: String::new(),
                 })
                 .await,
             &container_name,
             "pre-launch cleanup",
         )?;
 
-        let opts = self.build_launch_request(&config, &worker_secret, &container_name)?;
+        let mut opts = self.build_launch_request(&config, &worker_secret, &container_name)?;
+        // builderd orders this launch against StopWorker of the same worker.
+        opts.worker_id = config.worker_id.0.clone();
 
         // Workerd authenticates with the server during initialization, before
         // its health endpoint comes up. Persist the credential first so that
@@ -1022,14 +1025,16 @@ impl WorkerManager {
 
         let finalized = self.finalize_worker_launch(&config, &container_id).await;
         if !matches!(finalized, Ok(true)) {
-            let stopped = self
-                .builder_container_client
-                .stop_worker(StopWorkerRequest {
-                    container_id: container_id.clone(),
-                })
-                .await
-                .map(|_| ())
-                .map_err(|status| status.to_string());
+            let stopped = tolerate_missing(
+                self.builder_container_client
+                    .stop_worker(StopWorkerRequest {
+                        container_id: container_id.clone(),
+                        worker_id: config.worker_id.0.clone(),
+                    })
+                    .await,
+                &container_id,
+                "stop_worker",
+            );
             return Err(match finalized {
                 Ok(_) => self.finish_stopped_launch(&config.worker_id, stopped).await,
                 Err(error) => {
@@ -1169,15 +1174,18 @@ impl WorkerManager {
             .map_err(db)?
             .is_some()
         {
-            // Stopped before anything was started: finish the stop here.
-            return Err(self.finish_stopped_launch(&config.worker_id, Ok(())).await);
+            // Stopped before anything was started; its stopper finishes it.
+            return Err(format!(
+                "worker {} was stopped during launch",
+                config.worker_id
+            ));
         }
         self.worker_repo.insert_worker(&worker).await.map_err(db)
     }
 
     /// `provisioning → running` with Docker's immutable container ID (or the
-    /// session name). `Ok(false)`: a stop won the race, so the caller must
-    /// stop what it started and call [`Self::finish_stopped_launch`].
+    /// session name). `Ok(false)`: the worker was stopped mid-launch; the
+    /// caller ensures the stop with [`Self::finish_stopped_launch`].
     pub(crate) async fn finalize_worker_launch(
         &self,
         config: &WorkerConfig,
@@ -1189,10 +1197,11 @@ impl WorkerManager {
             .map_err(|e| format!("failed to finalize worker launch: {e}"))
     }
 
-    /// The launch of a worker stopped mid-launch: its stopper only marked it
-    /// `stopping`, so the launch path stops what it started (`stop`) and only
-    /// then releases it. A failed stop leaves the row `stopping` with its slot
-    /// linked for a retry. Returns the launch error.
+    /// A launch whose worker was stopped mid-launch ensures the stop (`stop`,
+    /// the builderd Stop it issued) and exits. Usually its stopper already
+    /// finished it (builderd's Stop waits for the launch and tears it down);
+    /// `finish_stop` is then a no-op. A failed stop leaves the row `stopping`
+    /// with its slot linked for a retry. Returns the launch error.
     pub(crate) async fn finish_stopped_launch(
         &self,
         worker_id: &WorkerId,
@@ -1235,18 +1244,16 @@ impl WorkerManager {
             "stopping container"
         );
 
-        // Every stop starts with the compare-and-set to `stopping`. `None`: the
-        // row is already stopped. `provisioning`: a launch is in flight and
-        // its own finalize (which now fails) stops the worker and releases.
+        // Any stopper finishes any stop: compare-and-set to `stopping` (`None`:
+        // already stopped), builderd Stop, then `finish_stop` on Ok. builderd's
+        // Stop is a barrier per worker id: it waits for an in-flight launch
+        // (or refuses a later one), so Ok means the worker is not running and
+        // never will be, even mid-launch.
         let previous = self
             .worker_repo
             .begin_stopping(&worker_id.0)
             .await
             .map_err(|e| format!("failed to update worker status: {e}"))?;
-        if previous.as_deref() == Some("provisioning") {
-            info!(%worker_id, "worker is mid-launch; its launch finishes the stop");
-            return Ok(());
-        }
 
         // Stop the worker via builderd. A container stop tolerates
         // already-missing containers: external forces (docker restart, manual
@@ -1258,6 +1265,7 @@ impl WorkerManager {
                 self.builder_container_client
                     .stop_worker(StopWorkerRequest {
                         container_id: worker.container_id.clone(),
+                        worker_id: worker_id.0.clone(),
                     })
                     .await,
                 &worker.container_id,
@@ -1408,6 +1416,7 @@ impl WorkerManager {
             .builder_container_client
             .stop_worker(StopWorkerRequest {
                 container_id: state.container_id,
+                worker_id: String::new(),
             })
             .await
         {

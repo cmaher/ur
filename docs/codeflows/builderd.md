@@ -173,17 +173,32 @@ session name `ur-<id>` and the secret → `LaunchLocalWorker` → finalize (`pro
 running`, compare-and-set). On launch failure it calls `StopLocalWorker`: only if that succeeds
 is the row (and so its link) deleted; otherwise the row becomes `stopping`, still holding the
 slot, and the reconcile loop retries. If finalize finds the row no longer `provisioning`, a stop
-landed mid-launch: the launch calls `StopLocalWorker` itself and releases only if it succeeds.
+landed mid-launch; that stopper's builderd Stop waited for this launch and tore it down, so the
+launch only ensures the stop (`StopLocalWorker` again, then `finish_stop`, usually a no-op) and
+exits.
 builderd's error text is returned either way. No Docker network, Squid env, image
 or credential gate. Mounts, memory/brain dirs, instruction file and host skills are host
 paths (templates resolve against the host config dir). Stop (`stop_by_worker_id`, both
 runtimes) first moves the row to `stopping` with a compare-and-set (`WorkerRepo::begin_stopping`):
-an already `stopped` or deleted row releases nothing, and a `provisioning` row is only marked
-(its launch finishes the stop). Otherwise it calls `StopLocalWorker` (container: `StopWorker`)
-and only on success runs `WorkerRepo::finish_stop` (`stopped` + delete this worker's own link);
-on failure the row stays `stopping`. Release never touches slot contents; the next owner's
+an already `stopped` or deleted row releases nothing. Otherwise any stopper finishes the stop,
+mid-launch included: `StopLocalWorker` (container: `StopWorker` with the worker id), then
+`WorkerRepo::finish_stop` (`stopped` + delete this worker's own link) only on Ok; on failure the
+row stays `stopping`. Release never touches slot contents; the next owner's
 `RecycleSlot` resets them. Client: `BuilderLocalWorkerClient`
 (`crates/server/src/builder_local_worker_client.rs`).
+
+### Stop is a barrier (ur-j5puq)
+
+builderd orders Launch and Stop per worker id (`barrier.rs`, `WorkerBarrier`), in both
+`LocalWorkerManager` and the container service (`LaunchWorker`/`StopWorker` carry `worker_id`).
+Stop first records an in-memory tombstone for the id, then takes the id's lock, waiting for any
+in-flight launch, then tears down (local: including a drive an unregistered id left; container:
+the requested container and the one that launch started). A launch takes the lock and is refused
+with `FailedPrecondition` if the id is tombstoned. Launches run on their own task, so a cancelled
+RPC cannot abandon one halfway. Contract: Stop(id) returning Ok means the id is not running in
+this builderd and never will be. Tombstones expire after an hour (`TOMBSTONE_TTL`); a builderd
+restart drops them safely (in-flight launches die with it, and worker ids are never reused). A
+`StopWorker` without `worker_id` (pre-launch name cleanup, orphan removal) is a plain stop.
 
 ### Termination paths and reconciliation (ur-j5puq)
 

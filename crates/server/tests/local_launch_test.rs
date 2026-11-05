@@ -9,6 +9,14 @@ use std::sync::{Arc, Mutex};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
+use ur_rpc::proto::builder_container::builder_container_service_server::{
+    BuilderContainerService, BuilderContainerServiceServer,
+};
+use ur_rpc::proto::builder_container::{
+    ExecContainerRequest, ExecContainerResponse, InspectNetworkRequest, InspectNetworkResponse,
+    InspectWorkerRequest, InspectWorkerResponse, LaunchWorkerRequest, LaunchWorkerResponse,
+    StopWorkerRequest, StopWorkerResponse,
+};
 use ur_rpc::proto::builder_local_worker::builder_local_worker_service_server::{
     BuilderLocalWorkerService, BuilderLocalWorkerServiceServer,
 };
@@ -52,6 +60,50 @@ struct FakeBuilderd {
     launch_entered: Arc<tokio::sync::Notify>,
     /// When set, LaunchLocalWorker waits for this before answering.
     hold_launch: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
+    /// Held by LaunchLocalWorker while it runs; StopLocalWorker waits on it,
+    /// like builderd's per-worker barrier.
+    in_flight: Arc<tokio::sync::Mutex<()>>,
+    /// Every `BuilderContainerService` StopWorker; any other container RPC
+    /// is refused (local workers must never use the container service).
+    container_stops: Arc<Mutex<Vec<StopWorkerRequest>>>,
+}
+
+#[tonic::async_trait]
+impl BuilderContainerService for FakeBuilderd {
+    async fn launch_worker(
+        &self,
+        _: Request<LaunchWorkerRequest>,
+    ) -> Result<Response<LaunchWorkerResponse>, Status> {
+        Err(Status::unimplemented("launch_worker"))
+    }
+    async fn stop_worker(
+        &self,
+        request: Request<StopWorkerRequest>,
+    ) -> Result<Response<StopWorkerResponse>, Status> {
+        self.container_stops
+            .lock()
+            .unwrap()
+            .push(request.into_inner());
+        Ok(Response::new(StopWorkerResponse {}))
+    }
+    async fn exec_container(
+        &self,
+        _: Request<ExecContainerRequest>,
+    ) -> Result<Response<ExecContainerResponse>, Status> {
+        Err(Status::unimplemented("exec_container"))
+    }
+    async fn inspect_network(
+        &self,
+        _: Request<InspectNetworkRequest>,
+    ) -> Result<Response<InspectNetworkResponse>, Status> {
+        Err(Status::unimplemented("inspect_network"))
+    }
+    async fn inspect_worker(
+        &self,
+        _: Request<InspectWorkerRequest>,
+    ) -> Result<Response<InspectWorkerResponse>, Status> {
+        Err(Status::unimplemented("inspect_worker"))
+    }
 }
 
 impl FakeBuilderd {
@@ -108,6 +160,7 @@ impl BuilderLocalWorkerService for FakeBuilderd {
         &self,
         request: Request<LaunchLocalWorkerRequest>,
     ) -> Result<Response<LaunchLocalWorkerResponse>, Status> {
+        let _launching = self.in_flight.lock().await;
         self.launches.lock().unwrap().push(request.into_inner());
         self.launch_entered.notify_one();
         let hold = self.hold_launch.lock().unwrap().clone();
@@ -129,6 +182,8 @@ impl BuilderLocalWorkerService for FakeBuilderd {
             stops.push(request.into_inner().worker_id);
             stops.len() > 1
         };
+        // builderd's Stop waits for an in-flight Launch of the worker.
+        drop(self.in_flight.lock().await);
         let hold = self.hold_later_stops.lock().unwrap().clone();
         if let Some(hold) = hold {
             if earlier {
@@ -192,10 +247,12 @@ async fn harness() -> Harness {
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
     let service = BuilderLocalWorkerServiceServer::new(fake.clone());
     let pool_service = BuilderPoolServiceServer::new(fake.clone());
+    let container_service = BuilderContainerServiceServer::new(fake.clone());
     tokio::spawn(async move {
         Server::builder()
             .add_service(service)
             .add_service(pool_service)
+            .add_service(container_service)
             .serve_with_incoming(incoming)
             .await
             .unwrap();
@@ -214,10 +271,10 @@ async fn harness() -> Harness {
     std::fs::create_dir_all(&slot).unwrap();
     let test_db = ur_db_test::TestDb::new().await;
     let worker_repo = workflow_db::WorkerRepo::new(test_db.workflow_pool().clone());
-    // Container builderd is unreachable: a local launch must never touch it.
-    let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
+    // The fake container service records StopWorker and refuses the rest;
+    // `assert_slot_intact` checks local workers never used it.
     let builder_container_client =
-        ur_server::builder_container_client::BuilderContainerClient::new(channel);
+        ur_server::builder_container_client::BuilderContainerClient::new(local_channel.clone());
     let project_registry = ur_server::ProjectRegistry::new(
         config.projects.clone(),
         ur_server::hostexec::HostExecConfigManager::empty(),
@@ -607,6 +664,10 @@ fn assert_slot_intact(h: &Harness) {
         "release issued a pool RPC"
     );
     assert!(
+        h.fake.container_stops.lock().unwrap().is_empty(),
+        "a local worker used the container service"
+    );
+    assert!(
         h.slot.join("uncommitted.txt").exists(),
         "slot contents touched"
     );
@@ -872,12 +933,13 @@ async fn reconcile_never_stops_a_launch_that_finished_during_the_list() {
     assert_eq!(status_of(&h, "local-1-fin1").await, "running");
 }
 
-/// A stop that lands while a local launch is in flight only marks the row
-/// `stopping`; the launch's finalize then fails and the launch stops the
-/// worker itself. The slot stays linked (never available) until
-/// StopLocalWorker succeeds.
+/// A stop that lands while a local launch is in flight goes through
+/// builderd's barrier: StopLocalWorker waits for the launch, so the stopper
+/// returns (and releases the slot) only once the worker is torn down. The
+/// launch's finalize then fails and it just ensures the stop. A failing stop
+/// leaves the row `stopping` with its slot linked for the loop.
 #[tokio::test(flavor = "multi_thread")]
-async fn stop_during_launch_is_finished_by_the_launch() {
+async fn stop_during_launch_waits_for_it_through_builderd() {
     for stop_fails in [false, true] {
         let h = harness().await;
         let slot = pool_slot(&h).await;
@@ -889,13 +951,20 @@ async fn stop_during_launch_is_finished_by_the_launch() {
         let launch = tokio::spawn(async move { wm.run_and_record(config).await });
         h.fake.launch_entered.notified().await;
 
-        let w = ur_server::WorkerId("local-1-infl".into());
-        h.worker_manager.stop_by_worker_id(&w).await.unwrap();
-        assert_eq!(status_of(&h, "local-1-infl").await, "stopping");
+        if stop_fails {
+            *h.fake.stop_error.lock().unwrap() = Some(Status::internal("kill tmux session: no"));
+        }
+        let wm = h.worker_manager.clone();
+        let stopper = tokio::spawn(async move {
+            wm.stop_by_worker_id(&ur_server::WorkerId("local-1-infl".into()))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert!(
-            h.fake.stops.lock().unwrap().is_empty(),
-            "stopper leaves it to the launch"
+            !stopper.is_finished(),
+            "the stop waits for the in-flight launch"
         );
+        assert_eq!(status_of(&h, "local-1-infl").await, "stopping");
         assert_eq!(slot_owner(&h, "local-1-infl").await, Some(slot.clone()));
         assert!(
             h.worker_repo
@@ -905,18 +974,18 @@ async fn stop_during_launch_is_finished_by_the_launch() {
                 .is_empty()
         );
 
-        if stop_fails {
-            *h.fake.stop_error.lock().unwrap() = Some(Status::internal("kill tmux session: no"));
-        }
         hold.notify_one();
+        let stopped = stopper.await.unwrap();
         let err = launch.await.unwrap().unwrap_err();
         assert!(err.contains("stopped during launch"), "{err}");
-        assert_eq!(*h.fake.stops.lock().unwrap(), vec!["local-1-infl"]);
         if stop_fails {
+            assert!(stopped.is_err());
             assert_eq!(status_of(&h, "local-1-infl").await, "stopping");
             assert_eq!(slot_owner(&h, "local-1-infl").await, Some(slot.clone()));
             *h.fake.stop_error.lock().unwrap() = None;
             reconciler(&h).reconcile_once().await.unwrap();
+        } else {
+            stopped.unwrap();
         }
         assert_eq!(status_of(&h, "local-1-infl").await, "stopped");
         assert_eq!(slot_owner(&h, "local-1-infl").await, None);
@@ -1047,4 +1116,30 @@ async fn launch_stopped_before_start_never_reaches_builderd() {
     assert!(h.fake.launches.lock().unwrap().is_empty());
     assert_eq!(status_of(&h, "local-1-early").await, "stopped");
     assert_eq!(slot_owner(&h, "local-1-early").await, None);
+}
+
+/// Container analog of a stop before the launch reaches builderd: the stop
+/// goes to builderd's StopWorker barrier for that worker id (which refuses a
+/// later LaunchWorker of it), and the slot is released only after it is Ok.
+#[tokio::test]
+async fn container_stop_mid_launch_uses_the_builderd_barrier() {
+    let h = harness().await;
+    let slot = pool_slot(&h).await;
+    let row = workflow_db::model::Worker {
+        runtime: ur_config::WorkerRuntime::Container,
+        ..claim_row(&h, "proj-1-cont")
+    };
+    assert!(h.worker_repo.claim_slot(&row, &slot).await.unwrap());
+    h.worker_manager
+        .stop_by_worker_id(&ur_server::WorkerId("proj-1-cont".into()))
+        .await
+        .unwrap();
+    let stops = h.fake.container_stops.lock().unwrap().clone();
+    assert_eq!(stops.len(), 1);
+    assert_eq!(
+        stops[0].worker_id, "proj-1-cont",
+        "barrier keyed by worker id"
+    );
+    assert_eq!(status_of(&h, "proj-1-cont").await, "stopped");
+    assert_eq!(slot_owner(&h, "proj-1-cont").await, None);
 }

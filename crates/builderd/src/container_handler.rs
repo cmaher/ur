@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use tonic::{Request, Response, Status};
 use tracing::{error, info, warn};
 
+use crate::barrier::WorkerBarrier;
 use container::{
     ContainerId, ContainerRuntime, DockerRuntime, ExecOpts, ImageId, PortMap, RunOpts,
     runtime_from_env,
@@ -20,12 +21,15 @@ use ur_rpc::proto::builder_container::{
 #[derive(Clone)]
 pub struct BuilderContainerHandler {
     runtime: DockerRuntime,
+    /// Orders LaunchWorker and StopWorker per worker id (Stop is a barrier).
+    barrier: WorkerBarrier,
 }
 
 impl BuilderContainerHandler {
-    pub fn new() -> Self {
+    pub fn new(barrier: WorkerBarrier) -> Self {
         Self {
             runtime: runtime_from_env(),
+            barrier,
         }
     }
 }
@@ -186,14 +190,12 @@ fn cleanup_failed_launch(
     }
 }
 
-#[tonic::async_trait]
-impl BuilderContainerService for BuilderContainerHandler {
-    async fn launch_worker(
+impl BuilderContainerHandler {
+    /// `docker run` plus the startup wait (the old LaunchWorker body).
+    async fn launch_container(
         &self,
-        req: Request<LaunchWorkerRequest>,
+        req: LaunchWorkerRequest,
     ) -> Result<Response<LaunchWorkerResponse>, Status> {
-        let req = req.into_inner();
-
         info!(
             image = %req.image,
             name = %req.name,
@@ -239,11 +241,12 @@ impl BuilderContainerService for BuilderContainerHandler {
         }))
     }
 
-    async fn stop_worker(
+    /// `docker stop` + `rm` of `req.container_id`; a missing container is
+    /// `NotFound`.
+    fn stop_container(
         &self,
-        req: Request<StopWorkerRequest>,
+        req: &StopWorkerRequest,
     ) -> Result<Response<StopWorkerResponse>, Status> {
-        let req = req.into_inner();
         let id = ContainerId(req.container_id.clone());
 
         info!(container_id = %req.container_id, "StopWorker request received");
@@ -286,6 +289,73 @@ impl BuilderContainerService for BuilderContainerHandler {
 
         info!(container_id = %req.container_id, "container stopped and removed");
         Ok(Response::new(StopWorkerResponse {}))
+    }
+
+    /// Stop as a barrier for `req.worker_id`: wait for its in-flight launch,
+    /// stop the requested container and the one that launch started (a
+    /// missing one is fine), and refuse later launches.
+    async fn stop_worker_barrier(
+        &self,
+        req: StopWorkerRequest,
+    ) -> Result<Response<StopWorkerResponse>, Status> {
+        let _stopping = self.barrier.begin_stop(&req.worker_id).await;
+        let launched = self.barrier.launched(&req.worker_id);
+        let targets = [Some(req.container_id.clone()), launched]
+            .into_iter()
+            .flatten()
+            .filter(|c| !c.is_empty());
+        let mut stopped: Vec<String> = Vec::new();
+        for container_id in targets {
+            if stopped.contains(&container_id) {
+                continue;
+            }
+            let target = StopWorkerRequest {
+                container_id: container_id.clone(),
+                worker_id: String::new(),
+            };
+            match self.stop_container(&target) {
+                Ok(_) => {}
+                Err(status) if status.code() == tonic::Code::NotFound => {}
+                Err(status) => return Err(status),
+            }
+            stopped.push(container_id);
+        }
+        self.barrier.forget_launched(&req.worker_id);
+        Ok(Response::new(StopWorkerResponse {}))
+    }
+}
+
+#[tonic::async_trait]
+impl BuilderContainerService for BuilderContainerHandler {
+    /// Runs on its own task under the worker's barrier lock, so a cancelled
+    /// RPC cannot abandon it and a StopWorker of the worker is ordered
+    /// against it.
+    async fn launch_worker(
+        &self,
+        req: Request<LaunchWorkerRequest>,
+    ) -> Result<Response<LaunchWorkerResponse>, Status> {
+        let (this, req) = (self.clone(), req.into_inner());
+        tokio::spawn(async move {
+            let _launching = this.barrier.begin_launch(&req.worker_id).await?;
+            let worker_id = req.worker_id.clone();
+            let response = this.launch_container(req).await?;
+            this.barrier
+                .record_launched(&worker_id, &response.get_ref().container_id);
+            Ok(response)
+        })
+        .await
+        .map_err(|e| Status::internal(format!("launch task failed: {e}")))?
+    }
+
+    async fn stop_worker(
+        &self,
+        req: Request<StopWorkerRequest>,
+    ) -> Result<Response<StopWorkerResponse>, Status> {
+        let req = req.into_inner();
+        if req.worker_id.is_empty() {
+            return self.stop_container(&req);
+        }
+        self.stop_worker_barrier(req).await
     }
 
     async fn exec_container(
@@ -400,7 +470,30 @@ mod tests {
                 host: "host.docker.internal".into(),
                 ip: "172.17.0.1".into(),
             }],
+            worker_id: "w1".into(),
         }
+    }
+
+    /// A StopWorker for a worker before its LaunchWorker arrives (the server
+    /// stopped it mid-launch) makes the launch refuse, before any docker
+    /// call; Ok from the stop means the worker will never run.
+    #[tokio::test]
+    async fn stop_before_launch_refuses_the_container_launch() {
+        let handler =
+            BuilderContainerHandler::new(WorkerBarrier::new(crate::barrier::TOMBSTONE_TTL));
+        handler
+            .stop_worker(Request::new(StopWorkerRequest {
+                container_id: String::new(),
+                worker_id: "w1".into(),
+            }))
+            .await
+            .unwrap();
+        let err = handler
+            .launch_worker(Request::new(make_request(Vec::new())))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(err.message().contains("was stopped"), "{err}");
     }
 
     #[test]

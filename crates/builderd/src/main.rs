@@ -11,6 +11,7 @@ use ur_rpc::proto::builder_local_worker::builder_local_worker_service_server::Bu
 use ur_rpc::proto::builder_pool::builder_pool_service_server::BuilderPoolServiceServer;
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonServiceServer;
 
+mod barrier;
 mod container_handler;
 mod handler;
 mod local_settings;
@@ -119,6 +120,7 @@ async fn main() -> anyhow::Result<()> {
         LOCAL_EXIT_POLL,
         host_workerd_addr(addr),
         None,
+        barrier::WorkerBarrier::new(barrier::TOMBSTONE_TTL),
     );
     let pool_handler = pool_handler::BuilderPoolHandler {
         workspace: pool_workspace,
@@ -132,7 +134,9 @@ async fn main() -> anyhow::Result<()> {
         overlays,
     };
 
-    let container_handler = container_handler::BuilderContainerHandler::new();
+    let container_handler = container_handler::BuilderContainerHandler::new(
+        barrier::WorkerBarrier::new(barrier::TOMBSTONE_TTL),
+    );
 
     // Before serving: ListLocalWorkers must never under-report live sessions
     // left by a previous builderd (the server releases unlisted slots).
