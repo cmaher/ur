@@ -24,9 +24,11 @@
 //!
 //! [`LocalWorkerReconcileManager::startup`] runs before the server serves or
 //! dispatches, so no launch can be in flight: a `provisioning` row then is a
-//! launch the previous server never finished (its agent may be live). Its
-//! slot is linked to it and it is marked `stopping`, so the ordinary
-//! stopping path converges it without the slot returning to the pool first.
+//! launch the previous server never finished (its agent may be live). It is
+//! marked `stopping` (its slot link, inserted with the row at launch start,
+//! keeps the slot out of the pool), so the ordinary stopping path converges
+//! it. While the server runs, a launch owns its `provisioning` row: a stop
+//! only marks it `stopping` and the launch's failed finalize stops it.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -70,8 +72,8 @@ impl LocalWorkerReconcileManager {
     }
 
     /// The startup pass. Must finish before the server serves or dispatches.
-    /// `Err` only when stale `provisioning` rows cannot be held (DB errors);
-    /// a failed builderd list is logged and left to the loop.
+    /// `Err` only when stale `provisioning` rows cannot be marked (DB
+    /// errors); a failed builderd list is logged and left to the loop.
     pub async fn startup(&self) -> Result<(), String> {
         let stale: Vec<_> = self
             .worker_repo
@@ -86,40 +88,14 @@ impl LocalWorkerReconcileManager {
                 worker_id = row.worker_id,
                 "unfinished local launch from a previous server; stopping it"
             );
-            self.hold_slot(row).await?;
+            self.worker_repo
+                .begin_stopping(&row.worker_id)
+                .await
+                .map_err(|e| format!("mark stale launch stopping: {e}"))?;
         }
         if let Err(e) = self.reconcile_once().await {
             warn!(error = %e, "startup local worker reconcile skipped; the loop retries");
         }
-        Ok(())
-    }
-
-    /// Link `row`'s slot (by its recorded workspace path) to it if unlinked,
-    /// then mark it `stopping`.
-    async fn hold_slot(&self, row: &workflow_db::model::Worker) -> Result<(), String> {
-        let db = |what: &'static str| move |e: sqlx::Error| format!("{what}: {e}");
-        if let Some(path) = &row.workspace_path
-            && let Some(slot) = self
-                .worker_repo
-                .get_slot_by_host_path(path)
-                .await
-                .map_err(db("look up slot"))?
-            && self
-                .worker_repo
-                .get_worker_slot(&row.worker_id)
-                .await
-                .map_err(db("read slot link"))?
-                .is_none()
-        {
-            self.worker_repo
-                .link_worker_slot(&row.worker_id, &slot.id)
-                .await
-                .map_err(db("link slot"))?;
-        }
-        self.worker_repo
-            .begin_stopping(&row.worker_id)
-            .await
-            .map_err(db("mark stopping"))?;
         Ok(())
     }
 

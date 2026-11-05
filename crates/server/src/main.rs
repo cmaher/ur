@@ -701,7 +701,6 @@ async fn init_managers(
         cfg.config_dir.clone(),
         logs_dir.to_path_buf(),
         host_logs_dir,
-        repo_pool_manager.clone(),
         network_manager,
         cfg.network.clone(),
         cfg.worker_port,

@@ -21,7 +21,6 @@ use workflow_db::model::AgentStatus;
 
 use workflow_db::WorkerRepo;
 
-use crate::pool::SlotClaim;
 use crate::{ProjectRegistry, RepoPoolManager, WorkerId, WorkerManager};
 
 #[derive(Debug, thiserror::Error)]
@@ -167,12 +166,12 @@ impl From<CoreError> for Status {
 
 /// Everything `resolve_launch_workspace` settles before a container can be created.
 ///
-/// `slot_claim` is owned by this struct so that dropping it — on an error path, or when a
-/// launch is cancelled mid-flight — releases the pool slot for the next acquisition.
+/// `claimed` is true when a pool slot was claimed: the worker's `provisioning` row and
+/// its slot link already exist, and an error before `run_and_record` must delete them.
 struct ResolvedLaunch {
     workspace_dir: Option<PathBuf>,
     project_key: String,
-    slot_claim: Option<SlotClaim>,
+    claimed: bool,
     worker_id: crate::WorkerId,
     resolved_skills: Vec<String>,
     strategy: crate::WorkerStrategy,
@@ -546,11 +545,11 @@ impl LaunchManager {
     ///
     /// Extracted from `launch` to keep method body within the line limit.
     ///
-    /// `slot_claim` carries ownership of the in-flight pool claim: returning it (rather than
-    /// a bare slot ID) means any `?` in this method — or a cancelled launch — drops the claim
-    /// and returns the slot to the pool. `generated_process_id` is `Some` for Manual mode
-    /// (auto-generated from the slot name) and `None` for all other modes (caller uses
-    /// `req.worker_id`).
+    /// A pool slot is claimed by inserting the worker's `provisioning` row and slot link
+    /// (`WorkerRepo::claim_slot`), so the worker ID and process ID are chosen per candidate
+    /// slot. A failure after the claim in this method deletes it. `generated_process_id` is
+    /// `Some` for Manual mode (auto-generated from the slot name) and `None` for all other
+    /// modes (caller uses `req.worker_id`).
     async fn resolve_launch_workspace(
         &self,
         req: &WorkerLaunchRequest,
@@ -572,71 +571,50 @@ impl LaunchManager {
         self.reject_unsupported_local_launch(&effective_project_key, req, strategy)?;
         let runtime = self.resolve_launch_runtime(req, &effective_project_key, agent)?;
 
-        let (workspace_dir, project_key, slot_claim) =
-            if !effective_project_key.is_empty() && !req.workspace_dir.is_empty() {
-                info!(
-                    worker_id = req.worker_id,
-                    project_key = %effective_project_key,
-                    workspace_dir = req.workspace_dir,
-                    "using workspace dir with project key (no pool slot)"
-                );
+        let (workspace_dir, project_key, claimed_row) = self
+            .launch_workspace(req, strategy, agent, runtime, effective_project_key)
+            .await?;
+
+        // A claimed slot fixed both IDs when its row was inserted.
+        let (generated_process_id, worker_id) = match &claimed_row {
+            Some(row) => (
+                (strategy == crate::WorkerStrategy::Manual).then(|| row.process_id.clone()),
+                crate::WorkerId(row.worker_id.clone()),
+            ),
+            None => {
+                let generated = (strategy == crate::WorkerStrategy::Manual).then(|| {
+                    Self::generate_manual_process_id(&project_key, workspace_dir.as_ref())
+                });
+                let base = generated.as_deref().unwrap_or(&req.worker_id);
                 (
-                    Some(PathBuf::from(&req.workspace_dir)),
-                    effective_project_key.clone(),
-                    None,
+                    generated.clone(),
+                    self.worker_manager.generate_worker_id(base),
                 )
-            } else if !effective_project_key.is_empty() {
-                let (slot_path, slot_claim) = strategy
-                    .acquire_slot(&self.repo_pool_manager, &effective_project_key)
-                    .await
-                    .map_err(|e| CoreError::PoolSlotFailed {
-                        reason: e.to_string(),
-                    })?;
-                info!(
-                    worker_id = req.worker_id,
-                    project_key = %effective_project_key,
-                    slot_path = %slot_path.display(),
-                    slot_id = ?slot_claim.as_ref().map(SlotClaim::slot_id),
-                    strategy = strategy.name(),
-                    "acquired pool slot"
-                );
-                (Some(slot_path), effective_project_key, slot_claim)
-            } else if !req.workspace_dir.is_empty() {
-                (Some(PathBuf::from(&req.workspace_dir)), String::new(), None)
-            } else {
-                (None, String::new(), None)
-            };
-
-        let generated_process_id = if strategy == crate::WorkerStrategy::Manual {
-            Some(Self::generate_manual_process_id(
-                &project_key,
-                workspace_dir.as_ref(),
-            ))
-        } else {
-            None
+            }
         };
-
-        // Use the generated process_id as the base for WorkerId in Manual mode;
-        // fall back to req.worker_id for all other modes.
-        let worker_id_base = generated_process_id.as_deref().unwrap_or(&req.worker_id);
-        let worker_id = self.worker_manager.generate_worker_id(worker_id_base);
         info!(
             worker_id = req.worker_id,
             internal_worker_id = %worker_id,
             "generated worker ID"
         );
+        let claimed = claimed_row.is_some();
 
         // Branch checkout is skipped for Manual — it manages its own workspace
         // and does not own a ticket branch.
         if strategy != crate::WorkerStrategy::Manual
-            && let (Some(slot_path), true) = (&workspace_dir, slot_claim.is_some())
-        {
-            self.repo_pool_manager
+            && let (Some(slot_path), true) = (&workspace_dir, claimed)
+            && let Err(e) = self
+                .repo_pool_manager
                 .checkout_branch(slot_path, &worker_id.to_string())
                 .await
-                .map_err(|e| CoreError::PoolSlotFailed {
-                    reason: e.to_string(),
-                })?;
+        {
+            let reason = self
+                .worker_manager
+                .remove_provisioning_worker(&worker_id, e.to_string())
+                .await;
+            return Err(CoreError::PoolSlotFailed { reason }.into());
+        }
+        if strategy != crate::WorkerStrategy::Manual && claimed {
             info!(
                 worker_id = %worker_id,
                 branch = %worker_id,
@@ -647,7 +625,7 @@ impl LaunchManager {
         Ok(ResolvedLaunch {
             workspace_dir,
             project_key,
-            slot_claim,
+            claimed,
             worker_id,
             resolved_skills,
             strategy,
@@ -657,6 +635,58 @@ impl LaunchManager {
             runtime,
             generated_process_id,
         })
+    }
+
+    /// The launch's workspace and project key, claiming a pool slot (returned
+    /// as its `provisioning` row) when the launch names a project and no dir.
+    async fn launch_workspace(
+        &self,
+        req: &WorkerLaunchRequest,
+        strategy: crate::WorkerStrategy,
+        agent: ur_config::AgentType,
+        runtime: ur_config::WorkerRuntime,
+        effective_project_key: String,
+    ) -> Result<(Option<PathBuf>, String, Option<workflow_db::model::Worker>), Status> {
+        let mut claimed_row = None;
+        let (workspace_dir, project_key) =
+            if !effective_project_key.is_empty() && !req.workspace_dir.is_empty() {
+                info!(
+                    worker_id = req.worker_id,
+                    project_key = %effective_project_key,
+                    workspace_dir = req.workspace_dir,
+                    "using workspace dir with project key (no pool slot)"
+                );
+                (
+                    Some(PathBuf::from(&req.workspace_dir)),
+                    effective_project_key.clone(),
+                )
+            } else if !effective_project_key.is_empty() {
+                let owner = |slot: &std::path::Path| {
+                    self.claim_row(req, strategy, agent, runtime, &effective_project_key, slot)
+                };
+                let (slot_path, row) = strategy
+                    .acquire_slot(&self.repo_pool_manager, &effective_project_key, owner)
+                    .await
+                    .map_err(|e| CoreError::PoolSlotFailed {
+                        reason: e.to_string(),
+                    })?;
+                info!(
+                    worker_id = req.worker_id,
+                    project_key = %effective_project_key,
+                    slot_path = %slot_path.display(),
+                    claimed_by = ?row.as_ref().map(|r| &r.worker_id),
+                    strategy = strategy.name(),
+                    "acquired pool slot"
+                );
+                claimed_row = row;
+                (Some(slot_path), effective_project_key)
+            } else if !req.workspace_dir.is_empty() {
+                (Some(PathBuf::from(&req.workspace_dir)), String::new())
+            } else {
+                (None, String::new())
+            };
+
+        Ok((workspace_dir, project_key, claimed_row))
     }
 
     /// Resolve and validate the launch's runtime before any slot, filesystem,
@@ -720,7 +750,6 @@ impl LaunchManager {
         req: &WorkerLaunchRequest,
         process_id: String,
         project_key: String,
-        slot_id: Option<String>,
         worker_id: crate::WorkerId,
         resolved_skills: Vec<String>,
         strategy: crate::WorkerStrategy,
@@ -777,7 +806,6 @@ impl LaunchManager {
             instruction_md: fields.instruction_md,
             mounts: fields.mounts,
             ports: fields.ports,
-            slot_id,
             context_mounts,
             hostexec_scripts: fields.hostexec_scripts,
             extra_skill_mounts,
@@ -791,14 +819,71 @@ impl LaunchManager {
     }
 
     /// Execute a full worker launch: resolve workspace, prepare, run, and post-launch setup.
+    ///
+    /// Runs on its own task, so a client that drops the RPC cannot cut a launch short
+    /// between claiming a slot, starting the worker, and finalizing (or cleaning up).
     pub async fn launch(&self, req: WorkerLaunchRequest) -> Result<(String, String), Status> {
-        // `slot_claim` is held for the rest of this method: it keeps the slot reserved until
-        // `post_launch_setup` links it to the worker, and releases it on every exit path —
-        // success, error, or cancellation.
+        let this = self.clone();
+        tokio::spawn(async move { this.launch_to_completion(req).await })
+            .await
+            .map_err(|e| Status::internal(format!("launch task failed: {e}")))?
+    }
+
+    async fn launch_to_completion(
+        &self,
+        req: WorkerLaunchRequest,
+    ) -> Result<(String, String), Status> {
+        let resolved = self.resolve_launch_workspace(&req).await?;
+        let (claimed, worker_id) = (resolved.claimed, resolved.worker_id.clone());
+        let strategy = resolved.strategy;
+        // For Manual mode, use the auto-generated process_id; otherwise use req.worker_id.
+        let process_id = resolved
+            .generated_process_id
+            .clone()
+            .unwrap_or_else(|| req.worker_id.clone());
+
+        let config = match self.configure_launch(&req, &process_id, resolved).await {
+            Ok(config) => config,
+            Err(status) if claimed => {
+                // Nothing was started: drop the claim so the slot is free again.
+                let message = self
+                    .worker_manager
+                    .remove_provisioning_worker(&worker_id, status.message().to_owned())
+                    .await;
+                return Err(Status::new(status.code(), message));
+            }
+            Err(status) => return Err(status),
+        };
+        let (container_id, _worker_secret) = self
+            .worker_manager
+            .run_and_record(config)
+            .await
+            .map_err(|e| CoreError::RunFailed {
+                reason: e.to_string(),
+            })?;
+
+        self.post_launch_setup(
+            &process_id,
+            &worker_id.to_string(),
+            claimed,
+            strategy,
+            req.dispatch,
+        )
+        .await?;
+
+        Ok((container_id, process_id))
+    }
+
+    /// Everything between resolving the workspace and starting the worker.
+    async fn configure_launch(
+        &self,
+        req: &WorkerLaunchRequest,
+        process_id: &str,
+        resolved: ResolvedLaunch,
+    ) -> Result<crate::WorkerConfig, Status> {
         let ResolvedLaunch {
             workspace_dir,
             project_key,
-            slot_claim,
             worker_id,
             resolved_skills,
             strategy,
@@ -806,17 +891,13 @@ impl LaunchManager {
             effort,
             agent,
             runtime,
-            generated_process_id,
-        } = self.resolve_launch_workspace(&req).await?;
-        let slot_id = slot_claim.as_ref().map(|claim| claim.slot_id().to_owned());
+            ..
+        } = resolved;
 
         // A local agent uses the host's own credentials (OS keychain).
         if runtime == ur_config::WorkerRuntime::Container {
             check_credentials_seeded(agent, &self.config_dir)?;
         }
-
-        // For Manual mode, use the auto-generated process_id; otherwise use req.worker_id.
-        let process_id = generated_process_id.unwrap_or_else(|| req.worker_id.clone());
 
         // Acquire shared slots for context repos in parallel.
         let context_mounts = self.acquire_context_repos(&req.context_repos).await?;
@@ -831,19 +912,17 @@ impl LaunchManager {
         // Phase 1: prepare (create repo, git init, register)
         let workspace_dir = self
             .worker_manager
-            .prepare(&process_id, &worker_id, workspace_dir)
+            .prepare(process_id, &worker_id, workspace_dir)
             .await
             .map_err(|e| CoreError::PrepareFailed {
                 reason: e.to_string(),
             })?;
 
         let worker_id_str = worker_id.to_string();
-        let has_pool_slot = slot_id.is_some();
         let config = self.build_worker_config(
-            &req,
-            process_id.clone(),
+            req,
+            process_id.to_owned(),
             project_key,
-            slot_id,
             worker_id,
             resolved_skills,
             strategy,
@@ -854,26 +933,47 @@ impl LaunchManager {
             workspace_dir,
             context_mounts,
         )?;
-        self.bind_workflow_worker(&process_id, &worker_id_str, strategy)
+        self.bind_workflow_worker(process_id, &worker_id_str, strategy)
             .await?;
-        let (container_id, _worker_secret) = self
-            .worker_manager
-            .run_and_record(config)
-            .await
-            .map_err(|e| CoreError::RunFailed {
-                reason: e.to_string(),
-            })?;
+        Ok(config)
+    }
 
-        self.post_launch_setup(
-            &process_id,
-            &worker_id_str,
-            has_pool_slot,
-            strategy,
-            req.dispatch,
-        )
-        .await?;
-
-        Ok((container_id, process_id))
+    /// The `provisioning` row that claims `slot`: IDs are chosen per candidate slot (a
+    /// Manual process ID is named after it). The secret is a placeholder nobody knows
+    /// until `record_provisioning_worker` sets the real one.
+    fn claim_row(
+        &self,
+        req: &WorkerLaunchRequest,
+        strategy: crate::WorkerStrategy,
+        agent: ur_config::AgentType,
+        runtime: ur_config::WorkerRuntime,
+        project_key: &str,
+        slot: &std::path::Path,
+    ) -> workflow_db::model::Worker {
+        let process_id = if strategy == crate::WorkerStrategy::Manual {
+            Self::generate_manual_process_id(project_key, Some(&slot.to_path_buf()))
+        } else {
+            req.worker_id.clone()
+        };
+        let worker_id = self.worker_manager.generate_worker_id(&process_id);
+        let now = chrono::Utc::now().to_rfc3339();
+        workflow_db::model::Worker {
+            worker_id: worker_id.0,
+            process_id,
+            project_key: project_key.to_owned(),
+            container_id: String::new(),
+            worker_secret: uuid::Uuid::new_v4().to_string(),
+            strategy: strategy.name().to_owned(),
+            agent_type: agent.name().to_owned(),
+            container_status: "provisioning".to_owned(),
+            agent_status: "starting".to_owned(),
+            workspace_path: Some(slot.display().to_string()),
+            created_at: now.clone(),
+            updated_at: now,
+            idle_redispatch_count: 0,
+            brain_path: None,
+            runtime,
+        }
     }
 
     /// Stop a running worker.

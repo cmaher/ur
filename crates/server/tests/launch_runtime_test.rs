@@ -61,7 +61,6 @@ async fn harness() -> Harness {
         config.config_dir.clone(),
         config.logs_dir.clone(),
         config.logs_dir.clone(),
-        pool.clone(),
         ur_server::network_manager::NetworkManager::new(
             builder_container_client.clone(),
             config.network.worker_name.clone(),

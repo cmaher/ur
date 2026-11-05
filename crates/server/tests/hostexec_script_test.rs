@@ -69,19 +69,12 @@ impl HostExecHarness {
             config.projects.clone(),
             ur_server::hostexec::HostExecConfigManager::load(dir, &discovery).unwrap(),
         );
-        let repo_pool_manager = ur_server::RepoPoolManager::new(
-            &config,
-            worker_repo.clone(),
-            project_registry.clone(),
-            ur_server::BuilderPoolClient::new(dead_builderd.clone()),
-        );
         let worker_manager = ur_server::WorkerManager::new(
             workspace.clone(),
             dir.to_path_buf(),
             dir.to_path_buf(),
             dir.join("logs"),
             dir.join("logs"),
-            repo_pool_manager,
             network_manager,
             config.network.clone(),
             config.worker_port,

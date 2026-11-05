@@ -37,22 +37,37 @@ slot directory is left behind. `ur worker launch` and the server's
    d. Trusts mise if `mise.toml` exists
    e. Copies local overlay files from `<config_dir>/projects/<project>/local/` into slot
    f. Returns the absolute host path to the slot directory
-4. Server inserts new slot row in DB (`project_key`, `slot_name`, `host_path`)
-5. Returns `(host_path, slot_id)` for Docker volume mount and worker-slot linking
+4. Server inserts new slot row in DB (`project_key`, `slot_name`, `host_path`) and claims it
+   (see "Slot claim" below)
+5. Returns `(host_path, claimed worker row)`
 
 ### Acquire Slot (reuse existing)
 
-1. Same DB query as above, finds a slot with no linked active worker
-2. `RepoPoolManager::acquire_slot()` calls
-   `BuilderPoolClient::recycle_slot(project_key, slot_name, repo_url)`
-3. `BuilderPoolHandler::recycle_slot()` on builderd:
+1. Same DB query as above, finds candidate slots with no linked active worker
+2. Claims the first candidate it can (see "Slot claim"); a lost claim moves on to the next
+3. `RepoPoolManager::acquire_slot()` calls
+   `BuilderPoolClient::recycle_slot(project_key, slot_name, repo_url)` under the claim;
+   a failed recycle deletes the claim row
+4. `BuilderPoolHandler::recycle_slot()` on builderd:
    a. Attempts `reset_slot()`: `git fetch --no-tags origin`, `git checkout master`,
       `git reset --hard origin/master`, `git clean -fdx`, submodule update
    b. On reset failure, falls back to `reclone_slot()`: removes directory, re-clones
       (retries `rm -rf` up to 3 times to handle macOS Spotlight locks)
    c. Applies local overlay files from `<config_dir>/projects/<project>/local/`
    d. Returns the absolute host path
-4. Returns `(host_path, slot_id)` — existing slot row already in DB
+5. Returns `(host_path, claimed worker row)` — existing slot row already in DB
+
+### Slot claim (ur-j5puq)
+
+The database is the only source of slot ownership. `acquire_slot(project_key, owner)` builds
+the launch's `provisioning` worker row for each candidate slot (`owner(slot_path)`: a Manual
+process ID is named after the slot) and `WorkerRepo::claim_slot` inserts that row and its
+`worker_slot` link in one transaction. `UNIQUE (slot_id)` on `worker_slot` (migration 005)
+makes the insert the arbiter: a unique violation means another launch got the slot. A link
+left by a `stopped` worker owns nothing and is dropped inside the same transaction. There is no
+in-memory claim; the launch RPC runs on its own task, so a dropped client cannot leave a claim
+half-done. Every later transition is a compare-and-set: finalize `provisioning → running`,
+stop `→ stopping`, `WorkerRepo::finish_stop` `stopping → stopped` plus deleting the link.
 
 ### Worker Branch Checkout
 
@@ -81,9 +96,10 @@ For read-only multi-worker mounts (no pool-limit counting, no DB tracking):
 
 ### Release Slot
 
-1. Process stops -> `RepoPoolManager::release_slot(worker_id, slot_path)`
-2. `worker_repo.unlink_worker_slot(worker_id)` removes only this worker's worker-slot join row
-3. Slot is now available for the next `find_available_slot` query
+1. The stop is confirmed (container stopped / `StopLocalWorker` succeeded) ->
+   `WorkerRepo::finish_stop(worker_id)` marks the row `stopped` and deletes only this worker's
+   worker-slot row, in one transaction
+2. Slot is now available for the next `find_available_slot` query
 
 Release never touches the slot's contents (ur-j5puq): the next `acquire_slot` recycles it
 (`RecycleSlot`: fetch + reset) under the new owner's claim. A stale or concurrent release can

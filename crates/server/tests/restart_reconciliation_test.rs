@@ -136,7 +136,6 @@ async fn make_components_with_db(
         workspace.join("logs"),
         workspace.join("logs"),
         workspace.join("logs"),
-        repo_pool_manager.clone(),
         network_manager,
         network_config.clone(),
         ur_config::DEFAULT_SERVER_PORT + 1,

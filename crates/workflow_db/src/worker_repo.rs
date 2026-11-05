@@ -106,27 +106,7 @@ impl WorkerRepo {
     // --- Worker methods ---
 
     pub async fn insert_worker(&self, worker: &Worker) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, brain_path, runtime)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
-        )
-        .bind(&worker.worker_id)
-        .bind(&worker.process_id)
-        .bind(&worker.project_key)
-        .bind(&worker.container_id)
-        .bind(&worker.worker_secret)
-        .bind(&worker.strategy)
-        .bind(&worker.agent_type)
-        .bind(&worker.container_status)
-        .bind(&worker.agent_status)
-        .bind(&worker.workspace_path)
-        .bind(&worker.created_at)
-        .bind(&worker.updated_at)
-        .bind(&worker.brain_path)
-        .bind(worker.runtime.as_str())
-        .execute(&self.pool)
-        .await?;
-
+        insert_worker_row(worker).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -181,42 +161,128 @@ impl WorkerRepo {
         Ok(())
     }
 
-    /// Move an active (`provisioning`/`running`/`stopping`) worker to
-    /// `stopping`. `false` when the row is gone or already `stopped`, so a
-    /// stale stopper can tell it has nothing to stop.
-    pub async fn begin_stopping(&self, worker_id: &str) -> Result<bool, sqlx::Error> {
-        let now = Utc::now().to_rfc3339();
-        let result = sqlx::query(
-            "UPDATE worker SET container_status = 'stopping', updated_at = $1
-             WHERE worker_id = $2 AND container_status IN ('provisioning', 'running', 'stopping')",
+    /// Claim `slot_id` for a new `provisioning` worker: insert the row and
+    /// its `worker_slot` link in one transaction. `UNIQUE (slot_id)` makes
+    /// the insert the arbiter: `false` means another worker owns the slot
+    /// (nothing is written). A link left by a `stopped` worker owns nothing
+    /// and is dropped first.
+    pub async fn claim_slot(&self, worker: &Worker, slot_id: &str) -> Result<bool, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM worker_slot WHERE slot_id = $1 AND worker_id IN
+               (SELECT worker_id FROM worker WHERE container_status = 'stopped')",
         )
-        .bind(&now)
-        .bind(worker_id)
+        .bind(slot_id)
+        .execute(&mut *tx)
+        .await?;
+        insert_worker_row(worker).execute(&mut *tx).await?;
+        let linked = sqlx::query(
+            "INSERT INTO worker_slot (worker_id, slot_id, created_at) VALUES ($1, $2, $3)",
+        )
+        .bind(&worker.worker_id)
+        .bind(slot_id)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&mut *tx)
+        .await;
+        match linked {
+            Ok(_) => {
+                tx.commit().await?;
+                Ok(true)
+            }
+            Err(sqlx::Error::Database(e)) if e.code().is_some_and(|c| c == "23505") => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Refresh a claimed `provisioning` row with the launch's final details
+    /// (container name, secret, ...). `false` when it is no longer
+    /// `provisioning` (stopped mid-launch) or gone.
+    pub async fn update_provisioning_worker(&self, worker: &Worker) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE worker SET process_id = $2, project_key = $3, container_id = $4,
+               worker_secret = $5, strategy = $6, agent_type = $7, workspace_path = $8,
+               updated_at = $9, brain_path = $10, runtime = $11
+             WHERE worker_id = $1 AND container_status = 'provisioning'",
+        )
+        .bind(&worker.worker_id)
+        .bind(&worker.process_id)
+        .bind(&worker.project_key)
+        .bind(&worker.container_id)
+        .bind(&worker.worker_secret)
+        .bind(&worker.strategy)
+        .bind(&worker.agent_type)
+        .bind(&worker.workspace_path)
+        .bind(&worker.updated_at)
+        .bind(&worker.brain_path)
+        .bind(worker.runtime.as_str())
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
     }
 
-    /// Replace the provisional container name with Docker's immutable ID and
-    /// mark the worker running after its health check succeeds.
+    /// Move an active (`provisioning`/`running`/`stopping`) worker to
+    /// `stopping`, returning the status it had. `None` when the row is gone or
+    /// already `stopped`, so a stale stopper can tell it has nothing to stop.
+    pub async fn begin_stopping(&self, worker_id: &str) -> Result<Option<String>, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query_scalar::<_, String>(
+            "UPDATE worker w SET container_status = 'stopping', updated_at = $1
+             FROM (SELECT container_status FROM worker WHERE worker_id = $2 FOR UPDATE) old
+             WHERE w.worker_id = $2
+               AND old.container_status IN ('provisioning', 'running', 'stopping')
+             RETURNING old.container_status",
+        )
+        .bind(&now)
+        .bind(worker_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    /// `stopping → stopped` and delete the worker's slot link, together.
+    /// Called only once the worker is confirmed gone. `false` (nothing
+    /// changed) when the row is not `stopping`.
+    pub async fn finish_stop(&self, worker_id: &str) -> Result<bool, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let stopped = sqlx::query(
+            "UPDATE worker SET container_status = 'stopped', updated_at = $1
+             WHERE worker_id = $2 AND container_status = 'stopping'",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(worker_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            > 0;
+        if stopped {
+            sqlx::query("DELETE FROM worker_slot WHERE worker_id = $1")
+                .bind(worker_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(stopped)
+    }
+
+    /// `provisioning → running`, recording Docker's immutable ID (or the
+    /// local session name). `false` when the row is no longer
+    /// `provisioning`: it was stopped mid-launch, and the launch path must
+    /// stop the worker itself.
     pub async fn finalize_worker_launch(
         &self,
         worker_id: &str,
         container_id: &str,
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<bool, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
-            "UPDATE worker SET container_id = $1, container_status = 'running', updated_at = $2 WHERE worker_id = $3",
+            "UPDATE worker SET container_id = $1, container_status = 'running', updated_at = $2
+             WHERE worker_id = $3 AND container_status = 'provisioning'",
         )
         .bind(container_id)
         .bind(&now)
         .bind(worker_id)
         .execute(&self.pool)
         .await?;
-        if result.rows_affected() == 0 {
-            return Err(sqlx::Error::RowNotFound);
-        }
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     /// Delete one worker row. Associated slot links are cascade-deleted.
@@ -769,6 +835,29 @@ async fn scan_disk_slots(dir: &Path) -> HashSet<String> {
     names
 }
 
+/// `INSERT` of a full worker row, shared by `insert_worker` and `claim_slot`.
+fn insert_worker_row(
+    worker: &Worker,
+) -> sqlx::query::Query<'_, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    sqlx::query(
+        "INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, brain_path, runtime)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+    )
+    .bind(&worker.worker_id)
+    .bind(&worker.process_id)
+    .bind(&worker.project_key)
+    .bind(&worker.container_id)
+    .bind(&worker.worker_secret)
+    .bind(&worker.strategy)
+    .bind(&worker.agent_type)
+    .bind(&worker.container_status)
+    .bind(&worker.agent_status)
+    .bind(&worker.workspace_path)
+    .bind(&worker.created_at)
+    .bind(&worker.updated_at)
+    .bind(&worker.brain_path)
+    .bind(worker.runtime.as_str())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -793,6 +882,172 @@ mod tests {
             brain_path: None,
             runtime: WorkerRuntime::Container,
         }
+    }
+
+    async fn slot_row(repo: &WorkerRepo, id: &str) {
+        let now = Utc::now().to_rfc3339();
+        repo.insert_slot(&Slot {
+            id: id.to_owned(),
+            project_key: "testproj".to_owned(),
+            slot_name: id.trim_start_matches("slot-").to_owned(),
+            host_path: format!("/pool/testproj/{id}"),
+            created_at: now.clone(),
+            updated_at: now,
+        })
+        .await
+        .unwrap();
+    }
+
+    fn provisioning(worker_id: &str) -> Worker {
+        Worker {
+            container_status: "provisioning".to_owned(),
+            ..test_worker(worker_id, "claude")
+        }
+    }
+
+    /// The slot claim is the row: of two concurrent claims of one slot
+    /// exactly one wins, and the loser writes nothing.
+    #[tokio::test]
+    async fn concurrent_claims_of_one_slot_have_one_winner() {
+        let test_db = TestDb::new().await;
+        let repo = WorkerRepo::new(test_db.workflow_pool().clone());
+        slot_row(&repo, "slot-0").await;
+        let (a, b) = (provisioning("w-a"), provisioning("w-b"));
+        let (ra, rb) = tokio::join!(repo.claim_slot(&a, "slot-0"), repo.claim_slot(&b, "slot-0"));
+        let won = [ra.unwrap(), rb.unwrap()];
+        assert_eq!(won.iter().filter(|w| **w).count(), 1, "{won:?}");
+        let (winner, loser) = if won[0] {
+            ("w-a", "w-b")
+        } else {
+            ("w-b", "w-a")
+        };
+        assert!(repo.get_worker_slot(winner).await.unwrap().is_some());
+        assert!(
+            repo.get_worker(loser).await.unwrap().is_none(),
+            "loser's row rolled back"
+        );
+        assert!(
+            repo.find_available_slots("testproj")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A stopped worker's lingering link does not block the next claim.
+    #[tokio::test]
+    async fn claim_replaces_a_stopped_workers_link() {
+        let test_db = TestDb::new().await;
+        let repo = WorkerRepo::new(test_db.workflow_pool().clone());
+        slot_row(&repo, "slot-0").await;
+        assert!(
+            repo.claim_slot(&provisioning("w-old"), "slot-0")
+                .await
+                .unwrap()
+        );
+        repo.update_worker_container_status("w-old", "stopped")
+            .await
+            .unwrap();
+        assert!(
+            repo.claim_slot(&provisioning("w-new"), "slot-0")
+                .await
+                .unwrap()
+        );
+        assert!(repo.get_worker_slot("w-old").await.unwrap().is_none());
+    }
+
+    /// Lifecycle transitions are compare-and-set.
+    #[tokio::test]
+    async fn lifecycle_transitions_are_conditional() {
+        let test_db = TestDb::new().await;
+        let repo = WorkerRepo::new(test_db.workflow_pool().clone());
+        slot_row(&repo, "slot-0").await;
+        assert!(
+            repo.claim_slot(&provisioning("w1"), "slot-0")
+                .await
+                .unwrap()
+        );
+
+        assert_eq!(
+            repo.begin_stopping("w1").await.unwrap().as_deref(),
+            Some("provisioning")
+        );
+        assert!(
+            !repo.finalize_worker_launch("w1", "c1").await.unwrap(),
+            "stopped mid-launch"
+        );
+        assert_eq!(
+            repo.get_worker("w1")
+                .await
+                .unwrap()
+                .unwrap()
+                .container_status,
+            "stopping"
+        );
+        assert!(repo.finish_stop("w1").await.unwrap());
+        assert!(repo.get_worker_slot("w1").await.unwrap().is_none());
+        assert_eq!(
+            repo.begin_stopping("w1").await.unwrap(),
+            None,
+            "stopped is final"
+        );
+        assert!(!repo.finish_stop("w1").await.unwrap());
+        assert_eq!(repo.begin_stopping("nope").await.unwrap(), None);
+
+        slot_row(&repo, "slot-1").await;
+        assert!(
+            repo.claim_slot(&provisioning("w2"), "slot-1")
+                .await
+                .unwrap()
+        );
+        assert!(!repo.finish_stop("w2").await.unwrap(), "only from stopping");
+        assert!(repo.get_worker_slot("w2").await.unwrap().is_some());
+        assert!(repo.finalize_worker_launch("w2", "c2").await.unwrap());
+        assert_eq!(
+            repo.begin_stopping("w2").await.unwrap().as_deref(),
+            Some("running")
+        );
+    }
+
+    /// Migration 005's rule: links of non-active workers go; a slot linked
+    /// twice keeps the newest active worker's link.
+    #[tokio::test]
+    async fn one_owner_migration_resolves_stale_and_duplicate_links() {
+        let test_db = TestDb::new().await;
+        let pool = test_db.workflow_pool();
+        let repo = WorkerRepo::new(pool.clone());
+        sqlx::query("ALTER TABLE worker_slot DROP CONSTRAINT worker_slot_one_owner")
+            .execute(pool)
+            .await
+            .unwrap();
+        for slot in ["slot-0", "slot-1"] {
+            slot_row(&repo, slot).await;
+        }
+        let at = |w: &str, created: &str, status: &str| Worker {
+            created_at: created.to_owned(),
+            container_status: status.to_owned(),
+            ..test_worker(w, "claude")
+        };
+        for (w, created, status, slot) in [
+            ("old", "2026-01-01T00:00:00Z", "running", "slot-0"),
+            ("new", "2026-02-01T00:00:00Z", "running", "slot-0"),
+            ("gone", "2026-03-01T00:00:00Z", "stopped", "slot-0"),
+            ("only", "2026-01-01T00:00:00Z", "stopping", "slot-1"),
+        ] {
+            repo.insert_worker(&at(w, created, status)).await.unwrap();
+            repo.link_worker_slot(w, slot).await.unwrap();
+        }
+        sqlx::raw_sql(include_str!(
+            "../migrations/005_worker_slot_unique_slot.sql"
+        ))
+        .execute(pool)
+        .await
+        .unwrap();
+        let owner = async |w: &str| repo.get_worker_slot(w).await.unwrap().map(|l| l.slot_id);
+        assert_eq!(owner("new").await.as_deref(), Some("slot-0"));
+        assert_eq!(owner("old").await, None);
+        assert_eq!(owner("gone").await, None);
+        assert_eq!(owner("only").await.as_deref(), Some("slot-1"));
     }
 
     #[tokio::test]

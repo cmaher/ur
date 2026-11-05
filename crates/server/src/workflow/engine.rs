@@ -335,18 +335,7 @@ mod tests {
             tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
         let builder_container_client =
             crate::builder_container_client::BuilderContainerClient::new(channel.clone());
-        let builder_pool_client = crate::BuilderPoolClient::new(channel);
         let config = dummy_config();
-        let project_registry = crate::ProjectRegistry::new(
-            config.projects.clone(),
-            crate::hostexec::HostExecConfigManager::empty(),
-        );
-        let pool = crate::RepoPoolManager::new(
-            &config,
-            worker_repo.clone(),
-            project_registry,
-            builder_pool_client,
-        );
         let network_manager = crate::network_manager::NetworkManager::new(
             builder_container_client.clone(),
             "ur-workers".into(),
@@ -357,7 +346,6 @@ mod tests {
             std::path::PathBuf::from("/tmp/test/logs"),
             std::path::PathBuf::from("/tmp/test/logs"),
             std::path::PathBuf::from("/tmp/test/logs"),
-            pool,
             network_manager,
             config.network.clone(),
             config.worker_port,

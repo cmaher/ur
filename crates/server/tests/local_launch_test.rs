@@ -46,6 +46,12 @@ struct FakeBuilderd {
     hold_later_stops: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
     /// Every `BuilderPoolService` call: releasing a slot must issue none.
     pool_calls: Arc<Mutex<Vec<&'static str>>>,
+    /// `RecycleSlot` answer (a launch's acquire); refused when unset.
+    recycle_to: Arc<Mutex<Option<std::path::PathBuf>>>,
+    /// Notified when LaunchLocalWorker is entered.
+    launch_entered: Arc<tokio::sync::Notify>,
+    /// When set, LaunchLocalWorker waits for this before answering.
+    hold_launch: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
 }
 
 impl FakeBuilderd {
@@ -74,7 +80,13 @@ impl BuilderPoolService for FakeBuilderd {
         &self,
         _: Request<RecycleSlotRequest>,
     ) -> Result<Response<RecycleSlotResponse>, Status> {
-        self.pool_call("recycle_slot")
+        let recycled = self.recycle_to.lock().unwrap().clone();
+        match recycled {
+            Some(path) => Ok(Response::new(RecycleSlotResponse {
+                host_path: path.display().to_string(),
+            })),
+            None => self.pool_call("recycle_slot"),
+        }
     }
     async fn prepare_shared_slot(
         &self,
@@ -97,6 +109,11 @@ impl BuilderLocalWorkerService for FakeBuilderd {
         request: Request<LaunchLocalWorkerRequest>,
     ) -> Result<Response<LaunchLocalWorkerResponse>, Status> {
         self.launches.lock().unwrap().push(request.into_inner());
+        self.launch_entered.notify_one();
+        let hold = self.hold_launch.lock().unwrap().clone();
+        if let Some(hold) = hold {
+            hold.notified().await;
+        }
         match self.launch_error.lock().unwrap().clone() {
             Some(status) => Err(status),
             None => Ok(Response::new(LaunchLocalWorkerResponse {})),
@@ -188,7 +205,11 @@ async fn harness() -> Harness {
         .connect_lazy();
 
     let tmp = tempfile::tempdir().unwrap();
-    let config = ur_config::Config::from_toml_str("", tmp.path()).unwrap();
+    let config = ur_config::Config::from_toml_str(
+        "[projects.proj]\nrepo = \"git@example.com:o/proj.git\"\nruntime = \"local\"\n",
+        tmp.path(),
+    )
+    .unwrap();
     let slot = tmp.path().join("pool/proj/0");
     std::fs::create_dir_all(&slot).unwrap();
     let test_db = ur_db_test::TestDb::new().await;
@@ -213,7 +234,6 @@ async fn harness() -> Harness {
         config.config_dir.clone(),
         config.logs_dir.clone(),
         config.logs_dir.clone(),
-        pool.clone(),
         ur_server::network_manager::NetworkManager::new(
             builder_container_client.clone(),
             config.network.worker_name.clone(),
@@ -278,7 +298,6 @@ fn local_config(h: &Harness, worker_id: &str) -> ur_server::WorkerConfig {
         instruction_md: None,
         mounts: Vec::new(),
         ports: Vec::new(),
-        slot_id: None,
         context_mounts: Vec::new(),
         hostexec_scripts: Vec::new(),
         extra_skill_mounts: Vec::new(),
@@ -520,12 +539,56 @@ async fn pool_slot(h: &Harness) -> String {
 }
 
 /// A Manual pool launch in `h.slot`, so a stop releases (unlinks) it.
-fn pool_config(h: &Harness, worker_id: &str, slot_id: &str) -> ur_server::WorkerConfig {
+fn pool_config(h: &Harness, worker_id: &str) -> ur_server::WorkerConfig {
     ur_server::WorkerConfig {
         project_key: PROJECT.into(),
-        slot_id: Some(slot_id.into()),
         ..local_config(h, worker_id)
     }
+}
+
+/// The `provisioning` row that claims `slot_id` for `worker_id`, as
+/// `LaunchManager` inserts it at launch start.
+fn claim_row(h: &Harness, worker_id: &str) -> workflow_db::model::Worker {
+    let now = chrono::Utc::now().to_rfc3339();
+    workflow_db::model::Worker {
+        worker_id: worker_id.into(),
+        process_id: "local-1".into(),
+        project_key: PROJECT.into(),
+        container_id: String::new(),
+        worker_secret: "placeholder".into(),
+        strategy: "manual".into(),
+        agent_type: "claude".into(),
+        container_status: "provisioning".into(),
+        agent_status: "starting".into(),
+        workspace_path: Some(h.slot.display().to_string()),
+        created_at: now.clone(),
+        updated_at: now,
+        idle_redispatch_count: 0,
+        brain_path: None,
+        runtime: ur_config::WorkerRuntime::Local,
+    }
+}
+
+async fn claim(h: &Harness, worker_id: &str, slot_id: &str) {
+    assert!(
+        h.worker_repo
+            .claim_slot(&claim_row(h, worker_id), slot_id)
+            .await
+            .unwrap(),
+        "slot {slot_id} already taken"
+    );
+}
+
+/// Claim the slot, then launch in it (what `LaunchManager::launch` does).
+async fn launch_in_slot(
+    h: &Harness,
+    worker_id: &str,
+    slot_id: &str,
+) -> Result<(String, String), String> {
+    claim(h, worker_id, slot_id).await;
+    h.worker_manager
+        .run_and_record(pool_config(h, worker_id))
+        .await
 }
 
 async fn slot_owner(h: &Harness, worker_id: &str) -> Option<String> {
@@ -555,10 +618,7 @@ fn assert_slot_intact(h: &Harness) {
 async fn reconcile_releases_slot_only_after_confirmed_stop() {
     let h = harness().await;
     let slot = pool_slot(&h).await;
-    h.worker_manager
-        .run_and_record(pool_config(&h, "local-1-dead", &slot))
-        .await
-        .unwrap();
+    launch_in_slot(&h, "local-1-dead", &slot).await.unwrap();
     set_listed(&h, &[("local-1-dead", false)]);
     *h.fake.stop_error.lock().unwrap() = Some(Status::internal("remove drive: busy"));
 
@@ -582,16 +642,10 @@ async fn stale_stop_leaves_the_slots_new_owner_untouched() {
     let h = harness().await;
     let slot = pool_slot(&h).await;
     let w1 = ur_server::WorkerId("local-1-old1".into());
-    h.worker_manager
-        .run_and_record(pool_config(&h, "local-1-old1", &slot))
-        .await
-        .unwrap();
+    launch_in_slot(&h, "local-1-old1", &slot).await.unwrap();
     h.worker_manager.stop_by_worker_id(&w1).await.unwrap();
     assert_slot_intact(&h);
-    h.worker_manager
-        .run_and_record(pool_config(&h, "local-1-new2", &slot))
-        .await
-        .unwrap();
+    launch_in_slot(&h, "local-1-new2", &slot).await.unwrap();
     let stops_before = h.fake.stops.lock().unwrap().len();
 
     // Stopped row: the stale stop is a no-op (no builderd call, no release).
@@ -618,11 +672,7 @@ async fn failed_launch_keeps_slot_until_cleanup_is_confirmed() {
     let slot = pool_slot(&h).await;
     *h.fake.launch_error.lock().unwrap() = Some(Status::internal("send agent argv: boom"));
 
-    let err = h
-        .worker_manager
-        .run_and_record(pool_config(&h, "local-1-lfok", &slot))
-        .await
-        .unwrap_err();
+    let err = launch_in_slot(&h, "local-1-lfok", &slot).await.unwrap_err();
     assert!(err.contains("boom"), "{err}");
     assert!(
         h.worker_repo
@@ -634,11 +684,7 @@ async fn failed_launch_keeps_slot_until_cleanup_is_confirmed() {
     assert_eq!(*h.fake.stops.lock().unwrap(), vec!["local-1-lfok"]);
 
     *h.fake.stop_error.lock().unwrap() = Some(Status::internal("kill tmux session: no"));
-    let err = h
-        .worker_manager
-        .run_and_record(pool_config(&h, "local-1-lfno", &slot))
-        .await
-        .unwrap_err();
+    let err = launch_in_slot(&h, "local-1-lfno", &slot).await.unwrap_err();
     assert!(
         err.contains("boom") && err.contains("kill tmux session: no"),
         "{err}"
@@ -662,22 +708,15 @@ async fn failed_launch_keeps_slot_until_cleanup_is_confirmed() {
 }
 
 /// A3: at startup a local `provisioning` row is a launch the previous
-/// server never finished: its slot is linked and it is stopped.
+/// server never finished: it is stopped while its slot stays linked.
 #[tokio::test]
 async fn startup_stops_stale_provisioning_rows_holding_their_slot() {
     let h = harness().await;
     let slot = pool_slot(&h).await;
-    h.worker_manager
-        .run_and_record(pool_config(&h, "local-1-prov", &slot))
-        .await
-        .unwrap();
+    launch_in_slot(&h, "local-1-prov", &slot).await.unwrap();
     // As if the server died between LaunchLocalWorker and finalize.
     h.worker_repo
         .update_worker_container_status("local-1-prov", "provisioning")
-        .await
-        .unwrap();
-    h.worker_repo
-        .unlink_worker_slot("local-1-prov")
         .await
         .unwrap();
     set_listed(&h, &[("local-1-prov", true)]);
@@ -726,10 +765,7 @@ async fn reconcile_rereads_unknown_listed_ids_before_stopping() {
 async fn concurrent_stoppers_leave_a_reacquired_slot_alone() {
     let h = harness().await;
     let slot = pool_slot(&h).await;
-    h.worker_manager
-        .run_and_record(pool_config(&h, "local-1-old1", &slot))
-        .await
-        .unwrap();
+    launch_in_slot(&h, "local-1-old1", &slot).await.unwrap();
     let hold = Arc::new(tokio::sync::Notify::new());
     *h.fake.hold_later_stops.lock().unwrap() = Some(hold.clone());
     let w1 = ur_server::WorkerId("local-1-old1".into());
@@ -755,10 +791,7 @@ async fn concurrent_stoppers_leave_a_reacquired_slot_alone() {
         1,
         "the slot is back in the pool"
     );
-    h.worker_manager
-        .run_and_record(pool_config(&h, "local-1-new2", &slot))
-        .await
-        .unwrap();
+    launch_in_slot(&h, "local-1-new2", &slot).await.unwrap();
     std::fs::write(h.slot.join("w2-work.txt"), "work").unwrap();
 
     hold.notify_one();
@@ -775,10 +808,7 @@ async fn concurrent_stoppers_leave_a_reacquired_slot_alone() {
 async fn stale_stop_of_stopped_row_with_lingering_link_releases_nothing() {
     let h = harness().await;
     let slot = pool_slot(&h).await;
-    h.worker_manager
-        .run_and_record(pool_config(&h, "local-1-lngr", &slot))
-        .await
-        .unwrap();
+    launch_in_slot(&h, "local-1-lngr", &slot).await.unwrap();
     h.worker_repo
         .update_worker_container_status("local-1-lngr", "stopped")
         .await
@@ -798,10 +828,7 @@ async fn stale_stop_of_stopped_row_with_lingering_link_releases_nothing() {
 async fn startup_stop_of_a_stale_row_leaves_the_live_slot_owner_alone() {
     let h = harness().await;
     let slot = pool_slot(&h).await;
-    h.worker_manager
-        .run_and_record(pool_config(&h, "local-1-stal", &slot))
-        .await
-        .unwrap();
+    launch_in_slot(&h, "local-1-stal", &slot).await.unwrap();
     h.worker_repo
         .update_worker_container_status("local-1-stal", "provisioning")
         .await
@@ -810,10 +837,7 @@ async fn startup_stop_of_a_stale_row_leaves_the_live_slot_owner_alone() {
         .unlink_worker_slot("local-1-stal")
         .await
         .unwrap();
-    h.worker_manager
-        .run_and_record(pool_config(&h, "local-1-live", &slot))
-        .await
-        .unwrap();
+    launch_in_slot(&h, "local-1-live", &slot).await.unwrap();
     set_listed(&h, &[("local-1-live", true)]);
 
     reconciler(&h).startup().await.unwrap();
@@ -846,4 +870,181 @@ async fn reconcile_never_stops_a_launch_that_finished_during_the_list() {
     reconciler(&h).reconcile_once().await.unwrap();
     assert!(h.fake.stops.lock().unwrap().is_empty());
     assert_eq!(status_of(&h, "local-1-fin1").await, "running");
+}
+
+/// A stop that lands while a local launch is in flight only marks the row
+/// `stopping`; the launch's finalize then fails and the launch stops the
+/// worker itself. The slot stays linked (never available) until
+/// StopLocalWorker succeeds.
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_during_launch_is_finished_by_the_launch() {
+    for stop_fails in [false, true] {
+        let h = harness().await;
+        let slot = pool_slot(&h).await;
+        let hold = Arc::new(tokio::sync::Notify::new());
+        *h.fake.hold_launch.lock().unwrap() = Some(hold.clone());
+        claim(&h, "local-1-infl", &slot).await;
+        let wm = h.worker_manager.clone();
+        let config = pool_config(&h, "local-1-infl");
+        let launch = tokio::spawn(async move { wm.run_and_record(config).await });
+        h.fake.launch_entered.notified().await;
+
+        let w = ur_server::WorkerId("local-1-infl".into());
+        h.worker_manager.stop_by_worker_id(&w).await.unwrap();
+        assert_eq!(status_of(&h, "local-1-infl").await, "stopping");
+        assert!(
+            h.fake.stops.lock().unwrap().is_empty(),
+            "stopper leaves it to the launch"
+        );
+        assert_eq!(slot_owner(&h, "local-1-infl").await, Some(slot.clone()));
+        assert!(
+            h.worker_repo
+                .find_available_slots(PROJECT)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        if stop_fails {
+            *h.fake.stop_error.lock().unwrap() = Some(Status::internal("kill tmux session: no"));
+        }
+        hold.notify_one();
+        let err = launch.await.unwrap().unwrap_err();
+        assert!(err.contains("stopped during launch"), "{err}");
+        assert_eq!(*h.fake.stops.lock().unwrap(), vec!["local-1-infl"]);
+        if stop_fails {
+            assert_eq!(status_of(&h, "local-1-infl").await, "stopping");
+            assert_eq!(slot_owner(&h, "local-1-infl").await, Some(slot.clone()));
+            *h.fake.stop_error.lock().unwrap() = None;
+            reconciler(&h).reconcile_once().await.unwrap();
+        }
+        assert_eq!(status_of(&h, "local-1-infl").await, "stopped");
+        assert_eq!(slot_owner(&h, "local-1-infl").await, None);
+    }
+}
+
+/// Dropping the launch RPC after builderd registered the worker cannot cut
+/// the launch short: it still finalizes (row `running`, slot linked).
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelled_launch_rpc_still_finalizes() {
+    let h = harness().await;
+    let slot = pool_slot(&h).await;
+    *h.fake.recycle_to.lock().unwrap() = Some(h.slot.clone());
+    let hold = Arc::new(tokio::sync::Notify::new());
+    *h.fake.hold_launch.lock().unwrap() = Some(hold.clone());
+
+    let req = ur_rpc::proto::core::WorkerLaunchRequest {
+        worker_id: "ignored".into(),
+        mode: "manual".into(),
+        project_key: PROJECT.into(),
+        runtime: "local".into(),
+        agent_type: "claude".into(),
+        ..Default::default()
+    };
+    let launch = h.launch_manager.launch(req);
+    tokio::select! {
+        _ = launch => panic!("launch finished while builderd held it"),
+        _ = h.fake.launch_entered.notified() => {}
+    }
+    // The RPC future is dropped here, mid-launch.
+    let row = h
+        .worker_repo
+        .list_active_workers()
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(row.container_status, "provisioning");
+    assert_eq!(slot_owner(&h, &row.worker_id).await, Some(slot.clone()));
+
+    hold.notify_one();
+    for _ in 0..250 {
+        if status_of(&h, &row.worker_id).await == "running" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(status_of(&h, &row.worker_id).await, "running");
+    assert_eq!(slot_owner(&h, &row.worker_id).await, Some(slot));
+    assert!(
+        h.worker_repo
+            .find_available_slots(PROJECT)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// `claim` from synchronous code (an `acquire_slot` owner closure).
+fn claim_blocking(h: &Harness, worker_id: &str, slot_id: &str) {
+    let rival = claim_row(h, worker_id);
+    let claim = h.worker_repo.claim_slot(&rival, slot_id);
+    let won = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(claim));
+    assert!(won.unwrap());
+}
+
+/// A launch that loses the claim of a candidate slot (another launch
+/// inserted its claim between the candidate read and this insert) moves on
+/// to the next slot; the rival keeps the slot it won.
+#[tokio::test(flavor = "multi_thread")]
+async fn acquire_moves_on_when_a_rival_claims_the_candidate_first() {
+    let h = harness().await;
+    let slot0 = pool_slot(&h).await;
+    let slot1_path = h.slot.with_file_name("1");
+    let now = chrono::Utc::now().to_rfc3339();
+    h.worker_repo
+        .insert_slot(&workflow_db::model::Slot {
+            id: "slot-1".into(),
+            project_key: PROJECT.into(),
+            slot_name: "1".into(),
+            host_path: slot1_path.display().to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
+        .await
+        .unwrap();
+    *h.fake.recycle_to.lock().unwrap() = Some(slot1_path.clone());
+    let rival_done = std::sync::atomic::AtomicBool::new(false);
+    let owner = |path: &std::path::Path| {
+        // The candidates were already read: race a rival's claim of slot 0
+        // in before this launch's insert.
+        if path == h.slot && !rival_done.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            claim_blocking(&h, "local-1-rivl", "slot-0");
+        }
+        claim_row(&h, "local-1-mine")
+    };
+    let (path, row) = h
+        .launch_manager
+        .repo_pool_manager
+        .acquire_slot(PROJECT, owner)
+        .await
+        .unwrap();
+    assert_eq!(path, slot1_path);
+    assert_eq!(
+        slot_owner(&h, &row.worker_id).await.as_deref(),
+        Some("slot-1")
+    );
+    assert_eq!(slot_owner(&h, "local-1-rivl").await, Some(slot0));
+}
+
+/// A claimed launch stopped before anything was started never reaches
+/// builderd, and its stop is finished on the spot.
+#[tokio::test]
+async fn launch_stopped_before_start_never_reaches_builderd() {
+    let h = harness().await;
+    let slot = pool_slot(&h).await;
+    claim(&h, "local-1-early", &slot).await;
+    h.worker_manager
+        .stop_by_worker_id(&ur_server::WorkerId("local-1-early".into()))
+        .await
+        .unwrap();
+    let err = h
+        .worker_manager
+        .run_and_record(pool_config(&h, "local-1-early"))
+        .await
+        .unwrap_err();
+    assert!(err.contains("stopped during launch"), "{err}");
+    assert!(h.fake.launches.lock().unwrap().is_empty());
+    assert_eq!(status_of(&h, "local-1-early").await, "stopped");
+    assert_eq!(slot_owner(&h, "local-1-early").await, None);
 }

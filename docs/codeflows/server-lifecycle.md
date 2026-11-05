@@ -50,6 +50,9 @@ ur stop
 │   ├── docker compose down
 │   └── Remove ~/.ur/docker-compose.yml
 │
+├── second builderd sweep (same as the first): stops a local worker whose launch the
+│   server finished during the first sweep; failure → error, builderd stays up
+│
 └── stop_builderd(config)
     ├── Read PID from ~/.ur/builderd.pid
     ├── SIGTERM the process

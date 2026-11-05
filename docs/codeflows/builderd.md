@@ -166,19 +166,23 @@ skill to its resolved source, and `check_assets` checks the same resolution.
 ### Server side
 
 `WorkerManager::run_and_record` branches on `WorkerConfig.runtime`; the local path lives in
-`crates/server/src/local_launch.rs` (`build_local_launch_request`). It inserts the provisional row (`container_id = ur-<id>`) → `LaunchLocalWorker`
-→ marks `running`. On launch (or finalize) failure it calls `StopLocalWorker`: only if that
-succeeds is the row deleted and the slot claim dropped; otherwise the slot is linked to the
-row, the row becomes `stopping`, and the reconcile loop retries. builderd's error text is
-returned either way. No Docker network, Squid env, image
+`crates/server/src/local_launch.rs` (`build_local_launch_request`). A pool launch's
+`provisioning` row and slot link were inserted when the slot was claimed (see
+`pool-git-builder-flow.md#slot-claim-ur-j5puq`); `record_provisioning_worker` fills in the
+session name `ur-<id>` and the secret → `LaunchLocalWorker` → finalize (`provisioning →
+running`, compare-and-set). On launch failure it calls `StopLocalWorker`: only if that succeeds
+is the row (and so its link) deleted; otherwise the row becomes `stopping`, still holding the
+slot, and the reconcile loop retries. If finalize finds the row no longer `provisioning`, a stop
+landed mid-launch: the launch calls `StopLocalWorker` itself and releases only if it succeeds.
+builderd's error text is returned either way. No Docker network, Squid env, image
 or credential gate. Mounts, memory/brain dirs, instruction file and host skills are host
-paths (templates resolve against the host config dir). Stop moves the row to `stopping` only
-from an active status (`WorkerRepo::begin_stopping`; an already `stopped` or deleted row
-makes the stop a no-op that releases nothing), calls `StopLocalWorker`, and only on success
-releases the slot and marks it `stopped`; on failure the row stays `stopping`.
-`RepoPoolManager::release_slot(W, S)` only deletes W's own `worker_slot` link (both
-runtimes); slot contents are reset by the next owner's `RecycleSlot`, so a stale or concurrent
-stopper never resets a slot that now serves another worker. Client: `BuilderLocalWorkerClient`
+paths (templates resolve against the host config dir). Stop (`stop_by_worker_id`, both
+runtimes) first moves the row to `stopping` with a compare-and-set (`WorkerRepo::begin_stopping`):
+an already `stopped` or deleted row releases nothing, and a `provisioning` row is only marked
+(its launch finishes the stop). Otherwise it calls `StopLocalWorker` (container: `StopWorker`)
+and only on success runs `WorkerRepo::finish_stop` (`stopped` + delete this worker's own link);
+on failure the row stays `stopping`. Release never touches slot contents; the next owner's
+`RecycleSlot` resets them. Client: `BuilderLocalWorkerClient`
 (`crates/server/src/builder_local_worker_client.rs`).
 
 ### Termination paths and reconciliation (ur-j5puq)
@@ -202,7 +206,7 @@ so the server's retried Stop runs teardown again.
 | builderd restart / host reboot | `LocalWorkerManager::adopt_existing` in `main.rs` **before** `serve`: each `ur-<id>` session is re-registered from its env (`UR_WORKER_ID` must match, `UR_SERVER_ADDR`, `UR_WORKER_SECRET`, a local-capable `UR_AGENT_TYPE`, `UR_DRIVE` = this builderd's drive) and start dir (`#{session_path}` = slot), with a new exit watcher; a session whose `UR_DRIVE` is outside this builderd's drive root is another instance's and is skipped entirely; one of ours with unusable env (missing/mismatched vars including a missing `UR_DRIVE`, unsupported agent, `UR_DRIVE` not equal to `drive/<id>`) is killed (a failed kill aborts startup); a tmux error reading a live session's env or start dir aborts startup (a session that ended meanwhile is skipped); then every `drive/<id>` without a registered worker gets `teardown_orphan` (links only). Session listing failure aborts startup; tmux not installed means no sessions. Orphan drive list/teardown failures are logged only (known limit: drives hold only links; the next startup retries) |
 | Server start (before serving or dispatching) | `LocalWorkerReconcileManager::startup` in `main.rs`: every local `provisioning` row is a launch the previous server never finished, so its slot (by `workspace_path`) is linked to it and it becomes `stopping`; then one pass as below. DB errors abort server start; a list error is left to the loop |
 | Every 15s | `LocalWorkerReconcileManager` (`crates/server/src/local_reconcile.rs`): reads active local rows, then `ListLocalWorkers`. List error → no change. `running` + listed alive → none; `running` not listed, `running` + session dead, or `stopping` → `stop_by_worker_id` (StopLocalWorker, then slot release + `stopped`; failure leaves `stopping` for the next pass); `provisioning` → none; listed id with no active row (re-read first) → `StopLocalWorker`. `WorkerRepo::reconcile_workers` skips local rows |
-| `ur stop` | after the server's `WorkerStop` pass, `ListLocalWorkers` → `StopLocalWorker` each straight from the host, before `compose down` and builderd shutdown; a list or stop failure aborts `ur stop`; no builderd running → warning only |
+| `ur stop` | after the server's `WorkerStop` pass, `ListLocalWorkers` → `StopLocalWorker` each straight from the host, before `compose down`, and again after it (a launch that landed during the first sweep) before builderd shutdown; a list or stop failure aborts `ur stop`; no builderd running → warning only |
 | `ur start` | waits for builderd's port; builderd exiting on adoption failure is reported with its log paths |
 
 The routed `WorkerDaemonService` (`crates/builderd/src/workerd_router.rs`, `WorkerdRouter`)

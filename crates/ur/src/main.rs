@@ -452,20 +452,25 @@ async fn stop_server(
     // Local workers live in builderd's tmux sessions whatever their rows say:
     // tear them all down through builderd before it (or the server) stops.
     let endpoint = builderd::local_stop_endpoint(config);
-    builderd::after_local_workers_stopped(builderd::stop_local_workers(endpoint, output), || {
-        if !compose.is_running()? {
-            info!("server is not running, nothing to stop");
-            output.print_text("server is not running");
-            return Ok(());
-        }
-        compose.down()?;
-        info!("compose down succeeded");
-        output.print_text("server stopped");
-
-        builderd::stop_builderd(config, output)?;
-        info!("builderd stopped");
-        Ok(())
-    })
+    builderd::shutdown_sequence(
+        || builderd::stop_local_workers(endpoint.clone(), output),
+        || {
+            if !compose.is_running()? {
+                info!("server is not running, nothing to stop");
+                output.print_text("server is not running");
+                return Ok(false);
+            }
+            compose.down()?;
+            info!("compose down succeeded");
+            output.print_text("server stopped");
+            Ok(true)
+        },
+        || {
+            builderd::stop_builderd(config, output)?;
+            info!("builderd stopped");
+            Ok(())
+        },
+    )
     .await?;
     info!("server stop complete");
     Ok(())

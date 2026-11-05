@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use crate::RepoPoolManager;
 
-/// Worker strategy enum governing mode-specific behavior: skill selection,
-/// slot acquisition, and slot release. Three variants exist: `Code`
+/// Worker strategy enum governing mode-specific behavior: skill selection
+/// and slot acquisition. Three variants exist: `Code`
 /// (exclusive numbered pool slots), `Design` (shared named slot), and
 /// `Manual` (exclusive numbered pool slots, no branch checkout, opus model,
 /// all skills).
@@ -41,47 +41,29 @@ impl WorkerStrategy {
 
     /// Acquire a pool slot for this worker strategy.
     ///
-    /// - `Code`: acquires an exclusive slot via `pool.acquire_slot`, returning
-    ///   `(host_path, Some(claim))` for DB linking via worker_slot.
-    /// - `Design`: acquires a shared slot via `pool.acquire_shared_slot`, returning
-    ///   `(host_path, None)` — no DB ownership tracking.
-    /// - `Manual`: acquires an exclusive slot via `pool.acquire_slot` (same as
-    ///   `Code`), returning `(host_path, Some(claim))`.
-    ///
-    /// The returned `SlotClaim` must be held until the slot is linked to a worker; see
-    /// `SlotClaim` for why ownership rather than a bare slot ID is handed back.
-    pub async fn acquire_slot(
+    /// - `Code` / `Manual`: an exclusive slot via `pool.acquire_slot`, claimed
+    ///   for the `provisioning` row `owner` builds (returned as `Some`). The
+    ///   claim lasts until the worker's stop deletes its link.
+    /// - `Design`: the shared slot via `pool.acquire_shared_slot` — no claim,
+    ///   no DB ownership.
+    pub async fn acquire_slot<F>(
         &self,
         pool: &RepoPoolManager,
         project_key: &str,
-    ) -> Result<(PathBuf, Option<crate::pool::SlotClaim>), String> {
+        owner: F,
+    ) -> Result<(PathBuf, Option<workflow_db::model::Worker>), String>
+    where
+        F: Fn(&Path) -> workflow_db::model::Worker,
+    {
         match self {
             Self::Code | Self::Manual => {
-                let (path, claim) = pool.acquire_slot(project_key).await?;
-                Ok((path, Some(claim)))
+                let (path, row) = pool.acquire_slot(project_key, owner).await?;
+                Ok((path, Some(row)))
             }
             Self::Design => {
                 let path = pool.acquire_shared_slot(project_key).await?;
                 Ok((path, None))
             }
-        }
-    }
-
-    /// Release a pool slot for this worker strategy.
-    ///
-    /// - `Code`: releases the exclusive slot via `pool.release_slot`.
-    /// - `Design`: no-op — shared slots have no DB ownership tracking.
-    /// - `Manual`: releases the exclusive slot via `pool.release_slot` (same as
-    ///   `Code`).
-    pub async fn release_slot(
-        &self,
-        pool: &RepoPoolManager,
-        worker_id: &str,
-        slot_path: &Path,
-    ) -> Result<(), String> {
-        match self {
-            Self::Code | Self::Manual => pool.release_slot(worker_id, slot_path).await,
-            Self::Design => Ok(()),
         }
     }
 
