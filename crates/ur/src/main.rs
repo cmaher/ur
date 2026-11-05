@@ -1,3 +1,4 @@
+mod attach;
 mod builder;
 mod builderd;
 mod compose;
@@ -23,7 +24,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use container::{ContainerId, ContainerRuntime};
+use container::ContainerRuntime;
 use tonic::transport::Channel;
 use tracing::{debug, info, instrument, warn};
 use ur_rpc::error::StatusResultExt;
@@ -630,100 +631,30 @@ fn kill_all_containers(worker_prefix: &str, output: &OutputManager) -> Result<()
     Ok(())
 }
 
-/// Wait for a container's Docker HEALTHCHECK to report "healthy".
-/// Polls every 500ms for up to 60s.
-fn wait_for_healthy(worker_id: &str, worker_prefix: &str) -> Result<()> {
-    let runtime = container::runtime_from_env();
-    let id = ContainerId(format!("{worker_prefix}{worker_id}"));
-    let max_attempts = 120; // 60s at 500ms intervals
-    let mut printed = false;
-    for i in 0..max_attempts {
-        let status = runtime.health_status(&id).unwrap_or_default();
-        if status == "healthy" {
-            if printed {
-                eprintln!(" ready");
-            }
-            return Ok(());
-        }
-        if status == "unhealthy" {
-            if printed {
-                eprintln!();
-            }
-            bail!("container {} became unhealthy", id.0);
-        }
-        if i == 0 {
-            eprint!("Waiting for worker to initialize");
-            printed = true;
-        }
-        eprint!(".");
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    if printed {
-        eprintln!();
-    }
-    bail!("container {} did not become healthy after 60s", id.0);
+fn attach_manager(port: u16, worker_prefix: &str) -> attach::AttachManager {
+    attach::AttachManager::new(
+        port,
+        worker_prefix.to_owned(),
+        ur_config::LOCAL_TMUX_SOCKET.to_owned(),
+        PathBuf::from("tmux"),
+    )
 }
 
-#[instrument]
-fn process_attach(worker_id: &str, worker_prefix: &str) -> Result<i32> {
-    let runtime = container::runtime_from_env();
-    let id = ContainerId(format!("{worker_prefix}{worker_id}"));
-    info!(container = %id.0, "attaching to agent session");
-    // Attach to the `agent` tmux session managed by workerd. This lets the user
-    // see the live Claude Code session. Multiple clients can attach simultaneously
-    // and send-keys works regardless of attached clients.
-    let session = tmux::Session::from_name("agent");
-    let command = session.attach_command();
-    let status = runtime.exec_interactive(&id, &command)?;
-    Ok(status.code().unwrap_or(1))
-}
-
-/// Attach to the worker for `--rm`, then stop it once the attach ends.
-///
-/// Unlike a plain attach, this acts like a shell `trap`: it installs handlers
-/// for SIGHUP/SIGINT/SIGTERM so that closing the terminal tab running the
-/// command (which delivers SIGHUP) still stops the worker, rather than leaving
-/// an orphaned container running. The interactive attach blocks, so it runs on
-/// a dedicated blocking thread while the async signal handlers race against it
-/// via `select!`. Whichever fires first, we fall through to the same cleanup.
+/// Attach for `--rm`; the stop goes through the server (WorkerStop), which
+/// tears local workers down via builderd.
 async fn attach_with_rm_cleanup(
+    attacher: &attach::AttachManager,
+    plan: &attach::AttachPlan,
     process_id: &str,
-    worker_prefix: &str,
     port: u16,
     output: &OutputManager,
 ) -> Result<i32> {
-    use tokio::signal::unix::{SignalKind, signal};
-
-    let mut sighup = signal(SignalKind::hangup()).context("install SIGHUP handler")?;
-    let mut sigint = signal(SignalKind::interrupt()).context("install SIGINT handler")?;
-    let mut sigterm = signal(SignalKind::terminate()).context("install SIGTERM handler")?;
-
-    let attach_pid = process_id.to_string();
-    let attach_prefix = worker_prefix.to_string();
-    let attach = tokio::task::spawn_blocking(move || process_attach(&attach_pid, &attach_prefix));
-
-    let exit_code = tokio::select! {
-        res = attach => res.context("attach task panicked")??,
-        _ = sighup.recv() => {
-            eprintln!("\nTerminal closed; stopping worker (--rm)...");
-            // 128 + SIGHUP(1)
-            129
-        }
-        _ = sigint.recv() => {
-            eprintln!("\nInterrupted; stopping worker (--rm)...");
-            // 128 + SIGINT(2)
-            130
-        }
-        _ = sigterm.recv() => {
-            eprintln!("\nTerminated; stopping worker (--rm)...");
-            // 128 + SIGTERM(15)
-            143
-        }
-    };
-
-    let mut client = connect(port).await?;
-    process_stop(&mut client, process_id, output).await?;
-    Ok(exit_code)
+    attacher
+        .attach_with_rm(plan, || async move {
+            let mut client = connect(port).await?;
+            process_stop(&mut client, process_id, output).await
+        })
+        .await
 }
 
 #[instrument(skip(client, output))]
@@ -1169,7 +1100,9 @@ async fn handle_worker_attach(
         output.print_error(&err);
         process::exit(err.code.exit_code());
     }
-    let exit_code = process_attach(worker_id, worker_prefix)?;
+    let attacher = attach_manager(port, worker_prefix);
+    let plan = attacher.resolve(worker_id).await?;
+    let exit_code = attacher.attach(&plan).await?;
     if rm {
         println!("Stopping {worker_id} (--rm)...");
         let mut client = connect(port).await?;
@@ -1433,13 +1366,15 @@ async fn handle_worker_launch(
             output.print_error(&err);
             process::exit(err.code.exit_code());
         }
-        wait_for_healthy(&process_id, worker_prefix)?;
+        let attacher = attach_manager(port, worker_prefix);
+        let plan = attacher.resolve(&process_id).await?;
+        attacher.wait_ready(&plan).await?;
         if rm {
             let exit_code =
-                attach_with_rm_cleanup(&process_id, worker_prefix, port, output).await?;
+                attach_with_rm_cleanup(&attacher, &plan, &process_id, port, output).await?;
             process::exit(exit_code);
         }
-        let exit_code = process_attach(&process_id, worker_prefix)?;
+        let exit_code = attacher.attach(&plan).await?;
         process::exit(exit_code);
     }
     Ok(())
