@@ -26,7 +26,7 @@ launch never falls back to a container.
 host ─────────────────────────────────────────────────────────────────────────────
  ur CLI ──WorkerLaunch/Stop──▶ ur-server (container)          ur worker attach
                                │ LaunchManager → WorkerManager      │
-                               │ LocalWorkerReconcileManager (15s)  │ tmux -L ur attach
+                               │ WorkerReconcileManager (15s)       │ tmux -L ur attach
                                │ worker port on 127.0.0.1:<worker_port>
                                ▼ UR_BUILDERD_ADDR                   ▼
  builderd (native) ── BuilderLocalWorkerService ── LocalWorkerManager
@@ -183,8 +183,8 @@ The database is the only record of who owns a slot (ur-j5puq). Full flow:
 in-flight launch. `begin_launch(id)` takes the lock and refuses a tombstoned id. Launches run on
 a spawned task, so a cancelled RPC cannot leave one half done. So **Stop Ok means the id is not
 running in this builderd and never will be.** Tombstones expire after `TOMBSTONE_TTL` (1h). A
-builderd restart loses them safely: in-flight launches die with the process, and worker ids are
-never reused. Stopping an unregistered id kills a leftover `ur-<id>` session we own and tears
+builderd restart loses them; a Launch the server resends to the new process then runs, and the
+server's launch path stops it itself when finalize finds the row stopped. Stopping an unregistered id kills a leftover `ur-<id>` session we own and tears
 down a leftover drive. Details: [builderd.md](builderd.md#stop-is-a-barrier-ur-j5puq).
 
 ## Teardown
@@ -202,10 +202,10 @@ are never removed.
 | Agent exits | `ExitWatcherManager` (workerd lib) polls window 0: pane dead, probe failure, or (code and design workers; `watches_agent_process` on the strategy) the foreground process back at a shell, after a non-shell foreground was seen on two consecutive polls (a shell poll between them resets the count), with no child process left under the pane's shell (a Ctrl-Z'd agent, or one whose child holds the terminal, is not an exit; a failed foreground/children query is no change that poll) | `LocalExitSink` → teardown. Within 15s the reconcile pass sees the id missing from the list → `stop_by_worker_id` (a Stop of an unknown id is Ok) → `finish_stop`. A manual worker's agent that quits leaves its shell alive, so nothing fires and the worker stays `running` until stopped (same as containers) |
 | External kill (`tmux -L ur kill-session`, agent crash) | same exit watcher (session gone) | same as agent exit |
 | `ur worker stop`, `launch -f`, `--rm` attach exit, workflow completion (merge, GitHub poller), ticket close | `WorkerStop` / server-internal stop | `stop_by_worker_id`: `begin_stopping` → `StopLocalWorker` (barrier) → teardown → `finish_stop`; a failure leaves the row `stopping` for the reconcile loop |
-| Failed launch | builderd step error, LaunchLocalWorker error, or finalize error | builderd: a failed build removes what it built, and a later failure runs teardown before returning. Server: `abandon_launch` → `stop_by_worker_id` (row `stopped`, or `stopping` if Stop fails). Finalize false: the concurrent stopper finishes it |
+| Failed launch | builderd step error, LaunchLocalWorker error, or finalize error | builderd: a failed build removes what it built, and a later failure runs teardown before returning. Server: `abandon_launch` → `stop_by_worker_id` (row `stopped`, or `stopping` if Stop fails). Finalize false: the launch stops what it launched (`stop_lost_launch`) and returns "stopped during launch" |
 | builderd restart / host reboot | builderd startup, `adopt_existing` before `serve` | Our `ur-<id>` sessions (`UR_DRIVE` under our drive root) are re-registered from their env and start dir with a new exit watcher. Ours with unusable env are killed. Sessions that are not ours are left alone. Every drive without a registered worker gets `teardown_orphan` (its memory link is kept if a registered worker uses that slot). Listing failure, a read error on a live session, or a failed kill aborts startup, and `ur start` reports the builderd logs |
-| Server restart | `LocalWorkerReconcileManager::startup`, before serving or dispatching | Every local `provisioning` row (an unfinished launch) → `stopping`, then one reconcile pass. Container `reconcile_workers` skips local rows |
-| Periodic reconcile | every 15s (`DEFAULT_LOCAL_RECONCILE_INTERVAL`) | Rows are read first, then `ListLocalWorkers`. `running` + not listed, `running` + session dead, or `stopping` → `stop_by_worker_id`. `provisioning` → none. A listed id with no active row (re-read first) → `StopLocalWorker`. A list error changes nothing |
+| Server restart | `WorkerReconcileManager::startup`, before serving or dispatching | Container rows first (never revived to `running`; see builderd.md). Every local `provisioning` row (an unfinished launch) → `stopping`, then one reconcile pass. Container `reconcile_workers` skips local rows |
+| Periodic reconcile | every 15s (`DEFAULT_RECONCILE_INTERVAL`) | Container `stopping` rows → `stop_by_worker_id`. Local rows are read first, then `ListLocalWorkers`. `running` + not listed, `running` + session dead, or `stopping` → `stop_by_worker_id`. `provisioning` → none. A listed id with no active row (re-read first) → `StopLocalWorker`. A list error changes nothing |
 | `ur stop` | CLI | Server stops running workers, then builderd sweep (`ListLocalWorkers` → `StopLocalWorker` each, from the host), `compose down`, a second sweep (catches a launch the server finished during the first), then builderd exits. A sweep failure aborts `ur stop`. If builderd is not running: warn, and its next start adopts the sessions. See [server-lifecycle.md](server-lifecycle.md) |
 
 **Own-session rule** (ur-hld78): every ur instance on the host shares the `ur` socket. builderd
@@ -248,14 +248,11 @@ Deliberate:
 - **Auto mode is trusted.** There is no container sandbox, no hostexec policy and no Squid. The
   deny rules and the instructions are the only guardrails.
 - Release leaves the stopped worker's tree in the slot until the next acquire resets it.
+- A local `provisioning` row written by a pre-ur-j5puq build has no slot link, so its slot is
+  free while server startup's stop converges it.
 
 Open tickets:
 
-- ur-ezhdb: Slot-release gaps left by ur-j5puq: container launch cleanup race, builderd
-  restart with an in-flight launch, migration 005 losers revived by container reconcile, no
-  container `stopping` retry.
-- ur-rkufm: Container startup reconcile revives a stopped row without relinking its slot
-  (container only).
 - ur-z5u7e: `WorkerInfo` returns empty `runtime`/`agent_status` for CLI callers; attach works
   around it with `WorkerList`.
 
@@ -289,7 +286,7 @@ Other limits (in code comments):
 - `crates/builderd/src/local_settings.rs`: settings.json, deny rules, drive map
 - `crates/builderd/src/barrier.rs`: `WorkerBarrier`
 - `crates/builderd/src/local_worker_handler.rs`, `workerd_router.rs`: gRPC surface
-- `crates/server/src/local_launch.rs`, `local_reconcile.rs`, `launch_runtime.rs`, `workerd_address.rs`
+- `crates/server/src/local_launch.rs`, `worker_reconcile.rs`, `launch_runtime.rs`, `workerd_address.rs`
 - `crates/workflow_db/src/worker_repo.rs`, `migrations/005_worker_slot_unique_slot.sql`
 - `crates/ur/src/attach.rs`, `crates/ur/src/builderd.rs` (`ur stop` sweeps), `crates/ur/src/compose.rs` (loopback worker port)
 - `crates/tmux/src/lib.rs` (`Session::on_socket`), `crates/workerd/src/skill_layout.rs`

@@ -12,7 +12,6 @@ use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::str::FromStr;
 use ticket_db::{GraphManager, TicketRepo};
-use ur_rpc::proto::builder_container::InspectWorkerRequest;
 use ur_server::SnapshotManager;
 use ur_server::builder_container_client::BuilderContainerClient;
 use ur_server::worker::WorkerModesConfig;
@@ -211,46 +210,6 @@ async fn reconcile_slots(
     Ok(())
 }
 
-/// Reconcile worker rows against live containers.
-///
-/// The liveness probe goes through builderd: the server container has no
-/// Docker socket, so inspecting containers from this process would fail for
-/// every worker. A failed probe is reported as an error rather than "dead",
-/// leaving the row untouched — see `WorkerRepo::reconcile_workers`.
-async fn reconcile_workers(
-    worker_repo: &WorkerRepo,
-    builder_container_client: &BuilderContainerClient,
-) -> anyhow::Result<()> {
-    let worker_result = worker_repo
-        .reconcile_workers(|container_id| {
-            let client = builder_container_client.clone();
-            async move {
-                client
-                    .inspect_worker(InspectWorkerRequest {
-                        container_id: container_id.clone(),
-                    })
-                    .await
-                    .map(|response| response.running)
-                    .map_err(|status| format!("{container_id}: {status}"))
-            }
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("worker reconciliation failed: {e}"))?;
-    if !worker_result.indeterminate.is_empty() {
-        warn!(
-            indeterminate = ?worker_result.indeterminate,
-            "worker liveness could not be determined; rows left unchanged"
-        );
-    }
-    info!(
-        reclaimed = ?worker_result.reclaimed,
-        stopped = ?worker_result.marked_stopped,
-        indeterminate = ?worker_result.indeterminate,
-        "worker reconciliation complete"
-    );
-    Ok(())
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn init_and_serve(
     cfg: &Config,
@@ -360,25 +319,24 @@ struct WorkflowServices {
     ui_poller_handle: tokio::task::JoinHandle<()>,
 }
 
-/// Reconciles `runtime = local` rows against builderd (every 15s).
-fn local_reconcile_manager(
+/// Reconciles worker rows against builderd (startup, then every 15s).
+fn worker_reconcile_manager(
     builderd_addr: &str,
     worker_manager: &WorkerManager,
     worker_repo: &WorkerRepo,
-) -> anyhow::Result<ur_server::local_reconcile::LocalWorkerReconcileManager> {
+) -> anyhow::Result<ur_server::worker_reconcile::WorkerReconcileManager> {
     let channel =
         ur_rpc::retry::RetryChannel::new(builderd_addr, ur_rpc::retry::RetryConfig::default())
             .map_err(|e| anyhow::anyhow!("failed to create builderd retry channel: {e}"))?;
-    Ok(
-        ur_server::local_reconcile::LocalWorkerReconcileManager::new(
-            worker_manager.clone(),
-            worker_repo.clone(),
-            ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
-                channel.channel().clone(),
-            ),
-            ur_server::local_reconcile::DEFAULT_LOCAL_RECONCILE_INTERVAL,
+    Ok(ur_server::worker_reconcile::WorkerReconcileManager::new(
+        worker_manager.clone(),
+        worker_repo.clone(),
+        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
+            channel.channel().clone(),
         ),
-    )
+        BuilderContainerClient::new(channel.channel().clone()),
+        ur_server::worker_reconcile::DEFAULT_RECONCILE_INTERVAL,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -574,8 +532,8 @@ async fn serve_grpc_servers(
     ticket_handler.cancel_tx = Some(wf.cancel_tx);
 
     // The startup pass already ran in `main`; this is the periodic loop.
-    let local_reconcile_handle =
-        local_reconcile_manager(&builderd_addr, &worker_manager, &worker_repo)?
+    let worker_reconcile_handle =
+        worker_reconcile_manager(&builderd_addr, &worker_manager, &worker_repo)?
             .spawn(wf.shutdown_tx.subscribe());
 
     let host_server =
@@ -634,7 +592,7 @@ async fn serve_grpc_servers(
     let _ = wf.coordinator_handle.await;
     let _ = wf.poller_handle.await;
     let _ = wf.ui_poller_handle.await;
-    let _ = local_reconcile_handle.await;
+    let _ = worker_reconcile_handle.await;
 
     server_result
 }
@@ -713,19 +671,6 @@ async fn init_managers(
         ),
     );
 
-    reconcile_workers(&worker_repo, &builder_container_client).await?;
-
-    let stale_deleted = worker_repo
-        .cleanup_stale_workers(cfg.server.stale_worker_ttl_days)
-        .await
-        .map_err(|e| anyhow::anyhow!("stale worker cleanup failed: {e}"))?;
-    info!(
-        count = stale_deleted.len(),
-        deleted = ?stale_deleted,
-        ttl_days = cfg.server.stale_worker_ttl_days,
-        "stale worker cleanup complete"
-    );
-
     Ok((
         builderd_addr,
         worker_repo,
@@ -795,12 +740,25 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    // Before anything serves or dispatches: no local launch is in flight, so
-    // leftover `provisioning` local rows are stale and held for a stop.
-    local_reconcile_manager(&builderd_addr, &worker_manager, &worker_repo)?
+    // Before anything serves or dispatches: no launch is in flight, so
+    // leftover `provisioning` rows are stale and held for a stop, and a
+    // `stopped` row's live container is stopped (see `worker_reconcile`).
+    worker_reconcile_manager(&builderd_addr, &worker_manager, &worker_repo)?
         .startup()
         .await
-        .map_err(|e| anyhow::anyhow!("local worker startup reconciliation failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("worker startup reconciliation failed: {e}"))?;
+
+    // After reconciliation, which may stop a stopped row's live container.
+    let stale_deleted = worker_repo
+        .cleanup_stale_workers(cfg.server.stale_worker_ttl_days)
+        .await
+        .map_err(|e| anyhow::anyhow!("stale worker cleanup failed: {e}"))?;
+    info!(
+        count = stale_deleted.len(),
+        deleted = ?stale_deleted,
+        ttl_days = cfg.server.stale_worker_ttl_days,
+        "stale worker cleanup complete"
+    );
 
     let result = init_and_serve(
         &cfg,

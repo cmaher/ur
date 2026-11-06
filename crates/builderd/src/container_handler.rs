@@ -338,6 +338,9 @@ impl BuilderContainerService for BuilderContainerHandler {
         tokio::spawn(async move {
             let _launching = this.barrier.begin_launch(&req.worker_id).await?;
             let worker_id = req.worker_id.clone();
+            // Before `docker run`: a failed launch whose cleanup also failed
+            // leaves a container that a waiting Stop must still target.
+            this.barrier.record_launched(&worker_id, &req.name);
             let response = this.launch_container(req).await?;
             this.barrier
                 .record_launched(&worker_id, &response.get_ref().container_id);
@@ -494,6 +497,110 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
         assert!(err.message().contains("was stopped"), "{err}");
+    }
+
+    /// Fake `docker`: containers are `dstate/c-<name>` files holding
+    /// `running`/`exited`; `cid-<name>` is the ID `run` prints. Flag files
+    /// in `dstate` inject health and stop failures.
+    const FAKE_DOCKER: &str = r#"#!/bin/sh
+D="$(dirname "$0")/dstate"; mkdir -p "$D"
+res() { echo "${1#cid-}"; }
+case "$1" in
+  run) shift; name=""
+       while [ $# -gt 0 ]; do [ "$1" = "--name" ] && name="$2"; shift; done
+       echo running > "$D/c-$name"; echo "cid-$name";;
+  inspect) n=$(res "$4")
+       [ -f "$D/c-$n" ] || { echo "Error: No such container: $4" >&2; exit 1; }
+       case "$3" in
+         *Health*) sleep 0.3; [ -f "$D/HEALTH_FAIL" ] && { echo "health boom" >&2; exit 1; }; echo "";;
+         *) if [ "$(cat "$D/c-$n")" = running ]; then echo "true cid-$n"; else echo "false cid-$n"; fi;;
+       esac;;
+  stop) n=$(res "$4"); [ -f "$D/c-$n" ] || { echo "No such container: $4" >&2; exit 1; }
+        [ -f "$D/STOP_FAIL" ] && { echo "stop boom" >&2; exit 1; }
+        echo exited > "$D/c-$n";;
+  rm) n=$(res "$2"); [ -f "$D/c-$n" ] || { echo "No such container: $2" >&2; exit 1; }
+      [ "$(cat "$D/c-$n")" = running ] && { echo "cannot remove a running container" >&2; exit 1; }
+      rm -f "$D/c-$n";;
+  logs) echo logs;;
+  *) echo "unsupported $*" >&2; exit 1;;
+esac
+"#;
+
+    fn fake_docker_handler(dir: &std::path::Path) -> BuilderContainerHandler {
+        use std::os::unix::fs::PermissionsExt;
+        let docker = dir.join("docker");
+        std::fs::write(&docker, FAKE_DOCKER).unwrap();
+        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::create_dir_all(dir.join("dstate")).unwrap();
+        BuilderContainerHandler {
+            runtime: DockerRuntime {
+                command: docker.display().to_string(),
+            },
+            barrier: WorkerBarrier::new(crate::barrier::TOMBSTONE_TTL),
+        }
+    }
+
+    async fn wait_for_file(path: &std::path::Path) {
+        for _ in 0..200 {
+            if path.exists() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// ur-ezhdb #1: a launch fails after `docker run` and its cleanup fails
+    /// too (container left running), while a Stop from a stopper that read
+    /// the row before the container was recorded (`container_id` empty)
+    /// waits on the barrier. That Stop must target the launched container
+    /// (here: fail, since docker stop fails), never return Ok over it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_waiting_on_a_failed_launch_targets_its_leftover_container() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = fake_docker_handler(tmp.path());
+        let dstate = tmp.path().join("dstate");
+        std::fs::write(dstate.join("HEALTH_FAIL"), "").unwrap();
+        let launcher = handler.clone();
+        let launch = tokio::spawn(async move {
+            launcher
+                .launch_worker(Request::new(make_request(Vec::new())))
+                .await
+        });
+        let container = dstate.join("c-test-container");
+        wait_for_file(&container).await;
+        assert!(container.exists(), "docker run happened");
+        std::fs::write(dstate.join("STOP_FAIL"), "").unwrap();
+        let stopper = handler.clone();
+        let stop = tokio::spawn(async move {
+            stopper
+                .stop_worker(Request::new(StopWorkerRequest {
+                    container_id: String::new(),
+                    worker_id: "w1".into(),
+                }))
+                .await
+        });
+
+        let err = launch.await.unwrap().unwrap_err();
+        assert!(err.message().contains("cleanup also failed"), "{err}");
+        let stop = stop.await.unwrap();
+        assert!(
+            stop.is_err(),
+            "Stop returned Ok while the launched container is running"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&container).unwrap().trim(),
+            "running"
+        );
+
+        std::fs::remove_file(dstate.join("STOP_FAIL")).unwrap();
+        handler
+            .stop_worker(Request::new(StopWorkerRequest {
+                container_id: String::new(),
+                worker_id: "w1".into(),
+            }))
+            .await
+            .unwrap();
+        assert!(!container.exists(), "the retried Stop removed it");
     }
 
     #[test]

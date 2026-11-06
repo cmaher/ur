@@ -1,8 +1,8 @@
 // `runtime = local` launch/stop through `WorkerManager` against a fake
 // builderd serving only `BuilderLocalWorkerService`: builderd errors reach the
 // caller, a failed launch deletes the provisional row, and a failed stop
-// leaves the row `stopping`. Also `LocalWorkerReconcileManager` passes
-// against the fake's `ListLocalWorkers`.
+// leaves the row `stopping`. Also `WorkerReconcileManager` passes against
+// the fake's `ListLocalWorkers` and container `InspectWorker`/`StopWorker`.
 
 use std::sync::{Arc, Mutex};
 
@@ -33,7 +33,7 @@ use ur_rpc::proto::builder_pool::{
     ScanSlotsRequest, ScanSlotsResponse,
 };
 use ur_server::builder_local_worker_client::BuilderLocalWorkerClient;
-use ur_server::local_reconcile::LocalWorkerReconcileManager;
+use ur_server::worker_reconcile::WorkerReconcileManager;
 
 const WORKER_PORT: u16 = 23456;
 
@@ -70,6 +70,14 @@ struct FakeBuilderd {
     container_launch: Arc<Mutex<Option<Result<String, Status>>>>,
     /// Error for StopWorker calls that carry a worker id.
     container_stop_error: Arc<Mutex<Option<Status>>>,
+    /// InspectWorker answer: container id or name → Docker ID of a running
+    /// container; anything else is absent.
+    container_alive: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    /// When set, the next Launch (either service) notifies `arrived` and
+    /// waits for this before it reaches the "builderd": a request in flight
+    /// across a builderd restart.
+    arrival_gate: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
+    arrived: Arc<tokio::sync::Notify>,
 }
 
 #[tonic::async_trait]
@@ -78,6 +86,7 @@ impl BuilderContainerService for FakeBuilderd {
         &self,
         _: Request<LaunchWorkerRequest>,
     ) -> Result<Response<LaunchWorkerResponse>, Status> {
+        self.arrive().await;
         match self.container_launch.lock().unwrap().clone() {
             Some(Ok(container_id)) => Ok(Response::new(LaunchWorkerResponse { container_id })),
             Some(Err(status)) => Err(status),
@@ -110,13 +119,26 @@ impl BuilderContainerService for FakeBuilderd {
     }
     async fn inspect_worker(
         &self,
-        _: Request<InspectWorkerRequest>,
+        request: Request<InspectWorkerRequest>,
     ) -> Result<Response<InspectWorkerResponse>, Status> {
-        Err(Status::unimplemented("inspect_worker"))
+        let alive = self.container_alive.lock().unwrap().clone();
+        let id = alive.get(&request.into_inner().container_id).cloned();
+        Ok(Response::new(InspectWorkerResponse {
+            running: id.is_some(),
+            container_id: id.unwrap_or_default(),
+        }))
     }
 }
 
 impl FakeBuilderd {
+    async fn arrive(&self) {
+        let gate = self.arrival_gate.lock().unwrap().take();
+        if let Some(gate) = gate {
+            self.arrived.notify_one();
+            gate.notified().await;
+        }
+    }
+
     fn pool_call<T>(&self, rpc: &'static str) -> Result<Response<T>, Status> {
         self.pool_calls.lock().unwrap().push(rpc);
         Err(Status::unimplemented(rpc))
@@ -170,6 +192,7 @@ impl BuilderLocalWorkerService for FakeBuilderd {
         &self,
         request: Request<LaunchLocalWorkerRequest>,
     ) -> Result<Response<LaunchLocalWorkerResponse>, Status> {
+        self.arrive().await;
         let _launching = self.in_flight.lock().await;
         self.launches.lock().unwrap().push(request.into_inner());
         self.launch_entered.notify_one();
@@ -245,6 +268,7 @@ struct Harness {
     launch_manager: ur_server::grpc::LaunchManager,
     worker_repo: workflow_db::WorkerRepo,
     local_client: BuilderLocalWorkerClient,
+    container_client: ur_server::builder_container_client::BuilderContainerClient,
     slot: std::path::PathBuf,
     _tmp: tempfile::TempDir,
     _test_db: ur_db_test::TestDb,
@@ -339,7 +363,10 @@ async fn harness() -> Harness {
         worker_manager,
         launch_manager,
         worker_repo,
-        local_client: BuilderLocalWorkerClient::new(local_channel),
+        local_client: BuilderLocalWorkerClient::new(local_channel.clone()),
+        container_client: ur_server::builder_container_client::BuilderContainerClient::new(
+            local_channel,
+        ),
         slot,
         _tmp: tmp,
         _test_db: test_db,
@@ -471,11 +498,12 @@ async fn local_launch_runs_then_stop_keeps_stopping_until_builderd_succeeds() {
     );
 }
 
-fn reconciler(h: &Harness) -> LocalWorkerReconcileManager {
-    LocalWorkerReconcileManager::new(
+fn reconciler(h: &Harness) -> WorkerReconcileManager {
+    WorkerReconcileManager::new(
         h.worker_manager.clone(),
         h.worker_repo.clone(),
         h.local_client.clone(),
+        h.container_client.clone(),
         std::time::Duration::from_secs(3600),
     )
 }
@@ -1114,7 +1142,8 @@ async fn launch_stopped_before_start_never_reaches_builderd() {
         .run_and_record(pool_config(&h, "local-1-early"))
         .await
         .unwrap_err();
-    assert!(err.contains("failed to record worker"), "{err}");
+    assert!(err.contains("was stopped during launch"), "{err}");
+    assert!(!err.contains("duplicate key"), "{err}");
     assert!(h.fake.launches.lock().unwrap().is_empty());
     assert_eq!(status_of(&h, "local-1-early").await, "stopped");
     assert_eq!(slot_owner(&h, "local-1-early").await, None);
@@ -1203,4 +1232,207 @@ async fn failed_container_launch_releases_its_slot_only_after_stop() {
         barrier_stops, 2,
         "the failed launch was stopped through the barrier"
     );
+}
+
+fn container_row(
+    h: &Harness,
+    worker_id: &str,
+    status: &str,
+    container_id: &str,
+) -> workflow_db::model::Worker {
+    workflow_db::model::Worker {
+        runtime: ur_config::WorkerRuntime::Container,
+        container_status: status.into(),
+        container_id: container_id.into(),
+        ..claim_row(h, worker_id)
+    }
+}
+
+fn container_config(h: &Harness, worker_id: &str) -> ur_server::WorkerConfig {
+    ur_server::WorkerConfig {
+        image_id: "img".into(),
+        runtime: ur_config::WorkerRuntime::Container,
+        ..pool_config(h, worker_id)
+    }
+}
+
+/// Hold the next Launch before it reaches the fake builderd, start
+/// `config`'s launch, and return once that Launch is in flight.
+async fn launch_held_in_flight(
+    h: &Harness,
+    config: ur_server::WorkerConfig,
+) -> (
+    tokio::task::JoinHandle<Result<(String, String), String>>,
+    Arc<tokio::sync::Notify>,
+) {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    *h.fake.arrival_gate.lock().unwrap() = Some(gate.clone());
+    let wm = h.worker_manager.clone();
+    let launch = tokio::spawn(async move { wm.run_and_record(config).await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), h.fake.arrived.notified())
+        .await
+        .expect("launch reached builderd");
+    (launch, gate)
+}
+
+/// ur-ezhdb #2 (local): builderd restarts between a stopper's Stop (Ok from
+/// the old process, where nothing was in flight) and the arrival of the
+/// worker's Launch at the new process, which runs it. The launch's finalize
+/// finds the row stopped, so the launch itself must stop what it started.
+#[tokio::test(flavor = "multi_thread")]
+async fn launch_reaching_a_restarted_builderd_after_its_stop_stops_itself_local() {
+    let h = harness().await;
+    let slot = pool_slot(&h).await;
+    claim(&h, "local-1-rest", &slot).await;
+    let (launch, gate) = launch_held_in_flight(&h, pool_config(&h, "local-1-rest")).await;
+    h.worker_manager
+        .stop_by_worker_id(&ur_server::WorkerId("local-1-rest".into()))
+        .await
+        .unwrap();
+    assert_eq!(status_of(&h, "local-1-rest").await, "stopped");
+    gate.notify_one();
+
+    let err = launch.await.unwrap().unwrap_err();
+    assert!(err.contains("was stopped during launch"), "{err}");
+    assert_eq!(h.fake.launches.lock().unwrap().len(), 1, "the launch ran");
+    assert_eq!(
+        *h.fake.stops.lock().unwrap(),
+        vec!["local-1-rest", "local-1-rest"],
+        "the stopper's Stop, then the launch's own"
+    );
+
+    // A failing launch-side Stop is reported, not swallowed.
+    claim(&h, "local-1-rst2", &slot).await;
+    let (launch, gate) = launch_held_in_flight(&h, pool_config(&h, "local-1-rst2")).await;
+    h.worker_manager
+        .stop_by_worker_id(&ur_server::WorkerId("local-1-rst2".into()))
+        .await
+        .unwrap();
+    *h.fake.stop_error.lock().unwrap() = Some(Status::internal("kill tmux session: no"));
+    gate.notify_one();
+    let err = launch.await.unwrap().unwrap_err();
+    assert!(
+        err.contains("was stopped during launch") && err.contains("kill tmux session: no"),
+        "{err}"
+    );
+}
+
+/// ur-ezhdb #2 (container): as above; the launch stops the container ID
+/// builderd returned, through the Stop barrier for its worker id.
+#[tokio::test(flavor = "multi_thread")]
+async fn launch_reaching_a_restarted_builderd_after_its_stop_stops_itself_container() {
+    let h = harness().await;
+    let slot = pool_slot(&h).await;
+    let row = container_row(&h, "proj-1-rest", "provisioning", "");
+    assert!(h.worker_repo.claim_slot(&row, &slot).await.unwrap());
+    *h.fake.container_launch.lock().unwrap() = Some(Ok("cid-launched".into()));
+    let (launch, gate) = launch_held_in_flight(&h, container_config(&h, "proj-1-rest")).await;
+    h.worker_manager
+        .stop_by_worker_id(&ur_server::WorkerId("proj-1-rest".into()))
+        .await
+        .unwrap();
+    assert_eq!(status_of(&h, "proj-1-rest").await, "stopped");
+    gate.notify_one();
+
+    let err = launch.await.unwrap().unwrap_err();
+    assert!(err.contains("was stopped during launch"), "{err}");
+    let stops = h.fake.container_stops.lock().unwrap().clone();
+    let last = stops.last().unwrap();
+    assert_eq!(
+        (last.container_id.as_str(), last.worker_id.as_str()),
+        ("cid-launched", "proj-1-rest"),
+        "the launch stopped its container: {stops:?}"
+    );
+}
+
+/// ur-ezhdb #4: the periodic pass retries container rows left `stopping`
+/// (here by a failed Stop) until builderd's Stop is Ok, and never touches a
+/// container `provisioning` row.
+#[tokio::test]
+async fn reconcile_retries_container_stops_and_leaves_container_launches_alone() {
+    let h = harness().await;
+    let slot = pool_slot(&h).await;
+    let stuck = container_row(&h, "proj-1-stck", "provisioning", "cid-stuck");
+    assert!(h.worker_repo.claim_slot(&stuck, &slot).await.unwrap());
+    h.worker_repo.begin_stopping("proj-1-stck").await.unwrap();
+    let launching = container_row(&h, "proj-2-prov", "provisioning", "ur-worker-proj-2");
+    h.worker_repo.insert_worker(&launching).await.unwrap();
+    *h.fake.container_stop_error.lock().unwrap() = Some(Status::internal("docker stop: busy"));
+
+    reconciler(&h).reconcile_once().await.unwrap();
+    assert_eq!(status_of(&h, "proj-1-stck").await, "stopping");
+    assert_eq!(slot_owner(&h, "proj-1-stck").await, Some(slot.clone()));
+
+    *h.fake.container_stop_error.lock().unwrap() = None;
+    reconciler(&h).reconcile_once().await.unwrap();
+    assert_eq!(status_of(&h, "proj-1-stck").await, "stopped");
+    assert_eq!(slot_owner(&h, "proj-1-stck").await, None);
+    let stops = h.fake.container_stops.lock().unwrap().clone();
+    assert_eq!(
+        stops
+            .iter()
+            .filter(|s| s.worker_id == "proj-1-stck")
+            .count(),
+        2,
+        "{stops:?}"
+    );
+    assert!(
+        stops.iter().all(|s| s.worker_id != "proj-2-prov"),
+        "{stops:?}"
+    );
+    assert_eq!(status_of(&h, "proj-2-prov").await, "provisioning");
+}
+
+/// ur-ezhdb #3 / ur-rkufm: at server startup a `stopped` container row whose
+/// container is alive gets that container stopped through builderd's Stop
+/// for its worker id; the row stays `stopped` and no slot changes hands.
+/// A container a live row owns now (the name passed to the slot's next
+/// worker) is left alone. A failed stray stop fails startup.
+#[tokio::test]
+async fn startup_stops_live_containers_of_stopped_rows_without_reviving_them() {
+    let h = harness().await;
+    let slot = pool_slot(&h).await;
+    let rows = [
+        container_row(&h, "proj-1-stry", "stopped", "cid-stray"),
+        container_row(&h, "proj-2-oldn", "stopped", "ur-worker-proj-2"),
+        container_row(&h, "proj-2-newr", "running", "cid-new"),
+    ];
+    for row in &rows {
+        h.worker_repo.insert_worker(row).await.unwrap();
+    }
+    h.worker_repo
+        .link_worker_slot("proj-2-newr", &slot)
+        .await
+        .unwrap();
+    *h.fake.container_alive.lock().unwrap() = [
+        ("cid-stray", "cid-stray"),
+        ("ur-worker-proj-2", "cid-new"),
+        ("cid-new", "cid-new"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .collect();
+
+    reconciler(&h).startup().await.unwrap();
+    assert_eq!(status_of(&h, "proj-1-stry").await, "stopped");
+    assert_eq!(status_of(&h, "proj-2-oldn").await, "stopped");
+    assert_eq!(status_of(&h, "proj-2-newr").await, "running");
+    assert_eq!(slot_owner(&h, "proj-2-newr").await, Some(slot));
+    assert_eq!(slot_owner(&h, "proj-1-stry").await, None);
+    let stops: Vec<_> = h
+        .fake
+        .container_stops
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| (s.container_id.clone(), s.worker_id.clone()))
+        .collect();
+    assert_eq!(
+        stops,
+        vec![("cid-stray".to_owned(), "proj-1-stry".to_owned())]
+    );
+
+    *h.fake.container_stop_error.lock().unwrap() = Some(Status::internal("docker stop: busy"));
+    let err = reconciler(&h).startup().await.unwrap_err();
+    assert!(err.contains("proj-1-stry") && err.contains("busy"), "{err}");
 }

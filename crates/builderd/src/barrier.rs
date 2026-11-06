@@ -5,8 +5,11 @@
 //! the tombstone under the id's lock and is refused. So once a Stop returns
 //! Ok, the id is not running in this builderd and never will be. Tombstones
 //! live in memory only and expire after `ttl` (any launch RPC older than that
-//! is long dead); a builderd restart drops them safely, because in-flight
-//! launches die with the process and the server never reuses a worker id.
+//! is long dead). Tombstones do not survive a builderd restart, and the
+//! server's launch task may resend a Launch to the new process after its
+//! stopper's Stop returned Ok from the old one; that launch then runs. The
+//! server covers this itself: a launch whose finalize finds its row already
+//! stopped issues its own Stop for what it launched.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -22,8 +25,9 @@ pub const TOMBSTONE_TTL: Duration = Duration::from_secs(3600);
 struct State {
     locks: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
     tombstones: HashMap<String, Instant>,
-    /// Container launched per id (container service only): what a Stop
-    /// issued before the launch recorded its container must still stop.
+    /// Container launched per id (container service only): its name, from
+    /// before `docker run`, then its ID once the launch succeeds. A Stop
+    /// stops it whatever container id the stopper read from its row.
     launched: HashMap<String, String>,
 }
 

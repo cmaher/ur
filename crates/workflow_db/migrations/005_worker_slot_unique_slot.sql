@@ -29,7 +29,7 @@ WITH losers AS (
     ) ranked
     WHERE rank > 1
 ), moved AS (
-    UPDATE worker SET container_status = 'stopping'
+    UPDATE worker SET container_status = 'stopping', updated_at = now()::TEXT
     WHERE worker_id IN (SELECT worker_id FROM losers)
 )
 DELETE FROM worker_slot ws

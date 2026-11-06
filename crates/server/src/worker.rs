@@ -1023,11 +1023,7 @@ impl WorkerManager {
 
         match self.finalize_worker_launch(&config, &container_id).await {
             Ok(true) => Ok((container_id, worker_secret)),
-            // Its stopper's builderd Stop waits for this launch and tears it down.
-            Ok(false) => Err(format!(
-                "worker {} was stopped during launch",
-                config.worker_id
-            )),
+            Ok(false) => Err(self.stop_lost_launch(&config, &container_id).await),
             Err(error) => Err(self.abandon_launch(&config.worker_id, error).await),
         }
     }
@@ -1137,7 +1133,6 @@ impl WorkerManager {
         };
         let db = |e: sqlx::Error| format!("failed to record worker: {e}");
         // A pool launch claimed its slot with this row already; refresh it.
-        // A claim row stopped meanwhile fails the insert below.
         if self
             .worker_repo
             .update_provisioning_worker(&worker)
@@ -1146,12 +1141,18 @@ impl WorkerManager {
         {
             return Ok(());
         }
-        self.worker_repo.insert_worker(&worker).await.map_err(db)
+        match self.worker_repo.insert_worker(&worker).await {
+            // The claim row exists but is no longer `provisioning`.
+            Err(sqlx::Error::Database(e)) if e.code().is_some_and(|c| c == "23505") => {
+                Err(stopped_during_launch(&config.worker_id))
+            }
+            result => result.map_err(db),
+        }
     }
 
     /// `provisioning → running` with Docker's immutable container ID (or the
-    /// session name). `Ok(false)`: the worker was stopped mid-launch; its
-    /// stopper finishes the stop.
+    /// session name). `Ok(false)`: the worker was stopped mid-launch; the
+    /// caller stops what it launched ([`Self::stop_lost_launch`]).
     pub(crate) async fn finalize_worker_launch(
         &self,
         config: &WorkerConfig,
@@ -1171,6 +1172,37 @@ impl WorkerManager {
         match self.stop_by_worker_id(worker_id).await {
             Ok(()) => error,
             Err(e) => format!("{error}; failed to clean up, left stopping: {e}"),
+        }
+    }
+
+    /// Finalize found the row stopped mid-launch. Its stopper's builderd
+    /// Stop covers this launch only if both reached the same builderd
+    /// process: across a builderd restart the launch ran anyway. So stop
+    /// `launched` (the container ID or session this launch started) here.
+    /// A failed Stop leaves a `stopping` row `stopping` for the reconcile
+    /// loop. Returns the launch error.
+    pub(crate) async fn stop_lost_launch(&self, config: &WorkerConfig, launched: &str) -> String {
+        let error = stopped_during_launch(&config.worker_id);
+        let stopped = match config.runtime {
+            ur_config::WorkerRuntime::Container => tolerate_missing(
+                self.builder_container_client
+                    .stop_worker(StopWorkerRequest {
+                        container_id: launched.to_owned(),
+                        worker_id: config.worker_id.0.clone(),
+                    })
+                    .await,
+                launched,
+                "stop_worker",
+            ),
+            ur_config::WorkerRuntime::Local => self.stop_local_worker(&config.worker_id).await,
+        };
+        let finished = match stopped {
+            Ok(()) => self.worker_repo.finish_stop(&config.worker_id.0).await,
+            Err(e) => return format!("{error}; failed to stop what it launched: {e}"),
+        };
+        match finished {
+            Ok(_) => error,
+            Err(e) => format!("{error}; failed to mark worker stopped: {e}"),
         }
     }
 
@@ -1369,6 +1401,10 @@ impl WorkerManager {
             Err(status) => Err(status.to_string()),
         }
     }
+}
+
+fn stopped_during_launch(worker_id: &WorkerId) -> String {
+    format!("worker {worker_id} was stopped during launch")
 }
 
 /// Swallow `NotFound` responses from a builderd `stop_worker` call, logging a

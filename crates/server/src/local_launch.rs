@@ -35,7 +35,8 @@ fn host_string(path: &Path) -> String {
 impl WorkerManager {
     /// `run_and_record` for `runtime = local`. A failed launch is stopped
     /// like any worker ([`Self::abandon_launch`]); a stop that lands
-    /// mid-launch makes finalize fail and its stopper finishes it.
+    /// mid-launch makes finalize fail, and the launch stops what it started
+    /// ([`Self::stop_lost_launch`]).
     /// builderd's error text is returned either way. Returns
     /// `(session_name, worker_secret)`.
     pub(crate) async fn run_and_record_local(
@@ -72,11 +73,7 @@ impl WorkerManager {
 
         match self.finalize_worker_launch(&config, &session).await {
             Ok(true) => Ok((session, worker_secret)),
-            // Its stopper's builderd Stop waits for this launch and tears it down.
-            Ok(false) => Err(format!(
-                "worker {} was stopped during launch",
-                config.worker_id
-            )),
+            Ok(false) => Err(self.stop_lost_launch(&config, &session).await),
             Err(error) => Err(self.abandon_launch(&config.worker_id, error).await),
         }
     }
