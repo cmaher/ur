@@ -216,7 +216,7 @@ so the server's retried Stop runs teardown again.
 
 | Trigger | Path |
 |---|---|
-| Agent exit, external `kill-session` | exit watcher (pane dead, probe failure, or — code/design workers only — the agent's pane back at a shell) → exit sink → teardown; the server sees the id leave the list on its next pass. A manual worker whose agent quits keeps its shell and stays until stopped |
+| Agent exit, external `kill-session` | exit watcher (pane dead, probe failure, or — code/design workers only — the agent's pane back at a shell with no child process left under it) → exit sink → teardown; the server sees the id leave the list on its next pass. A manual worker whose agent quits keeps its shell and stays until stopped |
 | builderd restart / host reboot | `adopt_existing` before `serve`: adopt or kill each of our `ur-<id>` sessions, skip any that are not ours, tear down orphan drives (below) |
 | Server start (before serving or dispatching) | `LocalWorkerReconcileManager::startup`: every local `provisioning` row (a launch the previous server never finished, slot still linked) becomes `stopping`; then one pass |
 | Every 15s | `LocalWorkerReconcileManager` pass (below) |

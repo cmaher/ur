@@ -366,6 +366,23 @@ impl Session {
         Ok(output.trim().to_string())
     }
 
+    /// Whether the agent pane's own process (`#{pane_pid}`, normally its
+    /// shell) has any child process, running or stopped. A shell foreground
+    /// with a child left is a suspended agent or one whose child took the
+    /// terminal, not an exited one.
+    pub async fn pane_has_child_processes(&self) -> Result<bool> {
+        let output = run_tmux_stdout(&self.agent_pane_query_args("#{pane_pid}"))
+            .await
+            .with_context(|| {
+                format!("failed to query pane_pid for tmux session '{}'", self.name)
+            })?;
+        let pid: u32 = output
+            .trim()
+            .parse()
+            .with_context(|| format!("unexpected pane_pid '{}'", output.trim()))?;
+        Ok(parent_pids().await?.contains(&pid))
+    }
+
     /// Check whether the pane's shell process is still alive.
     ///
     /// Queries only the original agent pane, so helper panes do not affect
@@ -737,6 +754,46 @@ async fn run_tmux_stdout(args: &[impl AsRef<str>]) -> Result<String> {
     }
 }
 
+/// The parent pid of every process on the host: `/proc/<pid>/stat` on Linux
+/// (worker images ship no `ps`), `ps -A -o ppid=` elsewhere (macOS).
+async fn parent_pids() -> Result<Vec<u32>> {
+    if cfg!(target_os = "linux") {
+        let mut ppids = Vec::new();
+        let mut dir = tokio::fs::read_dir("/proc").await.context("read /proc")?;
+        while let Some(entry) = dir.next_entry().await.context("read /proc")? {
+            // A process that exits mid-scan has no stat left to read.
+            if let Ok(stat) = tokio::fs::read_to_string(entry.path().join("stat")).await
+                && let Some(ppid) = stat_ppid(&stat)
+            {
+                ppids.push(ppid);
+            }
+        }
+        return Ok(ppids);
+    }
+    let output = tokio::process::Command::new("ps")
+        .args(["-A", "-o", "ppid="])
+        .output()
+        .await
+        .context("run ps")?;
+    if !output.status.success() {
+        bail!(
+            "ps failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .collect())
+}
+
+/// The ppid field of a `/proc/<pid>/stat` line: `pid (comm) state ppid ...`,
+/// where `comm` may itself contain spaces and parentheses.
+fn stat_ppid(stat: &str) -> Option<u32> {
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(1)?.parse().ok()
+}
+
 /// Run a tmux command interactively (inheriting stdin/stdout/stderr).
 /// Returns the exit status for the caller to handle.
 pub async fn exec_interactive(args: &[impl AsRef<str>]) -> Result<ExitStatus> {
@@ -755,6 +812,13 @@ pub async fn exec_interactive(args: &[impl AsRef<str>]) -> Result<ExitStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stat_ppid_skips_comm_with_spaces_and_parens() {
+        assert_eq!(stat_ppid("42 (zsh) S 7 42 42 0 -1"), Some(7));
+        assert_eq!(stat_ppid("43 (a) b (c)) T 42 43 42"), Some(42));
+        assert_eq!(stat_ppid("garbage"), None);
+    }
 
     #[test]
     fn worker_tmux_config_advertises_hyperlink_support() {

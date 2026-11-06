@@ -31,15 +31,23 @@ reuse; the binary only resolves container defaults from the environment and wire
   `JoinHandle<anyhow::Result<AgentExitReason>>` to await or abort; the gRPC service knows nothing
   about it. A sink runs inside that task and must not abort it; report failures via the `Result`.
   The container binary `select!`s the handle against the gRPC server.
-- Exit reasons: pane dead, probe failure, or — when `watch_agent_process` is set — the agent
-  was seen running and the pane's foreground is a shell again (`AgentReturnedToShell`).
+- Exit reasons: pane dead, pane-probe failure, or — when `watch_agent_process` is set — a
+  non-shell foreground was seen, the foreground is a shell again, **and** the pane's shell
+  (`#{pane_pid}`) has no child process left, running or stopped
+  (`tmux::Session::pane_has_child_processes`: `/proc` on Linux, `ps` elsewhere)
+  (`AgentReturnedToShell`). The child check keeps a Ctrl-Z'd agent, or one whose child took the
+  terminal (tmux then reports a shell name), alive. Once the pane is reported alive, an error
+  from the foreground or children query is "no change this poll", not an exit.
   `watches_agent_process(strategy)` decides the flag from `UR_WORKER_INSTRUCTION_STRATEGY` (a
   custom mode carries its base strategy): true for `code` and `design`, false for `manual` and
   anything else. Both the container (`main.rs`) and builderd's local launch/adoption use it.
-  `AgentWatchState::Waiting` means a shell before the agent starts (launch window, adoption) is
-  never an exit. A running tool does not look like a shell: Claude Code runs Bash tools detached
-  with no controlling terminal, so tmux's `pane_current_command` (the pty's foreground process
-  group) stays `node`.
+  `AgentWatchState::Waiting` means a shell foreground is never an exit until some non-shell
+  foreground was seen. That is any non-shell process, not necessarily the agent: a slow command
+  in the pane shell's rc (e.g. `sleep`) ends `Waiting`, and the moment between it ending and the
+  typed agent argv starting is a shell with no child, so it stops the worker (known limit). A
+  running tool does not look like a shell: Claude Code runs Bash tools detached with no
+  controlling terminal, so tmux's `pane_current_command` (the pty's foreground process group)
+  stays the agent (`claude` on native installs, `node` on npm installs).
 - `container_exit::ContainerExitSink` is the container's sink: `WorkerStop` RPC then wait for the
   server to kill the container, falling back to `process::exit(0)` if the RPC fails (never returns).
 - `skill_layout::SkillLayout` — `AgentHome` (containers: skills in `skills_dest/<name>/`,
@@ -71,7 +79,7 @@ The worker health check becomes healthy only after startup hooks complete. Build
 that transition during `LaunchWorker`; if a synchronous hook fails, it returns the container
 logs through gRPC and removes the failed container before the server records a worker row.
 
-The exit watcher (`exit_watcher.rs`, `AgentWatchState`/`advance_agent_watch_state`) that detects a code or design worker's agent exiting is deliberately agent-agnostic — it matches shell-vs-non-shell foreground processes (`is_shell_process`), never the agent's binary name. Claude Code's foreground process is `node`, not `claude`, so `AgentType` deliberately carries no binary-name accessor for this code to reach for.
+The exit watcher (`exit_watcher.rs`, `AgentWatchState`/`advance_agent_watch_state`) that detects a code or design worker's agent exiting is deliberately agent-agnostic — it matches shell-vs-non-shell foreground processes (`is_shell_process`), never the agent's binary name. Claude Code's foreground process name depends on the install (`claude` native, `node` via npm), so `AgentType` deliberately carries no binary-name accessor for this code to reach for.
 
 Project-specific background processes are expressed as generic startup hooks. This repository's
 `ur-hooks/startup-bg/` starts cargo sweep and bacon without requiring toolchain-specific images.

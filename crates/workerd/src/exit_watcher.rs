@@ -18,7 +18,8 @@ use tracing::{debug, info, warn};
 pub enum AgentExitReason {
     /// The agent's tmux pane is dead.
     PaneDead,
-    /// Code/design worker: the agent ran and the foreground process returned to a shell.
+    /// Code/design worker: after a non-shell foreground, the foreground is a
+    /// shell again and the pane's shell has no child process left.
     AgentReturnedToShell,
     /// The pane could not be queried; treated as exited.
     ProbeFailed,
@@ -46,6 +47,7 @@ pub trait AgentExitSink: Send + Sync {
 pub trait AgentPane: Send + Sync {
     async fn is_pane_alive(&self) -> anyhow::Result<bool>;
     async fn pane_current_command(&self) -> anyhow::Result<String>;
+    async fn pane_has_child_processes(&self) -> anyhow::Result<bool>;
 }
 
 #[tonic::async_trait]
@@ -57,15 +59,20 @@ impl AgentPane for tmux::Session {
     async fn pane_current_command(&self) -> anyhow::Result<String> {
         tmux::Session::pane_current_command(self).await
     }
+
+    async fn pane_has_child_processes(&self) -> anyhow::Result<bool> {
+        tmux::Session::pane_has_child_processes(self).await
+    }
 }
 
 /// State machine for tracking whether the agent has started and then exited
 /// (workers where [`watches_agent_process`] holds).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum AgentWatchState {
-    /// The agent hasn't started yet — the foreground process is still a shell.
+    /// No non-shell foreground seen yet (any non-shell process ends this, e.g.
+    /// a slow rc command, not only the agent).
     Waiting,
-    /// The agent is running — a non-shell process is in the foreground.
+    /// A non-shell foreground was seen.
     Running,
 }
 
@@ -182,30 +189,41 @@ impl ExitWatcherManager {
     }
 
     /// Check the pane's foreground process and advance the state machine.
+    ///
+    /// A shell foreground is an exit only once a non-shell one was seen and
+    /// the pane's shell has no child left: a suspended agent (Ctrl-Z), or one
+    /// whose child took the terminal, also leaves a shell name in the
+    /// foreground. The pane was just reported alive, so a failed query here
+    /// means "no change this poll", never an exit.
     async fn check_agent_process_exit(
         &self,
         state: &mut AgentWatchState,
     ) -> Option<AgentExitReason> {
-        match self.pane.pane_current_command().await {
-            Ok(foreground) => {
-                let (next_state, stop) = advance_agent_watch_state(*state, &foreground);
-                debug!(
-                    foreground = %foreground,
-                    state = ?state,
-                    next_state = ?next_state,
-                    "agent foreground process check"
-                );
-                *state = next_state;
-                if stop {
-                    info!(foreground = %foreground, "agent process exited; pane returned to a shell");
-                    Some(AgentExitReason::AgentReturnedToShell)
-                } else {
-                    None
-                }
+        let foreground = match self.pane.pane_current_command().await {
+            Ok(foreground) => foreground,
+            Err(e) => {
+                warn!(error = %e, "failed to query pane_current_command; no change this poll");
+                return None;
+            }
+        };
+        let (next_state, shell) = advance_agent_watch_state(*state, &foreground);
+        debug!(foreground = %foreground, state = ?state, next_state = ?next_state, "agent foreground process check");
+        *state = next_state;
+        if !shell {
+            return None;
+        }
+        match self.pane.pane_has_child_processes().await {
+            Ok(false) => {
+                info!(foreground = %foreground, "agent process exited; pane returned to a shell");
+                Some(AgentExitReason::AgentReturnedToShell)
+            }
+            Ok(true) => {
+                debug!(foreground = %foreground, "shell foreground but the pane shell still has a child");
+                None
             }
             Err(e) => {
-                warn!(error = %e, "failed to query pane_current_command, treating as stopped");
-                Some(AgentExitReason::ProbeFailed)
+                warn!(error = %e, "failed to query pane child processes; no change this poll");
+                None
             }
         }
     }
@@ -217,17 +235,29 @@ mod tests {
     use std::collections::VecDeque;
     use tokio::sync::Mutex;
 
-    /// Scripted pane: each poll pops the next `(alive, foreground)` pair.
+    /// Scripted pane: each query pops its next scripted answer. Defaults once
+    /// a script runs out: alive, `node` in the foreground, no child left.
     struct ScriptedPane {
         alive: Mutex<VecDeque<anyhow::Result<bool>>>,
-        foreground: Mutex<VecDeque<String>>,
+        foreground: Mutex<VecDeque<anyhow::Result<String>>>,
+        children: Mutex<VecDeque<anyhow::Result<bool>>>,
     }
 
     impl ScriptedPane {
         fn new(alive: Vec<anyhow::Result<bool>>, foreground: Vec<&str>) -> Arc<Self> {
+            let foreground = foreground.into_iter().map(|f| Ok(f.into())).collect();
+            Self::scripted(alive, foreground, vec![])
+        }
+
+        fn scripted(
+            alive: Vec<anyhow::Result<bool>>,
+            foreground: Vec<anyhow::Result<String>>,
+            children: Vec<anyhow::Result<bool>>,
+        ) -> Arc<Self> {
             Arc::new(ScriptedPane {
                 alive: Mutex::new(alive.into()),
-                foreground: Mutex::new(foreground.into_iter().map(String::from).collect()),
+                foreground: Mutex::new(foreground.into()),
+                children: Mutex::new(children.into()),
             })
         }
     }
@@ -239,12 +269,12 @@ mod tests {
         }
 
         async fn pane_current_command(&self) -> anyhow::Result<String> {
-            Ok(self
-                .foreground
-                .lock()
-                .await
-                .pop_front()
-                .unwrap_or_else(|| "node".into()))
+            let next = self.foreground.lock().await.pop_front();
+            next.unwrap_or_else(|| Ok("node".into()))
+        }
+
+        async fn pane_has_child_processes(&self) -> anyhow::Result<bool> {
+            self.children.lock().await.pop_front().unwrap_or(Ok(false))
         }
     }
 
@@ -360,6 +390,27 @@ mod tests {
         let pane = ScriptedPane::new(
             vec![Ok(true), Ok(true), Ok(true), Ok(false)],
             vec!["zsh", "sh", "zsh"],
+        );
+        let sink = Arc::new(RecordingSink::default());
+
+        watcher(pane, sink.clone(), true).run().await.unwrap();
+
+        assert_eq!(*sink.reasons.lock().await, vec![AgentExitReason::PaneDead]);
+    }
+
+    #[tokio::test]
+    async fn live_pane_query_errors_and_shell_with_child_are_no_change() {
+        // Running; foreground query fails; shell but children query fails;
+        // shell with a child left (suspended agent); then the pane dies.
+        let pane = ScriptedPane::scripted(
+            vec![Ok(true), Ok(true), Ok(true), Ok(true), Ok(false)],
+            vec![
+                Ok("node".into()),
+                Err(anyhow::anyhow!("display-message failed")),
+                Ok("zsh".into()),
+                Ok("zsh".into()),
+            ],
+            vec![Err(anyhow::anyhow!("ps failed")), Ok(true)],
         );
         let sink = Arc::new(RecordingSink::default());
 
