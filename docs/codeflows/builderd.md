@@ -203,9 +203,10 @@ restart drops them safely (in-flight launches die with it, and worker ids are ne
 Invariant (builderd): after startup, for sessions whose `UR_DRIVE` is under this builderd's
 workspace (`<workspace>/drive/`), a `ur-<id>` session exists only while `<id>` is registered,
 so `ListLocalWorkers` never omits one of its live sessions. Every ur instance on the host
-shares the `ur` socket; a session whose drive is elsewhere belongs to another instance and is
-never adopted, killed or listed. Wrongly releasing a live worker's slot would let the next
-worker reset it and destroy uncommitted work, so the server releases a local slot only after
+shares the `ur` socket; a session is ours only if its `UR_DRIVE` is set and under our drive
+root (`owns_session`). Any other `ur-*` session (another instance's, or one made by hand with
+no `UR_DRIVE`) is never adopted, killed or listed. Wrongly releasing a live worker's slot would
+let the next worker reset it and destroy uncommitted work, so the server releases a local slot only after
 `StopLocalWorker` succeeded (also when builderd no longer lists the id).
 
 Teardown (stop, failed launch, agent exit, external kill): kill the session (abort the exit
@@ -216,7 +217,7 @@ so the server's retried Stop runs teardown again.
 | Trigger | Path |
 |---|---|
 | Agent exit, external `kill-session` | exit watcher → exit sink → teardown; the server sees the id leave the list on its next pass |
-| builderd restart / host reboot | `adopt_existing` before `serve`: adopt or kill each of our `ur-<id>` sessions, skip other instances', tear down orphan drives (below) |
+| builderd restart / host reboot | `adopt_existing` before `serve`: adopt or kill each of our `ur-<id>` sessions, skip any that are not ours, tear down orphan drives (below) |
 | Server start (before serving or dispatching) | `LocalWorkerReconcileManager::startup`: every local `provisioning` row (a launch the previous server never finished, slot still linked) becomes `stopping`; then one pass |
 | Every 15s | `LocalWorkerReconcileManager` pass (below) |
 | `ur stop` | `ListLocalWorkers` → `StopLocalWorker` each from the host, before `compose down` and again after it; a failure aborts `ur stop` |
@@ -225,8 +226,8 @@ so the server's retried Stop runs teardown again.
 **Adoption** (`LocalWorkerManager::adopt_existing`, in `main.rs` before `serve`): each
 `ur-<id>` session is re-registered from its env (`UR_WORKER_ID` must match, `UR_SERVER_ADDR`,
 `UR_WORKER_SECRET`, a local-capable `UR_AGENT_TYPE`, `UR_DRIVE` = `drive/<id>`) and start dir
-(`#{session_path}` = slot), with a new exit watcher. A session whose `UR_DRIVE` is outside this
-builderd's drive root is another instance's and is skipped. One of ours with unusable env is
+(`#{session_path}` = slot), with a new exit watcher. A session whose `UR_DRIVE` is missing or
+outside this builderd's drive root is not ours and is skipped. One of ours with unusable env is
 killed (a failed kill aborts startup); a tmux error reading a live session aborts startup (a
 session that ended meanwhile is skipped). Then every `drive/<id>` without a registered worker
 gets `teardown_orphan` (links only). Listing failure aborts startup; no tmux installed means no

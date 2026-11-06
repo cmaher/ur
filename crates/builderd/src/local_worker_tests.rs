@@ -459,7 +459,7 @@ async fn restart_adopts_live_session_and_tears_down_orphans() {
         .await
         .unwrap();
     f.session("w2").kill().await.unwrap();
-    // w3: an unadoptable `ur-*` session (no env) with a drive.
+    // w3: a hand-made `ur-*` session with no `UR_DRIVE`: not ours.
     let w3 = tmux::Session::create(tmux::CreateOptions {
         name: session_name("w3"),
         socket: Some(f.socket.clone()),
@@ -468,7 +468,20 @@ async fn restart_adopts_live_session_and_tears_down_orphans() {
     })
     .await
     .unwrap();
-    fs::create_dir_all(f.drive("w3")).unwrap();
+    // w4: ours (`UR_DRIVE` is its drive) but unadoptable (wrong id), with a drive.
+    fs::create_dir_all(f.drive("w4")).unwrap();
+    let w4 = tmux::Session::create(tmux::CreateOptions {
+        name: session_name("w4"),
+        socket: Some(f.socket.clone()),
+        env: vec![
+            (UR_DRIVE_ENV.to_owned(), f.drive("w4").display().to_string()),
+            (ur_config::UR_WORKER_ID_ENV.to_owned(), "w5".to_owned()),
+        ],
+        detached: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
     let other = tmux::Session::create(tmux::CreateOptions {
         name: "user-session".into(),
         socket: Some(f.socket.clone()),
@@ -489,8 +502,16 @@ async fn restart_adopts_live_session_and_tears_down_orphans() {
         "orphan memory link removed"
     );
     assert!(f.path("mem/w2").is_dir(), "memory dir survives");
-    assert!(!w3.exists().await.unwrap(), "unadoptable session killed");
-    assert!(!f.drive("w3").exists(), "unadoptable drive removed");
+    assert!(
+        w3.exists().await.unwrap(),
+        "session without UR_DRIVE untouched"
+    );
+    assert!(
+        !w4.exists().await.unwrap(),
+        "our unadoptable session killed"
+    );
+    assert!(!f.drive("w4").exists(), "unadoptable drive removed");
+    w3.kill().await.unwrap();
     assert!(other.exists().await.unwrap(), "non-ur sessions untouched");
     assert!(f.drive("w1").join("ctx").is_symlink(), "adopted drive kept");
 
@@ -932,6 +953,22 @@ async fn stop_of_unregistered_ids_respects_other_instances() {
         "A's worker untouched"
     );
     assert!(f.drive("w1").join("ctx").is_symlink());
+
+    // A hand-made `ur-<id>` session without `UR_DRIVE` is not ours either.
+    let scratch = tmux::Session::create(tmux::CreateOptions {
+        name: session_name("scratch"),
+        socket: Some(f.socket.clone()),
+        detached: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    f.manager.stop("scratch").await.unwrap();
+    assert!(
+        scratch.exists().await.unwrap(),
+        "hand-made session untouched"
+    );
+    scratch.kill().await.unwrap();
 
     // Ours but unregistered (a restarted builderd before adoption).
     let (restarted, _registry) = f.restarted();

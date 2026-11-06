@@ -943,8 +943,11 @@ fn e2e_all() {
 
     // ---- (2) ur start, run scenarios, always tear down (with timeout) ----
     // The entire test body runs in a spawned thread with a 10-minute join
-    // deadline. If the deadline expires, we panic — which triggers the
-    // existing catch_unwind cleanup logic in each scenario.
+    // deadline. If the deadline expires, this thread panics and the test
+    // process exits with the scenario thread abandoned mid-run: no scenario's
+    // catch_unwind cleanup and no stack teardown run. Leftover containers are
+    // swept by `force_remove_by_prefix` at the next run's start, leftover
+    // local sessions by `sweep_stale_local_rt_sessions`.
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2888,8 +2891,9 @@ fn scenario_agy_manual_worker(env: &TestEnv) {
 // ---------------------------------------------------------------------------
 
 /// How long an external `kill-session` may take to show up as a stopped worker
-/// with no drive: the exit watcher tears the drive down at once, and the
-/// server's reconcile pass (every 15s) then stops the row.
+/// with no drive: builderd's exit watcher polls the session every 5s
+/// (`LOCAL_EXIT_POLL`) before tearing the drive down, and the server's
+/// reconcile pass (every 15s) then stops the row — about 20s worst case.
 const LOCAL_EXIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A local worker this scenario launched, as far as it is known. Cleanup acts
@@ -3093,6 +3097,131 @@ fn remove_local_agent_project_dir(env: &TestEnv, slot: &Path) {
     }
 }
 
+/// Ticket-id prefix of every `scenario_local_runtime` launch, so its sessions
+/// are `ur-local-rt-…` and a stale one can be recognized by a later run.
+const LOCAL_RT_TICKET_PREFIX: &str = "local-rt-";
+
+/// `std::env::temp_dir()` as given and canonicalized (on macOS `/var/…` is a
+/// link to `/private/var/…`), so either spelling of a temp path matches.
+fn system_temp_roots() -> Vec<PathBuf> {
+    let temp = std::env::temp_dir();
+    let mut roots = vec![temp.clone()];
+    if let Ok(canonical) = std::fs::canonicalize(&temp)
+        && canonical != temp
+    {
+        roots.push(canonical);
+    }
+    roots
+}
+
+/// Whether `path` lies strictly inside one of `roots`.
+fn strictly_under_any(path: &Path, roots: &[PathBuf]) -> bool {
+    roots
+        .iter()
+        .any(|root| path != root.as_path() && path.starts_with(root))
+}
+
+/// Selection predicate of the stale-session sweep: a session left by an
+/// abandoned run of this scenario (timeout, interrupted push). All three must
+/// hold — the name is ours (`ur-local-rt-…`), its `UR_DRIVE` is inside the
+/// system temp dir (an acceptance temp config), and that drive no longer
+/// exists (its run's temp dir is gone, so no builderd will ever reap it). A
+/// live run's sessions, and anything a person made, fail one of them.
+fn is_stale_local_rt_session(
+    name: &str,
+    drive: Option<&Path>,
+    drive_exists: bool,
+    temp_roots: &[PathBuf],
+) -> bool {
+    name.starts_with(&format!("ur-{LOCAL_RT_TICKET_PREFIX}"))
+        && drive.is_some_and(|d| strictly_under_any(d, temp_roots))
+        && !drive_exists
+}
+
+/// `UR_DRIVE` from a session's tmux environment, if set.
+fn local_session_drive(name: &str) -> Option<PathBuf> {
+    let output = local_tmux(&["show-environment", "-t", &format!("={name}"), "UR_DRIVE"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .trim()
+        .strip_prefix("UR_DRIVE=")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Kill sessions an abandoned earlier run of this scenario left on the shared
+/// `ur` socket (see `is_stale_local_rt_session`), and remove their
+/// `~/.claude/projects/<encoded slot>` dir when the slot was a temp path.
+/// Every other session is left alone.
+fn sweep_stale_local_rt_sessions() {
+    let list = local_tmux(&["list-sessions", "-F", "#{session_name}\t#{session_path}"]);
+    if !list.status.success() {
+        return; // no tmux server on the socket: nothing to sweep
+    }
+    let roots = system_temp_roots();
+    for line in String::from_utf8_lossy(&list.stdout).lines() {
+        let Some((name, slot)) = line.split_once('\t') else {
+            continue;
+        };
+        let drive = local_session_drive(name);
+        let drive_exists = drive.as_deref().is_some_and(path_present);
+        if !is_stale_local_rt_session(name, drive.as_deref(), drive_exists, &roots) {
+            continue;
+        }
+        eprintln!("killing stale local acceptance session {name} (drive gone)");
+        let _ = local_tmux(&["kill-session", "-t", &format!("={name}")]);
+        let slot = Path::new(slot);
+        if strictly_under_any(slot, &roots)
+            && let Some(dir) = local_memory_link(slot).parent()
+        {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+#[test]
+fn stale_local_rt_session_selection() {
+    let roots = vec![PathBuf::from("/tmp/T")];
+    let gone = Some(Path::new("/tmp/T/.tmpX/workspace/drive/local-rt-kill-ab12"));
+    let stale = |name: &str, drive: Option<&Path>, exists: bool| {
+        is_stale_local_rt_session(name, drive, exists, &roots)
+    };
+    assert!(stale("ur-local-rt-kill-ab12", gone, false));
+    // Each condition alone spares the session.
+    assert!(
+        !stale("ur-local-rt-kill-ab12", gone, true),
+        "live run's drive"
+    );
+    assert!(
+        !stale("ur-poolproj-man-0-ab12", gone, false),
+        "not this scenario's"
+    );
+    assert!(!stale("ur-scratch", None, false), "hand-made, no UR_DRIVE");
+    assert!(!stale("ur-local-rt-kill-ab12", None, false), "no UR_DRIVE");
+    assert!(
+        !stale(
+            "ur-local-rt-kill-ab12",
+            Some(Path::new(
+                "/Users/me/.ur/workspace/drive/local-rt-kill-ab12"
+            )),
+            false
+        ),
+        "real ur instance's drive"
+    );
+    assert!(
+        !stale("ur-local-rt-kill-ab12", Some(Path::new("/tmp/T")), false),
+        "the temp root itself"
+    );
+    assert!(
+        !stale(
+            "ur-local-rt-kill-ab12",
+            Some(Path::new("/tmp/Tx/drive/a")),
+            false
+        ),
+        "a sibling that only shares a string prefix"
+    );
+}
+
 /// Failure cleanup: stop every worker this scenario launched, then kill only
 /// their own `ur-<id>` sessions and remove their drives.
 fn cleanup_local_launches(env: &TestEnv, launches: &LocalLaunches) {
@@ -3117,15 +3246,16 @@ fn cleanup_local_launches(env: &TestEnv, launches: &LocalLaunches) {
 /// 3. a second launch, then an external `kill-session` → within
 ///    `LOCAL_EXIT_TIMEOUT` the worker is stopped and its drive removed.
 fn scenario_local_runtime(env: &TestEnv) {
+    sweep_stale_local_rt_sessions();
     let mut launches = LocalLaunches::default();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let first = "local-rt-stop";
+        let first = &format!("{LOCAL_RT_TICKET_PREFIX}stop");
         let (full, slot) = launch_local_worker(env, first, &mut launches);
         assert_local_drive_built(env, &full, &slot);
         stop_worker(env, first);
         assert_local_torn_down(env, first, &full, &slot);
 
-        let second = "local-rt-kill";
+        let second = &format!("{LOCAL_RT_TICKET_PREFIX}kill");
         let (full, slot) = launch_local_worker(env, second, &mut launches);
         let kill = local_tmux(&["kill-session", "-t", &local_session_target(&full)]);
         assert_exec_success(&kill, "external tmux kill-session");

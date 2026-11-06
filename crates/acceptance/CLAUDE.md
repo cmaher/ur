@@ -44,7 +44,7 @@ parsing in `ur_config` / `WorkerModesConfig` tests, Lua transforms in `lua_trans
 
 ## Test architecture
 
-`e2e_all` is the sole `#[test]` entry point. It creates one shared `TestEnv` (temp config dir, bare repos, `ur start`), runs all scenarios sequentially as plain helper functions, then tears down. Each scenario gets a `&TestEnv` reference and uses its own ticket IDs and container names. Scenarios use `catch_unwind` to force-remove their worker containers (local: stop and kill their own sessions) on failure before re-raising.
+`e2e_all` is the sole `#[test]` that drives the stack (pure helper predicates may have their own `#[test]`, e.g. `stale_local_rt_session_selection`). It creates one shared `TestEnv` (temp config dir, bare repos, `ur start`), runs all scenarios sequentially as plain helper functions, then tears down. Each scenario gets a `&TestEnv` reference and uses its own ticket IDs and container names. Scenarios use `catch_unwind` to force-remove their worker containers (local: stop and kill their own sessions) on failure before re-raising.
 
 ## Design principle
 
@@ -56,7 +56,11 @@ Tests MUST use only CLI commands (`ur`, `git`, the container runtime) — never 
 socket — the same socket as the developer's real local agents, since the suite runs on every
 `git push` on their host. Cleanup MUST only ever touch the `ur-<worker_id_full>` sessions of
 workers the scenario itself launched (after `ur worker stop` on them); never a blanket `ur-*`
-kill or `kill-server`. The only real `~/.claude` path it touches is
+kill or `kill-server`. When `TEST_TIMEOUT` fires or a push is interrupted, the scenario thread is
+abandoned and its cleanup never runs, so the scenario starts with
+`sweep_stale_local_rt_sessions`: it kills only sessions named `ur-local-rt-…` whose `UR_DRIVE`
+is inside the system temp dir and no longer exists (that run's temp config is gone), and removes
+their temp-slot `~/.claude/projects/<encoded slot>/`. The only real `~/.claude` path it touches is
 `projects/<encoded slot>/` for slots under the temp config (the memory link builderd creates
 there), which the scenario removes. builderd reads skills/instructions from
 `$UR_CONFIG/agent-shared`; `install_agent_assets` fills the temp config's copy with
