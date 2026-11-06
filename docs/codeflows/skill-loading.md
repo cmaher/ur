@@ -198,6 +198,8 @@ COPY instructions/        /home/worker/.agent-shared/instructions/
 COPY shared-instructions/ /home/worker/.agent-shared/shared-instructions/
 ```
 
+Local workers (`runtime = "local"`) have no image. `scripts/build/install-agent-assets.sh <dest>` (run by `make install` via `install.sh`, and by the acceptance suite) copies the same sources in the same order as the Dockerfile — vendored superpowers skills, then `potential-skills/` (wins collisions), then `instructions/` and `shared-instructions/` — into `$UR_CONFIG/agent-shared`, replacing the previous copy. builderd reads it as `WorkerPaths.agent_shared` via `--agent-shared` (default `<config_dir>/agent-shared`). A skill or strategy file missing there fails the local launch (`check_assets`, `FailedPrecondition`) instead of only warning.
+
 - `instructions/` contains one `{strategy}.md` file per strategy (e.g., `code.md`, `design.md`, `manual.md`) — the layout is flat; agent-specific naming comes from `agent.instruction_filename()` at write time, not from the source filenames
 - `shared-instructions/` contains `.md` fragments included in all strategies (e.g., `tickets.md`)
 
@@ -279,6 +281,10 @@ Each host skill directory is mounted into the container at:
 ### Override-of-Baked Semantics
 
 Because host skills are mounted directly into `.agent-shared/potential-skills/`, a host skill with the same name as a baked-in skill **shadows** the baked version. The bind-mount is applied after the image layer, so the host path wins. This allows operators to patch or replace a shipped skill without rebuilding the image.
+
+### Local Workers
+
+Local workers get the same merged map as `LaunchLocalWorkerRequest.host_skills` (name → host path, from `WorkerConfig.extra_skill_mounts`). builderd resolves each requested skill to its `host_skills` path when present, else `<agent_shared>/potential-skills/<name>`, links the resolved sources into the drive's `.ur/skill-sources/potential-skills/`, and installs from there into the `ur` plugin (`<drive>/.ur/plugin/skills/<name>/`). A host skill therefore shadows a baked one exactly as in containers. See [local-workers.md](local-workers.md#skills-settings-and-instructions).
 
 ### Server-Container Visibility Caveat
 

@@ -143,6 +143,15 @@ ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
    └── exec sleep infinity
 ```
 
+**Local runtime (`runtime = "local"`).** Phase 2 branches to `run_and_record_local`
+(`crates/server/src/local_launch.rs`) and none of the credential or network steps above apply:
+the server skips `check_credentials_seeded`, mounts no credential file, ensures no Docker
+network and sets no `HTTP_PROXY`/`HTTPS_PROXY` (Squid is not used). The agent runs on the host
+as the user and authenticates with the host's own Claude login (OS keychain). The CLI still runs
+`ensure_credentials_for_all_agents` because it cannot know the resolved runtime; that is harmless
+for a local launch. `UR_SERVER_ADDR` is `127.0.0.1:<worker_port>` (the worker port published on
+loopback). See [local-workers.md](local-workers.md).
+
 ## Container Image Layers
 
 ```

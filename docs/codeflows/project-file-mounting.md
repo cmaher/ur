@@ -204,6 +204,35 @@ Source: `Config::workspace_brain_dir` in `crates/ur_config/src/lib.rs`, `LaunchM
 
 Source: `parse_mount_entry()` in `crates/ur_config/src/lib.rs`
 
+## Local Workers (Drive Symlinks)
+
+A `runtime = "local"` worker has no container, so nothing is volume-mounted. The server resolves
+the same fields to **host paths** (templates against the host config dir, `%PROJECT%`
+`instruction_md` against the slot) and builderd maps them onto the worker's drive
+`<workspace>/drive/<worker_id>/` (`LocalWorkspaceManager`, `crates/builderd/src/local_workspace.rs`):
+
+| Config field | Local mapping |
+|---|---|
+| `container.mounts` `src:/dest[:ro]` (and context repos at `/context/<key>`) | symlink `drive/<id>/<dest without leading />` → `src`, passed to the agent with `--add-dir <src>` |
+| `brain_dir` / `workspace_brain_dir` | symlink `drive/<id>/brain` → brain dir (`--add-dir`); `UR_BRAIN` is not set, so brain skills use `ur project list`'s `brain` field |
+| `memory_dir` | symlink `~/.claude/projects/<encoded slot>/memory` → `memory_dir` (Claude's per-cwd memory path; every non-alphanumeric char of the slot path becomes `-`) |
+| `instruction_md` | inlined into `drive/<id>/.ur/instructions.md` (`--append-system-prompt-file` does not expand `@`) |
+| git / skill / startup hook overlays | read straight from `<slot>/ur-hooks/` and `<config_dir>/projects/<key>/hooks/`; git hooks are copied into `<slot>/.git/hooks/`, skill hooks into `drive/<id>/.ur/skill-hooks/` |
+
+- **`:ro` is advisory.** A symlink cannot be read-only; the drive map appended to
+  `instructions.md` marks the link "read-only: advisory — do not write".
+- A missing mount source, or a mount dest nested inside another linked mount, fails the launch
+  with `FailedPrecondition`. Memory and brain dirs are created (not chowned; the agent runs as the
+  host user).
+- **Memory link ownership.** The memory dir is created if missing. A real non-empty directory at
+  the link path fails the launch (`FailedPrecondition`); an empty one or a symlink elsewhere is
+  replaced. The drive's `.ur/owner` records agent, slot and memory target; teardown removes the
+  link only while it still points at that target, and an orphan drive whose slot a live worker
+  now uses leaves the link alone. Teardown never removes a link target (`remove_dir_all` does not
+  follow symlinks).
+
+See [local-workers.md](local-workers.md#drive-layout).
+
 ## Full Flow
 
 ```
