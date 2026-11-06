@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tempfile::TempDir;
-use tmux::{CreateOptions, Session};
+use tmux::Session;
 use workerd::{AgentExitReason, AgentExitSink, ExitWatcherManager};
 
 const POLL: Duration = Duration::from_millis(100);
@@ -55,10 +55,15 @@ impl Drop for Agent {
     }
 }
 
+fn is_python(cmd: &str) -> bool {
+    cmd.to_lowercase().starts_with("python")
+}
+
 impl Agent {
-    /// A code-worker watcher on a fresh pane, then `python3 -c <script>`
-    /// typed into the pane's shell; returns once the agent is foreground.
-    async fn start(tag: &str, script: &str) -> Agent {
+    /// A code-worker watcher polling every `poll` on a fresh `zsh` pane whose
+    /// `.zshrc` is `rc`, with `python3 -c <script>` typed ahead into it (as a
+    /// launch does). Returns once the agent has been foreground for a few polls.
+    async fn start(tag: &str, rc_body: &str, poll: Duration, script: &str) -> Agent {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -67,21 +72,20 @@ impl Agent {
         let guard = ServerGuard {
             socket: socket.clone(),
         };
-        // Empty zsh rc dir, so the user's rc files don't run in the pane.
+        // Our own zsh rc dir, so the user's rc files don't run in the pane.
         let rc = TempDir::new().unwrap();
-        std::fs::write(rc.path().join(".zshrc"), "").unwrap();
-        let session = Session::create(CreateOptions {
-            name: "agent".into(),
-            socket: Some(socket),
-            env: vec![("ZDOTDIR".into(), rc.path().display().to_string())],
-            detached: true,
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+        std::fs::write(rc.path().join(".zshrc"), rc_body).unwrap();
+        let zdotdir = format!("ZDOTDIR={}", rc.path().display());
+        let created = std::process::Command::new("tmux")
+            .args(["-L", &socket, "new-session", "-d", "-s", "agent"])
+            .args(["-x", "220", "-y", "55", "-e", &zdotdir, "zsh"])
+            .output()
+            .unwrap();
+        assert!(created.status.success(), "{created:?}");
+        let session = Session::on_socket(&socket, "agent");
         let sink = Arc::new(RecordingSink::default());
         let watcher =
-            ExitWatcherManager::new(Arc::new(session.clone()), sink.clone(), true, POLL).spawn();
+            ExitWatcherManager::new(Arc::new(session.clone()), sink.clone(), true, poll).spawn();
         session
             .send_keys(&format!("python3 -c '{script}'"))
             .await
@@ -93,9 +97,8 @@ impl Agent {
             _rc: rc,
             _guard: guard,
         };
-        agent
-            .wait_foreground("agent running", |c| !is_shell(c))
-            .await;
+        agent.wait_foreground("agent running", is_python).await;
+        tokio::time::sleep(poll * 3).await;
         agent
     }
 
@@ -123,7 +126,7 @@ impl Agent {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn suspended_agent_is_not_an_exit() {
-    let agent = Agent::start("ctrlz", "import time; time.sleep(30)").await;
+    let agent = Agent::start("ctrlz", "", POLL, "import time; time.sleep(30)").await;
     agent.session.send_keys_raw(&["C-z"]).await.unwrap();
     agent.wait_foreground("shell after Ctrl-Z", is_shell).await;
     agent.assert_not_stopped().await;
@@ -135,7 +138,9 @@ async fn agent_child_holding_the_terminal_is_not_an_exit() {
     // group) and leaves it on exit, so tmux reports a shell name throughout.
     let agent = Agent::start(
         "childtty",
-        r#"import subprocess, time; subprocess.run(["bash", "--norc", "--noprofile", "-i", "-c", "sleep 0.5"]); time.sleep(30)"#,
+        "",
+        POLL,
+        r#"import subprocess, time; time.sleep(1); subprocess.run(["bash", "--norc", "--noprofile", "-i", "-c", "sleep 0.5"]); time.sleep(30)"#,
     )
     .await;
     agent
@@ -147,7 +152,7 @@ async fn agent_child_holding_the_terminal_is_not_an_exit() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn agent_exit_to_shell_stops() {
-    let mut agent = Agent::start("exit", "import time; time.sleep(1)").await;
+    let mut agent = Agent::start("exit", "", POLL, "import time; time.sleep(1)").await;
     let reason = tokio::time::timeout(Duration::from_secs(20), &mut agent.watcher)
         .await
         .expect("watcher fired")
@@ -158,4 +163,24 @@ async fn agent_exit_to_shell_stops() {
         *agent.sink.reasons.lock().unwrap(),
         vec![AgentExitReason::AgentReturnedToShell]
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn short_rc_command_before_the_agent_is_not_an_exit() {
+    // With zsh starting at s < 1.5s: the 2s poll lands in the rc's `sleep`
+    // (a child; ends before 4s), the 4s poll in the childless shell gap
+    // (builtin `zselect`) before the typed-ahead agent starts. One non-shell
+    // poll must not arm the exit.
+    let agent = Agent::start(
+        "rcgap",
+        "sleep 2.5\nzmodload zsh/zselect\nzselect -t 250\n",
+        Duration::from_secs(2),
+        "import time; time.sleep(30)",
+    )
+    .await;
+    assert!(agent.sink.reasons.lock().unwrap().is_empty());
+    assert!(!agent.watcher.is_finished());
+    assert!(is_python(
+        &agent.session.pane_current_command().await.unwrap()
+    ));
 }

@@ -199,7 +199,7 @@ are never removed.
 
 | Termination | Trigger | Path |
 |---|---|---|
-| Agent exits | `ExitWatcherManager` (workerd lib) polls window 0: pane dead, probe failure, or (code and design workers; `watches_agent_process` on the strategy) the foreground process back at a shell, after a non-shell foreground was seen, with no child process left under the pane's shell (a Ctrl-Z'd agent, or one whose child holds the terminal, is not an exit; a failed foreground/children query is no change that poll) | `LocalExitSink` → teardown. Within 15s the reconcile pass sees the id missing from the list → `stop_by_worker_id` (a Stop of an unknown id is Ok) → `finish_stop`. A manual worker's agent that quits leaves its shell alive, so nothing fires and the worker stays `running` until stopped (same as containers) |
+| Agent exits | `ExitWatcherManager` (workerd lib) polls window 0: pane dead, probe failure, or (code and design workers; `watches_agent_process` on the strategy) the foreground process back at a shell, after a non-shell foreground was seen on two consecutive polls (a shell poll between them resets the count), with no child process left under the pane's shell (a Ctrl-Z'd agent, or one whose child holds the terminal, is not an exit; a failed foreground/children query is no change that poll) | `LocalExitSink` → teardown. Within 15s the reconcile pass sees the id missing from the list → `stop_by_worker_id` (a Stop of an unknown id is Ok) → `finish_stop`. A manual worker's agent that quits leaves its shell alive, so nothing fires and the worker stays `running` until stopped (same as containers) |
 | External kill (`tmux -L ur kill-session`, agent crash) | same exit watcher (session gone) | same as agent exit |
 | `ur worker stop`, `launch -f`, `--rm` attach exit, workflow completion (merge, GitHub poller), ticket close | `WorkerStop` / server-internal stop | `stop_by_worker_id`: `begin_stopping` → `StopLocalWorker` (barrier) → teardown → `finish_stop`; a failure leaves the row `stopping` for the reconcile loop |
 | Failed launch | builderd step error, LaunchLocalWorker error, or finalize error | builderd: a failed build removes what it built, and a later failure runs teardown before returning. Server: `abandon_launch` → `stop_by_worker_id` (row `stopped`, or `stopping` if Stop fails). Finalize false: the concurrent stopper finishes it |
@@ -264,10 +264,10 @@ Other limits (in code comments):
 - Sync startup hooks run with builderd's environment, not the session env.
 - An adopted code or design worker whose agent had already returned to the shell before the restart is
   not detected as exited. A Stop still tears it down.
-- `Waiting` ends on any non-shell foreground, not specifically the agent. A slow command in the
-  pane shell's rc (e.g. `sleep`) ends it, and the brief gap between that command ending and the
-  typed agent argv starting is a shell with no child, so a poll landing there stops a code or
-  design worker before its agent runs.
+- The exit watcher's wait ends on any non-shell foreground seen on two consecutive polls, not
+  specifically the agent. A command in the pane shell's rc that spans two polls (about 5s or
+  more) ends it, and a poll in the childless gap before the typed agent argv starts then stops a
+  code or design worker before its agent runs. Shorter rc commands are ignored.
 - Orphan-drive failures at builderd startup are only logged. Drives hold only links, and the next
   startup retries.
 - A mount dest under `.ur/` writes the generated files through into the mount source. Dests are

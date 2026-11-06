@@ -32,7 +32,7 @@ reuse; the binary only resolves container defaults from the environment and wire
   about it. A sink runs inside that task and must not abort it; report failures via the `Result`.
   The container binary `select!`s the handle against the gRPC server.
 - Exit reasons: pane dead, pane-probe failure, or — when `watch_agent_process` is set — a
-  non-shell foreground was seen, the foreground is a shell again, **and** the pane's shell
+  non-shell foreground was seen on two consecutive polls, then the foreground is a shell again, **and** the pane's shell
   (`#{pane_pid}`) has no child process left, running or stopped
   (`tmux::Session::pane_has_child_processes`: `/proc` on Linux, `ps` elsewhere)
   (`AgentReturnedToShell`). The child check keeps a Ctrl-Z'd agent, or one whose child took the
@@ -41,10 +41,12 @@ reuse; the binary only resolves container defaults from the environment and wire
   `watches_agent_process(strategy)` decides the flag from `UR_WORKER_INSTRUCTION_STRATEGY` (a
   custom mode carries its base strategy): true for `code` and `design`, false for `manual` and
   anything else. Both the container (`main.rs`) and builderd's local launch/adoption use it.
-  `AgentWatchState::Waiting` means a shell foreground is never an exit until some non-shell
-  foreground was seen. That is any non-shell process, not necessarily the agent: a slow command
-  in the pane shell's rc (e.g. `sleep`) ends `Waiting`, and the moment between it ending and the
-  typed agent argv starting is a shell with no child, so it stops the worker (known limit). A
+  `AgentWatchState` (`Waiting` → `Starting` → `Running`) means a shell foreground is never an
+  exit until a non-shell foreground was seen on two consecutive polls; a shell poll in between
+  resets to `Waiting`. That is any non-shell process, not necessarily the agent: a command in
+  the pane shell's rc ends the wait only if it spans two polls (about one poll interval, 5s in
+  production), after which the gap before the typed agent argv starts would stop the worker
+  (known limit). A shorter rc command is a one-poll blip and is ignored. A
   running tool does not look like a shell: Claude Code runs Bash tools detached with no
   controlling terminal, so tmux's `pane_current_command` (the pty's foreground process group)
   stays the agent (`claude` on native installs, `node` on npm installs).

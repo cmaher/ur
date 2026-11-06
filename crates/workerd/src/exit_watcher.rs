@@ -67,12 +67,18 @@ impl AgentPane for tmux::Session {
 
 /// State machine for tracking whether the agent has started and then exited
 /// (workers where [`watches_agent_process`] holds).
+///
+/// `Running` needs a non-shell foreground on two consecutive polls, so a
+/// short-lived command in the pane shell's rc (gone before the typed agent
+/// argv starts) does not end the wait; only one spanning a whole poll
+/// interval can.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum AgentWatchState {
-    /// No non-shell foreground seen yet (any non-shell process ends this, e.g.
-    /// a slow rc command, not only the agent).
+    /// No non-shell foreground seen yet, or the last one did not last.
     Waiting,
-    /// A non-shell foreground was seen.
+    /// A non-shell foreground on the last poll only; a shell next resets to `Waiting`.
+    Starting,
+    /// A non-shell foreground on two consecutive polls.
     Running,
 }
 
@@ -83,21 +89,19 @@ fn is_shell_process(name: &str) -> bool {
 
 /// Advance the state machine given the current foreground process name.
 ///
-/// Returns `(next_state, should_stop)`. `should_stop` is true when the state
-/// transitions from `Running` back to a shell, indicating the agent has exited.
+/// Returns `(next_state, shell_return)`. `shell_return` is true when a shell
+/// is in the foreground while `Running`: the agent may have exited (the
+/// caller still checks the pane shell for children).
 pub(crate) fn advance_agent_watch_state(
     state: AgentWatchState,
     foreground: &str,
 ) -> (AgentWatchState, bool) {
-    match state {
-        AgentWatchState::Waiting => {
-            if is_shell_process(foreground) {
-                (AgentWatchState::Waiting, false)
-            } else {
-                (AgentWatchState::Running, false)
-            }
-        }
-        AgentWatchState::Running => (AgentWatchState::Running, is_shell_process(foreground)),
+    let shell = is_shell_process(foreground);
+    match (state, shell) {
+        (AgentWatchState::Running, _) => (AgentWatchState::Running, shell),
+        (_, true) => (AgentWatchState::Waiting, false),
+        (AgentWatchState::Waiting, false) => (AgentWatchState::Starting, false),
+        (AgentWatchState::Starting, false) => (AgentWatchState::Running, false),
     }
 }
 
@@ -399,12 +403,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn one_non_shell_poll_does_not_end_waiting() {
+        // A short rc command seen on one poll, then the shell (no child)
+        // before the typed agent argv starts: not an exit.
+        let pane = ScriptedPane::new(
+            vec![Ok(true), Ok(true), Ok(true), Ok(true), Ok(false)],
+            vec!["zsh", "sleep", "zsh", "zsh"],
+        );
+        let sink = Arc::new(RecordingSink::default());
+
+        watcher(pane, sink.clone(), true).run().await.unwrap();
+
+        assert_eq!(*sink.reasons.lock().await, vec![AgentExitReason::PaneDead]);
+    }
+
+    #[tokio::test]
+    async fn two_non_shell_polls_then_childless_shell_stops() {
+        // The one-poll blip resets; the agent's two polls arm the exit, which
+        // fires on the last scripted poll, not at the blip.
+        let pane = ScriptedPane::new(vec![], vec!["zsh", "sleep", "zsh", "node", "node", "zsh"]);
+        let sink = Arc::new(RecordingSink::default());
+
+        watcher(pane.clone(), sink.clone(), true)
+            .run()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *sink.reasons.lock().await,
+            vec![AgentExitReason::AgentReturnedToShell]
+        );
+        assert!(pane.foreground.lock().await.is_empty(), "stopped early");
+    }
+
+    #[tokio::test]
     async fn live_pane_query_errors_and_shell_with_child_are_no_change() {
         // Running; foreground query fails; shell but children query fails;
         // shell with a child left (suspended agent); then the pane dies.
         let pane = ScriptedPane::scripted(
-            vec![Ok(true), Ok(true), Ok(true), Ok(true), Ok(false)],
+            vec![Ok(true), Ok(true), Ok(true), Ok(true), Ok(true), Ok(false)],
             vec![
+                Ok("node".into()),
                 Ok("node".into()),
                 Err(anyhow::anyhow!("display-message failed")),
                 Ok("zsh".into()),
@@ -427,10 +466,14 @@ mod tests {
     }
 
     #[test]
-    fn test_waiting_transitions_to_running_on_non_shell() {
+    fn test_waiting_needs_two_consecutive_non_shell_polls() {
         let (state, stop) = advance_agent_watch_state(AgentWatchState::Waiting, "vim");
-        assert_eq!(state, AgentWatchState::Running);
-        assert!(!stop);
+        assert_eq!((state, stop), (AgentWatchState::Starting, false));
+        let (state, stop) = advance_agent_watch_state(state, "zsh");
+        assert_eq!((state, stop), (AgentWatchState::Waiting, false));
+        let (state, _) = advance_agent_watch_state(state, "vim");
+        let (state, stop) = advance_agent_watch_state(state, "vim");
+        assert_eq!((state, stop), (AgentWatchState::Running, false));
     }
 
     #[test]
@@ -456,12 +499,13 @@ mod tests {
         assert_eq!(state, AgentWatchState::Waiting);
         assert!(!stop);
 
-        // Non-shell transitions to Running
+        // Two consecutive non-shell polls transition to Running
+        let (state, _) = advance_agent_watch_state(state, "vim");
         let (state, stop) = advance_agent_watch_state(state, "vim");
         assert_eq!(state, AgentWatchState::Running);
         assert!(!stop);
 
-        // Still running — Claude Code's real foreground process is `node`, not `claude`
+        // Still running (`node` on npm installs of Claude Code, `claude` on native ones)
         let (state, stop) = advance_agent_watch_state(state, "node");
         assert_eq!(state, AgentWatchState::Running);
         assert!(!stop);
