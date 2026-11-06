@@ -1,7 +1,8 @@
 //! `ur worker attach` / `launch -a` / `--rm`: attach the terminal to a
 //! worker's agent tmux session, branching on the worker's runtime.
 //!
-//! - container: `docker exec -it <prefix><id> tmux -u attach-session -t =agent`
+//! - container: `docker exec -it <prefix><worker_id_full> tmux -u attach-session -t =agent`
+//!   (a container from before ur-ezhdb: its recorded Docker ID)
 //! - local: `tmux -L <socket> -u attach-session -t =ur-<worker_id_full>` on the host
 
 use std::future::Future;
@@ -84,9 +85,20 @@ impl AttachManager {
             }
         } else {
             AttachPlan::Container {
-                container: ContainerId(format!("{}{}", self.worker_prefix, worker.worker_id)),
+                container: self.container_of(worker),
                 command: tmux::Session::from_name(CONTAINER_SESSION).attach_command(),
             }
+        }
+    }
+
+    /// A container is named by its full worker id. A row recording anything
+    /// else (a Docker ID) predates that naming; exec by that ID.
+    fn container_of(&self, worker: &WorkerSummary) -> ContainerId {
+        let named = format!("{}{}", self.worker_prefix, worker.worker_id_full);
+        if worker.container_id.is_empty() || worker.container_id == named {
+            ContainerId(named)
+        } else {
+            ContainerId(worker.container_id.clone())
         }
     }
 
@@ -292,9 +304,20 @@ mod tests {
             let AttachPlan::Container { container, command } = m.plan_for(&summary(runtime)) else {
                 panic!("runtime {runtime:?} must attach through the container");
             };
-            assert_eq!(container.0, "ur-worker-w1");
+            assert_eq!(container.0, "ur-worker-w1-ab12");
             assert_eq!(command, ["tmux", "-u", "attach-session", "-t", "=agent"]);
         }
+        let legacy = WorkerSummary {
+            container_id: "0123abcd".into(),
+            ..summary(ur_rpc::runtime::CONTAINER)
+        };
+        let AttachPlan::Container { container, .. } = m.plan_for(&legacy) else {
+            panic!("container runtime");
+        };
+        assert_eq!(
+            container.0, "0123abcd",
+            "pre-ur-ezhdb container: its Docker ID"
+        );
     }
 
     #[test]

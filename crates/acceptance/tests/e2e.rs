@@ -156,13 +156,63 @@ fn force_remove_by_prefix(runtime: &str, prefix: &str) {
     }
 }
 
-/// Force-remove a container if it exists (cleanup from prior failed runs).
-fn force_remove_container(runtime: &str, name: &str) {
-    let _ = Command::new(runtime)
-        .args(["rm", "-f", name])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+/// A worker's container, found by its `<worker_prefix><process_id>-` name
+/// prefix: the newest such container, resolved (waiting up to 30s) the first
+/// time its name is used.
+struct WorkerContainer {
+    runtime: String,
+    prefix: String,
+    name: std::sync::OnceLock<String>,
+}
+
+impl WorkerContainer {
+    fn find(&self) -> Option<String> {
+        let output = Command::new(&self.runtime)
+            .args(["ps", "-a", "--format", "{{.Names}}"])
+            .output()
+            .expect("failed to list containers");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .find(|name| name.starts_with(&self.prefix))
+            .map(str::to_owned)
+    }
+
+    fn wait_for(&self) -> String {
+        for _ in 0..60 {
+            if let Some(name) = self.find() {
+                return name;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        panic!("no container named {}*", self.prefix)
+    }
+
+    fn as_str(&self) -> &str {
+        self.name.get_or_init(|| self.wait_for())
+    }
+
+    /// Whether any container of this process exists (no waiting).
+    fn exists(&self) -> bool {
+        self.find().is_some()
+    }
+
+    /// Force-remove every container of this process (cleanup).
+    fn remove(&self) {
+        force_remove_by_prefix(&self.runtime, &self.prefix);
+    }
+}
+
+impl std::ops::Deref for WorkerContainer {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for WorkerContainer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Wait for a container to become healthy (Docker HEALTHCHECK passing).
@@ -507,9 +557,17 @@ impl TestEnv {
         vec![("UR_CONFIG", self.config_path.to_str().unwrap())]
     }
 
-    /// Build a container name from the shared worker prefix and a ticket ID.
-    fn container_name(&self, ticket_id: &str) -> String {
-        format!("{}{ticket_id}", self.names.worker_prefix)
+    /// The container of the worker launched for `process_id` (a ticket ID
+    /// or a manual worker's generated id). Containers are named
+    /// `<worker_prefix><worker_id>`, and the worker id (`<process_id>-<suffix>`)
+    /// is known only once the worker launched, so the name resolves on first
+    /// use.
+    fn container_name(&self, process_id: &str) -> WorkerContainer {
+        WorkerContainer {
+            runtime: self.runtime.clone(),
+            prefix: format!("{}{process_id}-", self.names.worker_prefix),
+            name: std::sync::OnceLock::new(),
+        }
     }
 }
 
@@ -1054,21 +1112,17 @@ fn teardown_worker_containers(env: &TestEnv) {
         "mount-test",
         "agy-manual-worker-test",
     ] {
-        force_remove_container(&env.runtime, &env.container_name(ticket));
+        env.container_name(ticket).remove();
     }
     // Manual workers use generated process_ids, not ticket IDs:
     // - workspace mount: "{workspace basename}-man-0"
     // - pool manual worker: "{project_key}-man-0"
     // - local project (-p and -w): "{key}-man-{key}"
-    force_remove_container(&env.runtime, &env.container_name("workspace-man-0"));
-    force_remove_container(
-        &env.runtime,
-        &env.container_name(&format!("{}-man-0", env.project_key)),
-    );
-    force_remove_container(
-        &env.runtime,
-        &env.container_name(&local_manual_process_id(LOCAL_PROJECT_KEY)),
-    );
+    env.container_name("workspace-man-0").remove();
+    env.container_name(&format!("{}-man-0", env.project_key))
+        .remove();
+    env.container_name(&local_manual_process_id(LOCAL_PROJECT_KEY))
+        .remove();
     force_remove_by_prefix(&env.runtime, &env.names.worker_prefix);
 }
 
@@ -1529,7 +1583,7 @@ fn scenario_workspace_mount(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -1545,7 +1599,7 @@ fn scenario_pool_launch(env: &TestEnv) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let launch_stdout = launch_worker(env, &["-p", env.project_key, ticket_id]);
         assert!(
-            launch_stdout.contains(&container_name),
+            launch_stdout.contains(container_name.as_str()),
             "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
         );
 
@@ -1594,7 +1648,7 @@ fn scenario_pool_launch(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -1613,7 +1667,7 @@ fn scenario_custom_design_mode(env: &TestEnv) {
             &["-p", env.project_key, "-m", "custommodel", ticket_id],
         );
         assert!(
-            launch_stdout.contains(&container_name),
+            launch_stdout.contains(container_name.as_str()),
             "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
         );
 
@@ -1626,7 +1680,7 @@ fn scenario_custom_design_mode(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -1770,7 +1824,7 @@ fn scenario_local_project(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -1888,7 +1942,7 @@ fn scenario_dispatch_creates_workflow(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -1955,7 +2009,7 @@ fn scenario_project_gitea_auto_detection(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -2005,12 +2059,8 @@ fn scenario_failing_startup_hook(env: &TestEnv) {
         "{combined}"
     );
 
-    let inspect = Command::new(&env.runtime)
-        .args(["inspect", &container_name])
-        .output()
-        .expect("failed to inspect failed startup container");
     assert!(
-        !inspect.status.success(),
+        !container_name.exists(),
         "failed startup container was not removed"
     );
 }
@@ -2443,7 +2493,7 @@ fn scenario_manual_worker(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -2535,7 +2585,7 @@ fn scenario_mounts(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -2788,7 +2838,7 @@ fn scenario_codex_manual_worker(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -2881,7 +2931,7 @@ fn scenario_agy_manual_worker(env: &TestEnv) {
         stop_agy_worker(env, ticket_id);
     }));
     if let Err(error) = result {
-        force_remove_container(&env.runtime, &container);
+        container.remove();
         std::panic::resume_unwind(error);
     }
 }

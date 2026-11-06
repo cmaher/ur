@@ -68,6 +68,8 @@ left by a `stopped` worker owns nothing and is dropped inside the same transacti
 in-memory claim; the launch RPC runs on its own task, so a dropped client cannot leave a claim
 half-done. Every later transition is a compare-and-set: finalize `provisioning → running`,
 stop `→ stopping`, `WorkerRepo::finish_stop` `stopping → stopped` plus deleting the link.
+Nothing else moves a row to `running`, and nothing else unlinks a slot (ur-ezhdb): the
+reconciler converges rows on builderd's lists only through these transitions.
 
 ### Worker Branch Checkout
 
@@ -96,7 +98,8 @@ For read-only multi-worker mounts (no pool-limit counting, no DB tracking):
 
 ### Release Slot
 
-1. The stop is confirmed (container stopped / `StopLocalWorker` succeeded) ->
+1. The stop is confirmed (builderd `StopWorker(worker_id)` / `StopLocalWorker(worker_id)`
+   returned Ok: nothing with that worker id runs in builderd, now or later) ->
    `WorkerRepo::finish_stop(worker_id)` marks the row `stopped` and deletes only this worker's
    worker-slot row, in one transaction
 2. Slot is now available for the next `find_available_slot` query

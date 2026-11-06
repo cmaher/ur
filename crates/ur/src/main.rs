@@ -827,7 +827,6 @@ async fn process_launch(
     ticket_id: &str,
     workspace: Option<PathBuf>,
     project_key: &str,
-    worker_prefix: &str,
     mode: &str,
     skills: &[String],
     context_repos: &[String],
@@ -899,9 +898,8 @@ async fn process_launch(
             });
         }
     };
-    let container_name = format!("{worker_prefix}{ticket_id}");
     if !output.is_json() {
-        println!("Launching worker {container_name}...");
+        println!("Launching worker {ticket_id}...");
     }
     let resp = client
         .worker_launch(worker_launch_request(
@@ -929,7 +927,7 @@ async fn process_launch(
     };
     info!(
         ticket_id,
-        container_name, container_id, image_id, "worker process launched"
+        ticket_id, container_id, image_id, "worker process launched"
     );
     if output.is_json() {
         output.print_success(&WorkerLaunched {
@@ -1024,13 +1022,17 @@ async fn handle_worker(
         WorkerCommands::ReseedCredentials { agent } => {
             handle_worker_reseed_credentials(output, agent.as_deref(), default_agent)
         }
-        WorkerCommands::SaveCredentials { worker_id, agent } => handle_worker_save_credentials(
-            worker_prefix,
-            output,
-            &worker_id,
-            agent.as_deref(),
-            default_agent,
-        ),
+        WorkerCommands::SaveCredentials { worker_id, agent } => {
+            handle_worker_save_credentials(
+                port,
+                worker_prefix,
+                output,
+                &worker_id,
+                agent.as_deref(),
+                default_agent,
+            )
+            .await
+        }
         WorkerCommands::Launch {
             ticket_id,
             workspace,
@@ -1169,7 +1171,8 @@ fn handle_worker_reseed_credentials(
     Ok(())
 }
 
-fn handle_worker_save_credentials(
+async fn handle_worker_save_credentials(
+    port: u16,
     worker_prefix: &str,
     output: &OutputManager,
     worker_id: &str,
@@ -1179,10 +1182,16 @@ fn handle_worker_save_credentials(
     input::validate_id(worker_id, "worker_id")?;
     info!(worker_id = %worker_id, agent = ?agent, "saving credentials from container");
     let runtime = container::runtime_from_env();
-    let id = container::ContainerId(format!("{worker_prefix}{worker_id}"));
     let agent = resolve_agent_flag(agent, default_agent)?;
     let Some(cred_mgr) = credential::credential_manager_for(agent) else {
         anyhow::bail!("agent {} has no credentials to save", agent.name());
+    };
+    // The container is named by the full worker id; resolve it like attach.
+    let attach::AttachPlan::Container { container: id, .. } = attach_manager(port, worker_prefix)
+        .resolve(worker_id)
+        .await?
+    else {
+        anyhow::bail!("worker {worker_id} is a local worker; it uses the host's credentials");
     };
     let paths = cred_mgr.save_from_container(&runtime, &id)?;
     if output.is_json() {
@@ -1346,7 +1355,6 @@ async fn handle_worker_launch(
         &ticket_id_str,
         workspace,
         &resolved_project,
-        worker_prefix,
         &mode,
         &skills_vec,
         &context_repos_vec,
@@ -1930,27 +1938,27 @@ mod tests {
         assert!(msg.contains("bogus-agent"), "{msg}");
     }
 
-    #[test]
-    fn save_credentials_unknown_agent_errors_without_panicking() {
+    #[tokio::test]
+    async fn save_credentials_unknown_agent_errors_without_panicking() {
         let result = handle_worker_save_credentials(
+            0,
             "ur-worker-",
             &text_output(),
             "w1",
             Some("bogus-agent"),
             ur_config::AgentType::Claude,
-        );
+        )
+        .await;
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("bogus-agent"), "{msg}");
     }
 
     #[test]
     fn save_credentials_rejects_in_container_auth() {
-        let result = handle_worker_save_credentials(
-            "ur-worker-",
-            &text_output(),
-            "missing-worker",
-            Some("agy"),
-            ur_config::AgentType::Claude,
+        let cred_mgr = credential::credential_manager_for(ur_config::AgentType::Agy).unwrap();
+        let result = cred_mgr.save_from_container(
+            &container::runtime_from_env(),
+            &container::ContainerId("missing-worker".into()),
         );
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("already bind-mounted"), "{msg}");

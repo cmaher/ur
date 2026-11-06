@@ -34,9 +34,9 @@ fn host_string(path: &Path) -> String {
 
 impl WorkerManager {
     /// `run_and_record` for `runtime = local`. A failed launch is stopped
-    /// like any worker ([`Self::abandon_launch`]); a stop that lands
-    /// mid-launch makes finalize fail, and the launch stops what it started
-    /// ([`Self::stop_lost_launch`]).
+    /// like any worker ([`Self::abandon_launch`]), and so is one whose
+    /// finalize changes no row because a stop landed mid-launch
+    /// ([`Self::finish_launch`]).
     /// builderd's error text is returned either way. Returns
     /// `(session_name, worker_secret)`.
     pub(crate) async fn run_and_record_local(
@@ -71,11 +71,7 @@ impl WorkerManager {
             "local worker launched"
         );
 
-        match self.finalize_worker_launch(&config, &session).await {
-            Ok(true) => Ok((session, worker_secret)),
-            Ok(false) => Err(self.stop_lost_launch(&config, &session).await),
-            Err(error) => Err(self.abandon_launch(&config.worker_id, error).await),
-        }
+        self.finish_launch(&config, session, worker_secret).await
     }
 
     /// Tear the worker down via builderd (Stop of an unknown id still kills

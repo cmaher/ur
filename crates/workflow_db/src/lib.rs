@@ -12,7 +12,7 @@ pub use model::{
     WorkflowIntent,
 };
 pub use ui_event_repo::UiEventRepo;
-pub use worker_repo::{SlotReconcileResult, WorkerReconcileResult, WorkerRepo};
+pub use worker_repo::{SlotReconcileResult, WorkerRepo};
 pub use workflow_repo::{PaginatedWorkflow, WorkflowRepo};
 
 /// Run all pending workflow_db migrations against the given pool.

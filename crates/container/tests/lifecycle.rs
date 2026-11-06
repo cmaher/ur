@@ -58,6 +58,7 @@ fn build_run_stop_rm() {
             command: vec!["sleep".into(), "30".into()],
             network: None,
             add_hosts: vec![],
+            labels: vec![],
         })
         .expect("run should succeed");
 

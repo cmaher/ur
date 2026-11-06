@@ -2,8 +2,22 @@ use std::future;
 use std::pin::Pin;
 use std::time::Duration;
 
+use tonic::codegen::http;
 use tonic::transport::Channel;
 use tower::retry::Policy;
+
+/// gRPC paths never retried automatically. A Launch is not idempotent: a
+/// resent one could reach a restarted builderd after its worker's Stop and
+/// start a worker nobody wants. A failed Launch fails the launch instead.
+pub const NEVER_RETRIED: &[&str] = &[
+    "/ur.builder_container.BuilderContainerService/LaunchWorker",
+    "/ur.builder_local_worker.BuilderLocalWorkerService/LaunchLocalWorker",
+];
+
+/// Whether a request to `path` may be retried automatically.
+pub fn is_retry_exempt(path: &str) -> bool {
+    NEVER_RETRIED.contains(&path)
+}
 
 /// Default maximum number of retry attempts.
 pub const DEFAULT_MAX_RETRIES: u32 = 3;
@@ -31,7 +45,8 @@ impl Default for RetryConfig {
 
 /// Retry policy for gRPC requests. Retries on transient status codes
 /// (Unavailable, Internal) with exponential backoff. Does NOT retry on
-/// permanent errors (InvalidArgument, NotFound, PermissionDenied, etc.).
+/// permanent errors (InvalidArgument, NotFound, PermissionDenied, etc.), nor
+/// any request in [`NEVER_RETRIED`].
 #[derive(Debug, Clone)]
 pub struct GrpcRetryPolicy {
     max_retries: u32,
@@ -67,14 +82,17 @@ fn is_connection_error(status: &tonic::Status) -> bool {
         || msg.contains("transport error")
 }
 
-impl<Req: Clone, Res> Policy<Req, Res, tonic::Status> for GrpcRetryPolicy {
+impl<B: Clone, Res> Policy<http::Request<B>, Res, tonic::Status> for GrpcRetryPolicy {
     type Future = Pin<Box<dyn future::Future<Output = ()> + Send>>;
 
     fn retry(
         &mut self,
-        _req: &mut Req,
+        req: &mut http::Request<B>,
         result: &mut Result<Res, tonic::Status>,
     ) -> Option<Self::Future> {
+        if is_retry_exempt(req.uri().path()) {
+            return None;
+        }
         match result {
             Ok(_) => None,
             Err(status) => {
@@ -104,8 +122,15 @@ impl<Req: Clone, Res> Policy<Req, Res, tonic::Status> for GrpcRetryPolicy {
         }
     }
 
-    fn clone_request(&mut self, req: &Req) -> Option<Req> {
-        Some(req.clone())
+    fn clone_request(&mut self, req: &http::Request<B>) -> Option<http::Request<B>> {
+        if is_retry_exempt(req.uri().path()) {
+            return None;
+        }
+        let mut clone = http::Request::new(req.body().clone());
+        *clone.method_mut() = req.method().clone();
+        *clone.uri_mut() = req.uri().clone();
+        *clone.headers_mut() = req.headers().clone();
+        Some(clone)
     }
 }
 
@@ -148,6 +173,31 @@ impl RetryChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn request(path: &str) -> http::Request<()> {
+        http::Request::builder().uri(path).body(()).unwrap()
+    }
+
+    /// ur-ezhdb: Launch RPCs are never retried, whatever the failure.
+    #[test]
+    fn launch_rpcs_are_never_retried() {
+        let mut policy = GrpcRetryPolicy::new(&RetryConfig::default());
+        for path in NEVER_RETRIED {
+            let mut req = request(path);
+            let mut result: Result<(), tonic::Status> = Err(tonic::Status::unavailable(
+                "transport error: connection refused",
+            ));
+            assert!(policy.retry(&mut req, &mut result).is_none(), "{path}");
+            assert!(
+                <GrpcRetryPolicy as Policy<_, (), tonic::Status>>::clone_request(&mut policy, &req)
+                    .is_none(),
+                "{path}"
+            );
+        }
+        let mut req = request("/ur.builder_container.BuilderContainerService/StopWorker");
+        let mut result: Result<(), tonic::Status> = Err(tonic::Status::unavailable("down"));
+        assert!(policy.retry(&mut req, &mut result).is_some());
+    }
 
     #[test]
     fn default_config_values() {
@@ -198,7 +248,7 @@ mod tests {
             base_backoff_ms: 10,
         };
         let mut policy = GrpcRetryPolicy::new(&config);
-        let mut req = ();
+        let mut req = request("/ur.core.CoreService/Ping");
 
         // First retry should succeed
         let mut result: Result<(), tonic::Status> = Err(tonic::Status::unavailable("down"));
@@ -229,7 +279,7 @@ mod tests {
             base_backoff_ms: 10,
         };
         let mut policy = GrpcRetryPolicy::new(&config);
-        let mut req = ();
+        let mut req = request("/ur.core.CoreService/Ping");
         let mut result: Result<(), tonic::Status> = Ok(());
         assert!(
             policy.retry(&mut req, &mut result).is_none(),
@@ -244,7 +294,7 @@ mod tests {
             base_backoff_ms: 10,
         };
         let mut policy = GrpcRetryPolicy::new(&config);
-        let mut req = ();
+        let mut req = request("/ur.core.CoreService/Ping");
 
         let mut result: Result<(), tonic::Status> =
             Err(tonic::Status::invalid_argument("bad input"));
@@ -261,7 +311,7 @@ mod tests {
             base_backoff_ms: 10,
         };
         let mut policy = GrpcRetryPolicy::new(&config);
-        let mut req = ();
+        let mut req = request("/ur.core.CoreService/Ping");
 
         let mut result: Result<(), tonic::Status> = Err(tonic::Status::not_found("missing"));
         assert!(
@@ -277,7 +327,7 @@ mod tests {
             base_backoff_ms: 10,
         };
         let mut policy = GrpcRetryPolicy::new(&config);
-        let mut req = ();
+        let mut req = request("/ur.core.CoreService/Ping");
 
         let mut result: Result<(), tonic::Status> =
             Err(tonic::Status::permission_denied("forbidden"));
@@ -294,7 +344,7 @@ mod tests {
             base_backoff_ms: 10,
         };
         let mut policy = GrpcRetryPolicy::new(&config);
-        let mut req = ();
+        let mut req = request("/ur.core.CoreService/Ping");
 
         let mut result: Result<(), tonic::Status> = Err(tonic::Status::unavailable(
             "transport error: connection refused",
@@ -312,10 +362,11 @@ mod tests {
             base_backoff_ms: 10,
         };
         let mut policy = GrpcRetryPolicy::new(&config);
-        let req = 42u32;
+        let req = request("/ur.core.CoreService/Ping");
         let cloned =
-            <GrpcRetryPolicy as Policy<u32, (), tonic::Status>>::clone_request(&mut policy, &req);
-        assert_eq!(cloned, Some(42));
+            <GrpcRetryPolicy as Policy<_, (), tonic::Status>>::clone_request(&mut policy, &req)
+                .unwrap();
+        assert_eq!(cloned.uri(), req.uri());
     }
 
     #[tokio::test]

@@ -102,14 +102,32 @@ access to the Docker socket — the server container does not.
 
 | RPC | When Used | Handler |
 |---|---|---|
-| `LaunchWorker` | `WorkerManager::run_and_record()` — launch a new worker container | `crates/builderd/src/container_handler.rs` |
-| `StopWorker` | `WorkerManager::stop()` — stop and remove a container by ID | `crates/builderd/src/container_handler.rs` |
+| `LaunchWorker` | `WorkerManager::run_and_record()` — launch a new worker container (requires `worker_id`) | `crates/builderd/src/container_handler.rs` |
+| `StopWorker` | `WorkerManager::stop_by_worker_id()`, the reconciler — stop and remove every container labeled with a worker id (the Stop barrier) | `crates/builderd/src/container_handler.rs` |
+| `ListWorkerContainers` | `WorkerReconcileManager` — every container of this instance, by worker id, with whether it runs | `crates/builderd/src/container_handler.rs` |
 | `ExecContainer` | `SquidManager::signal_reconfigure()` — one-shot exec (`squid -k reconfigure`) | `crates/builderd/src/container_handler.rs` |
 | `InspectNetwork` | `NetworkManager::ensure()` — check whether a Docker network exists before creating it | `crates/builderd/src/container_handler.rs` |
 
 `LaunchWorker` stats every volume host path before calling `docker run` and returns
 `FailedPrecondition` if any source is missing. This resolves the namespace-mismatch
 problem: the server container cannot reliably validate host paths, but builderd can.
+
+**Identity (ur-ezhdb).** A worker container is named `<worker_prefix><worker_id>` (the server
+derives the name: `NetworkConfig::worker_container_name`; it is also the container's Docker DNS
+name) and labeled `ur.worker_id=<worker_id>` and `ur.instance=<builderd's workspace path>`.
+Worker ids are unique per launch, so a name is never reused. builderd finds containers only by
+these labels: `StopWorker(worker_id)` removes every container labeled with the id in this
+instance, and `ListWorkerContainers` reports this instance's labeled containers. Another ur
+instance's containers (a different `ur.instance`) are never listed or stopped. Callers never
+pass a container name or Docker ID, except the upgrade-only `legacy_container_id` below.
+
+**Upgrade.** A container launched before ur-ezhdb has a process-id name and no labels. It is
+never listed. Its row recorded a Docker ID (or, before finalize, the process-id name) instead of
+the worker-id name, which marks it as legacy (`ur_server::worker::legacy_container_id`). Its stop
+passes that recorded value as `StopWorkerRequest.legacy_container_id`, and builderd stops it only
+if the container's `UR_WORKER_ID` env names the stopped worker. The reconciler leaves a legacy
+`running` row alone (it cannot be observed), so such a container runs until it is stopped
+through its row.
 
 ### Client in the Server
 
@@ -169,15 +187,14 @@ skill to its resolved source, and `check_assets` checks the same resolution.
 `crates/server/src/local_launch.rs` (`build_local_launch_request`). A pool launch's
 `provisioning` row and slot link were inserted when the slot was claimed (see
 `pool-git-builder-flow.md#slot-claim-ur-j5puq`); `record_provisioning_worker` fills in the
-session name `ur-<id>` and the secret → `LaunchLocalWorker` → finalize (`provisioning →
-running`, compare-and-set). A failed launch is stopped like any worker
+session name `ur-<id>` (container: the container name `<worker_prefix><worker_id>`) and the
+secret → Launch (never retried automatically: `ur_rpc::retry::NEVER_RETRIED`) → finalize
+(`WorkerManager::finish_launch`: `provisioning → running`, compare-and-set). If Launch fails,
+or finalize changes no row (a stop landed mid-launch), the worker is stopped like any other
 (`WorkerManager::abandon_launch` → `stop_by_worker_id`; both runtimes), leaving a `stopped`
-row, or `stopping` (still holding the slot) if builderd's Stop fails. If finalize finds the row
-no longer `provisioning`, a stop landed mid-launch: the launch stops what it launched itself
-(`stop_lost_launch`: container ID or session, through the barrier for its worker id; a failure
-is returned and a `stopping` row stays `stopping`) and returns "stopped during launch". Its
-stopper's Stop does not cover a Launch that reached a restarted builderd (below). A stop before
-the launch recorded its row also returns "stopped during launch". No Docker network, Squid env, image or credential gate.
+row, or `stopping` (still holding the slot) if builderd's Stop fails; the launch returns the
+error ("stopped during launch" for the second case). A stop before the launch recorded its row
+also returns "stopped during launch". No Docker network, Squid env, image or credential gate.
 Mounts, memory/brain dirs, instruction file and host skills are host paths (templates resolve
 against the host config dir).
 
@@ -194,15 +211,17 @@ builderd orders Launch and Stop per worker id (`barrier.rs`, `WorkerBarrier`), i
 `LocalWorkerManager` and the container service (`LaunchWorker`/`StopWorker` carry `worker_id`).
 Stop first records an in-memory tombstone for the id, then takes the id's lock, waiting for any
 in-flight launch, then tears down (local: including a drive an unregistered id left; container:
-the requested container and the one that launch started, whose name is recorded under the lock
-before `docker run`, so a failed launch that left its container running is still targeted). A launch takes the lock and is refused
+every container labeled with the id, so a failed launch that left its container running is
+still found). A launch takes the lock and is refused
 with `FailedPrecondition` if the id is tombstoned. Launches run on their own task, so a cancelled
 RPC cannot abandon one halfway. Contract: Stop(id) returning Ok means the id is not running in
 this builderd and never will be. Tombstones expire after an hour (`TOMBSTONE_TTL`) and do not
-survive a builderd restart: the server's launch task can resend a Launch to the new process after
-the old one answered the stopper's Stop, and that launch runs. The server's launch path covers
-this (finalize `false` → it stops what it launched). A
-`StopWorker` without `worker_id` (pre-launch name cleanup, orphan removal) is a plain stop.
+survive a builderd restart. Launch RPCs are never resent, but a Launch first sent after its
+worker's Stop reached the previous builderd process still runs in the new one. The server
+converges it: that launch's finalize changes no row, so it Stops the worker; if that Stop fails,
+the reconciler's List sweep finds the worker with no active row and stops it. Until then the
+slot (released by the earlier stopper) is free under a live worker: the remaining window,
+bounded by the launch's own Stop or one reconcile interval. `StopWorker` requires `worker_id`.
 
 ### Termination paths and reconciliation (ur-j5puq)
 
@@ -224,7 +243,7 @@ so the server's retried Stop runs teardown again.
 |---|---|
 | Agent exit, external `kill-session` | exit watcher (pane dead, probe failure, or — code/design workers only — the agent's pane back at a shell with no child process left under it) → exit sink → teardown; the server sees the id leave the list on its next pass. A manual worker whose agent quits keeps its shell and stays until stopped |
 | builderd restart / host reboot | `adopt_existing` before `serve`: adopt or kill each of our `ur-<id>` sessions, skip any that are not ours, tear down orphan drives (below) |
-| Server start (before serving or dispatching) | `WorkerReconcileManager::startup`: container rows via `WorkerRepo::reconcile_workers` (never revived to `running`: `provisioning` → `stopping`, `stopping` left, `running` + dead → `stopped`, `stopped` + live container → that container stopped through the barrier unless a live row owns it, row stays `stopped`; a failed stray stop fails startup), then every local `provisioning` row (a launch the previous server never finished, slot still linked) becomes `stopping`; then one pass |
+| Server start (before serving or dispatching) | `WorkerReconcileManager::startup`: every `provisioning` row of either runtime (a launch the previous server never finished, slot still linked) becomes `stopping`; then one pass |
 | Every 15s | `WorkerReconcileManager` pass (below) |
 | `ur stop` | `ListLocalWorkers` → `StopLocalWorker` each from the host, before `compose down` and again after it; a failure aborts `ur stop` |
 | `ur start` | waits for builderd's port; reports its log paths if builderd exits (e.g. failed adoption) |
@@ -240,14 +259,23 @@ gets `teardown_orphan` (links only). Listing failure aborts startup; no tmux ins
 sessions. Orphan drive failures are logged only (known limit: drives hold only links; the next
 startup retries).
 
-**Reconcile pass** (`crates/server/src/worker_reconcile.rs`): container rows in `stopping` →
-`stop_by_worker_id` (container `provisioning` rows are never touched). Then read active local rows,
-then `ListLocalWorkers`; a list error changes no local row. `running` + listed alive → none; `running`
-not listed, `running` + session dead, or `stopping` → `stop_by_worker_id`; `provisioning` →
-none; a listed id with no active row (re-read first) → `StopLocalWorker`.
-`WorkerRepo::reconcile_workers` (container startup reconciliation) skips local rows. Known
-limit: a local `provisioning` row written by a pre-ur-j5puq build has no slot link (that build
-linked at finalize), so its slot is free while startup's stop converges it.
+**Reconcile pass** (`crates/server/src/worker_reconcile.rs`): read the active rows, then one
+list per runtime (`ListLocalWorkers`, `ListWorkerContainers`). One table for both runtimes:
+
+| DB row | builderd list | Action |
+|---|---|---|
+| `running` | listed alive | none |
+| `running` | absent or dead | stop path (`stop_by_worker_id`) |
+| `stopping` | any | stop path (retry) |
+| `provisioning` | any | periodic: none · startup: → `stopping` |
+| no active row (none / `stopped`) | listed | builderd Stop(worker_id) (row re-read first) |
+| — | list failed | no change for that runtime this pass |
+
+A legacy container `running` row (pre-ur-ezhdb, never listed) is left alone. Stale-row cleanup
+(`cleanup_stale_workers`, after startup) can delete a `stopped` row, but never hides a live
+container: the sweep keys on labels, not rows. Known limit: a local `provisioning` row written
+by a pre-ur-j5puq build has no slot link (that build linked at finalize), so its slot is free
+while startup's stop converges it.
 
 The routed `WorkerDaemonService` (`crates/builderd/src/workerd_router.rs`, `WorkerdRouter`)
 reads the `ur-worker-id` header (`ur_config::WORKER_ID_HEADER`) and delegates to that
@@ -279,7 +307,7 @@ Builderd has three clients in the server, serving different use cases:
 
 ### 3. BuilderContainerClient (server-internal → builderd)
 
-- **Purpose**: Worker container lifecycle (launch, stop, exec, network inspect)
+- **Purpose**: Worker container lifecycle (launch, stop, list, exec, network inspect)
 - **Client**: Shared `BuilderContainerClient` wrapper, one method per RPC
 - **File**: `crates/server/src/builder_container_client.rs`
 
@@ -313,7 +341,8 @@ message BuilderExecRequest {
 ```protobuf
 service BuilderContainerService {
   rpc LaunchWorker(LaunchWorkerRequest) returns (LaunchWorkerResponse);
-  rpc StopWorker(StopWorkerRequest) returns (StopWorkerResponse);
+  rpc StopWorker(StopWorkerRequest) returns (StopWorkerResponse);       // by worker_id
+  rpc ListWorkerContainers(ListWorkerContainersRequest) returns (ListWorkerContainersResponse);
   rpc ExecContainer(ExecContainerRequest) returns (ExecContainerResponse);
   rpc InspectNetwork(InspectNetworkRequest) returns (InspectNetworkResponse);
 }
@@ -354,7 +383,7 @@ ur-server container
 
 - `crates/builderd/src/main.rs` — CLI, gRPC server setup (all five services)
 - `crates/builderd/src/handler.rs` — BuilderDaemonHandler, %WORKSPACE% resolution
-- `crates/builderd/src/container_handler.rs` — BuilderContainerHandler (launch/stop/exec/network)
+- `crates/builderd/src/container_handler.rs` — BuilderContainerHandler (launch/stop/list/exec/network; labels)
 - `crates/builderd/src/pool_handler.rs` — BuilderPoolHandler (clone/reset/clean/checkout slots)
 - `crates/builderd/src/local_worker.rs` — LocalWorkerManager, LocalWorkerRegistry (local worker lifecycle)
 - `crates/builderd/src/local_worker_handler.rs` — BuilderLocalWorkerHandler

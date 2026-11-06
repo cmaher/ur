@@ -241,7 +241,7 @@ container; a container launch's credential gate (`check_credentials_seeded`) is 
 The resolved runtime is stored on the `workflow_db` `worker.runtime` column (default
 `container`) and returned as `runtime` on `WorkerSummary` / `WorkerInfoResponse`.
 `WorkerdAddressResolver` (`crates/server/src/workerd_address.rs`) reads it to reach a worker's
-daemon: container → `http://<worker_prefix><process_id>:WORKERD_GRPC_PORT`; local → builderd's
+daemon: container → `http://<worker_prefix><worker_id>:WORKERD_GRPC_PORT`; local → builderd's
 address with `ur-worker-id: <worker_id>` metadata on every call.
 
 ## `[worker_models]` Section

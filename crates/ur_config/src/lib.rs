@@ -956,8 +956,17 @@ pub struct NetworkConfig {
     /// This must match the container/service name of the server on the Docker network.
     pub server_hostname: String,
     /// Container name prefix for worker containers (default: "ur-worker-").
-    /// Worker containers are named `{worker_prefix}{process_id}`.
+    /// Worker containers are named `{worker_prefix}{worker_id}`
+    /// ([`NetworkConfig::worker_container_name`]).
     pub worker_prefix: String,
+}
+
+impl NetworkConfig {
+    /// The container name (and Docker DNS name) of `worker_id`'s container.
+    /// Worker ids are unique per launch, so a name is never reused.
+    pub fn worker_container_name(&self, worker_id: &str) -> String {
+        format!("{}{worker_id}", self.worker_prefix)
+    }
 }
 
 /// Backup configuration for periodic database snapshots.

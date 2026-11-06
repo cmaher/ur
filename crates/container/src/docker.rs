@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::{
     BuildOpts, ContainerId, ContainerRuntime, ContainerState, ExecOpts, ExecOutput, ImageId,
-    RunOpts,
+    LabeledContainer, RunOpts,
 };
 
 /// Docker-compatible container runtime. Works with `docker` and `nerdctl` (containerd).
@@ -72,9 +72,82 @@ impl DockerRuntime {
             args.push("--add-host".into());
             args.push(format!("{host}:{ip}"));
         }
+        for (key, val) in &opts.labels {
+            args.push("--label".into());
+            args.push(format!("{key}={val}"));
+        }
         args.push(opts.image.0.clone());
         args.extend(opts.command.iter().cloned());
         args
+    }
+
+    /// `ps -a` of containers carrying every `key=value` in `filters`,
+    /// printing `<id>\t<value of label report>\t<state>` per line.
+    pub fn list_by_labels_args(filters: &[(&str, &str)], report: &str) -> Vec<String> {
+        let mut args = vec!["ps".into(), "-a".into(), "--no-trunc".into()];
+        for (key, val) in filters {
+            args.push("--filter".into());
+            args.push(format!("label={key}={val}"));
+        }
+        args.push("--format".into());
+        args.push(format!(
+            "{{{{.ID}}}}\t{{{{.Label \"{report}\"}}}}\t{{{{.State}}}}"
+        ));
+        args
+    }
+
+    /// Containers (running or not) carrying every `key=value` in `filters`,
+    /// each with the value of its `report` label.
+    pub fn list_by_labels(
+        &self,
+        filters: &[(&str, &str)],
+        report: &str,
+    ) -> Result<Vec<LabeledContainer>> {
+        let out = self.exec(&Self::list_by_labels_args(filters, report))?;
+        out.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|line| {
+                let mut parts = line.splitn(3, '\t');
+                match (parts.next(), parts.next(), parts.next()) {
+                    (Some(id), Some(label), Some(state)) if !id.is_empty() => {
+                        Ok(LabeledContainer {
+                            id: ContainerId(id.to_owned()),
+                            label: label.to_owned(),
+                            running: state.trim() == "running",
+                        })
+                    }
+                    _ => bail!("unexpected {} ps output line: {line:?}", self.command),
+                }
+            })
+            .collect()
+    }
+
+    /// The container's environment (`KEY=VALUE` entries); `None` when there
+    /// is no such container.
+    pub fn env_of(&self, id: &ContainerId) -> Result<Option<Vec<String>>> {
+        let output = Command::new(&self.command)
+            .args([
+                "inspect",
+                "--format",
+                "{{range .Config.Env}}{{println .}}{{end}}",
+                &id.0,
+            ])
+            .output()
+            .with_context(|| format!("failed to inspect container {}", id.0))?;
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Ok(Some(stdout.lines().map(str::to_owned).collect()));
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No such container") || stderr.contains("no such object") {
+            return Ok(None);
+        }
+        bail!(
+            "{} inspect failed for container {}: {}",
+            self.command,
+            id.0,
+            stderr.trim()
+        )
     }
 
     pub fn stop_args(id: &ContainerId) -> Vec<String> {
@@ -344,7 +417,31 @@ mod tests {
             command: vec![],
             network: None,
             add_hosts: vec![],
+            labels: vec![],
         }
+    }
+
+    #[test]
+    fn run_and_list_args_carry_labels() {
+        let opts = RunOpts {
+            labels: vec![(s("ur.worker_id"), s("w-1"))],
+            ..sample_run_opts()
+        };
+        let args = DockerRuntime::run_args(&opts);
+        let at = args.iter().position(|a| a == "--label").unwrap();
+        assert_eq!(args[at + 1], "ur.worker_id=w-1");
+        assert_eq!(
+            DockerRuntime::list_by_labels_args(&[("ur.instance", "/cfg")], "ur.worker_id"),
+            vec![
+                s("ps"),
+                s("-a"),
+                s("--no-trunc"),
+                s("--filter"),
+                s("label=ur.instance=/cfg"),
+                s("--format"),
+                s("{{.ID}}\t{{.Label \"ur.worker_id\"}}\t{{.State}}"),
+            ]
+        );
     }
 
     #[test]

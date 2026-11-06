@@ -97,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
         .workspace
         .clone()
         .unwrap_or_else(|| config_dir.join("workspace"));
+    let instance_id = pool_workspace.display().to_string();
     let overlays = overlay::LocalOverlayManager {
         workspace: pool_workspace.clone(),
         config_dir: config_dir.clone(),
@@ -134,8 +135,11 @@ async fn main() -> anyhow::Result<()> {
         overlays,
     };
 
+    // Containers are scoped to this instance like local sessions are: by
+    // this builderd's workspace (the drive root's parent).
     let container_handler = container_handler::BuilderContainerHandler::new(
         barrier::WorkerBarrier::new(barrier::TOMBSTONE_TTL),
+        instance_id,
     );
 
     // Before serving: ListLocalWorkers must never under-report live sessions

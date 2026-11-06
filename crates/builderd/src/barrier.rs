@@ -5,11 +5,12 @@
 //! the tombstone under the id's lock and is refused. So once a Stop returns
 //! Ok, the id is not running in this builderd and never will be. Tombstones
 //! live in memory only and expire after `ttl` (any launch RPC older than that
-//! is long dead). Tombstones do not survive a builderd restart, and the
-//! server's launch task may resend a Launch to the new process after its
-//! stopper's Stop returned Ok from the old one; that launch then runs. The
-//! server covers this itself: a launch whose finalize finds its row already
-//! stopped issues its own Stop for what it launched.
+//! is long dead). A builderd restart loses them. The server never resends a
+//! Launch RPC, but one first sent after its worker's Stop reached the previous
+//! process still runs here. The server then converges it: that launch's
+//! finalize finds the row no longer `provisioning` and Stops the worker, and
+//! the reconciler's List sweep stops any container or session no active row
+//! wants.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -25,10 +26,6 @@ pub const TOMBSTONE_TTL: Duration = Duration::from_secs(3600);
 struct State {
     locks: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
     tombstones: HashMap<String, Instant>,
-    /// Container launched per id (container service only): its name, from
-    /// before `docker run`, then its ID once the launch succeeds. A Stop
-    /// stops it whatever container id the stopper read from its row.
-    launched: HashMap<String, String>,
 }
 
 /// Per-id Launch/Stop serialization plus stop tombstones.
@@ -76,23 +73,6 @@ impl WorkerBarrier {
             .tombstones
             .insert(id.to_owned(), Instant::now());
         self.lock_for(id).lock_owned().await
-    }
-
-    /// Record the container a launch of `id` started.
-    pub fn record_launched(&self, id: &str, container: &str) {
-        self.state()
-            .launched
-            .insert(id.to_owned(), container.to_owned());
-    }
-
-    /// The container a launch of `id` started.
-    pub fn launched(&self, id: &str) -> Option<String> {
-        self.state().launched.get(id).cloned()
-    }
-
-    /// Forget `id`'s launched container once it is stopped.
-    pub fn forget_launched(&self, id: &str) {
-        self.state().launched.remove(id);
     }
 
     #[cfg(test)]

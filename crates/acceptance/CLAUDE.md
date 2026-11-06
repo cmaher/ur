@@ -44,7 +44,7 @@ parsing in `ur_config` / `WorkerModesConfig` tests, Lua transforms in `lua_trans
 
 ## Test architecture
 
-`e2e_all` is the sole `#[test]` that drives the stack (pure helper predicates may have their own `#[test]`, e.g. `stale_local_rt_session_selection`). It creates one shared `TestEnv` (temp config dir, bare repos, `ur start`), runs all scenarios sequentially as plain helper functions, then tears down. Each scenario gets a `&TestEnv` reference and uses its own ticket IDs and container names. Scenarios use `catch_unwind` to force-remove their worker containers (local: stop and kill their own sessions) on failure before re-raising.
+`e2e_all` is the sole `#[test]` that drives the stack (pure helper predicates may have their own `#[test]`, e.g. `stale_local_rt_session_selection`). It creates one shared `TestEnv` (temp config dir, bare repos, `ur start`), runs all scenarios sequentially as plain helper functions, then tears down. Each scenario gets a `&TestEnv` reference and uses its own ticket IDs. A worker container is named `<worker_prefix><worker_id>` (worker id = `<process_id>-<suffix>`, known only after launch), so `TestEnv::container_name(process_id)` returns a `WorkerContainer` that resolves the name on first use (newest container with that prefix) and removes by prefix on cleanup. Scenarios use `catch_unwind` to force-remove their worker containers (local: stop and kill their own sessions) on failure before re-raising.
 
 ## Design principle
 

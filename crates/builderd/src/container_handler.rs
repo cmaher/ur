@@ -12,24 +12,35 @@ use container::{
 use ur_rpc::proto::builder_container::builder_container_service_server::BuilderContainerService;
 use ur_rpc::proto::builder_container::{
     ExecContainerRequest, ExecContainerResponse, InspectNetworkRequest, InspectNetworkResponse,
-    InspectWorkerRequest, InspectWorkerResponse, LaunchWorkerRequest, LaunchWorkerResponse,
-    StopWorkerRequest, StopWorkerResponse,
+    LaunchWorkerRequest, LaunchWorkerResponse, ListWorkerContainersRequest,
+    ListWorkerContainersResponse, StopWorkerRequest, StopWorkerResponse, WorkerContainerStatus,
 };
 
-/// Handles BuilderContainerService RPCs: launch, stop, exec, and network inspect
-/// for worker containers. Uses DockerRuntime from the container crate.
+/// Label carrying the worker id of every worker container.
+pub const WORKER_ID_LABEL: &str = "ur.worker_id";
+/// Label scoping worker containers to one ur instance (its builderd).
+pub const INSTANCE_LABEL: &str = "ur.instance";
+
+/// Handles BuilderContainerService RPCs: launch, stop, list, exec, and
+/// network inspect for worker containers. Uses DockerRuntime from the
+/// container crate. A worker container is identified only by its labels:
+/// `ur.worker_id` and `ur.instance` (this builderd's instance).
 #[derive(Clone)]
 pub struct BuilderContainerHandler {
     runtime: DockerRuntime,
     /// Orders LaunchWorker and StopWorker per worker id (Stop is a barrier).
     barrier: WorkerBarrier,
+    /// This ur instance's `ur.instance` label value; containers without it
+    /// (another instance's) are never listed or stopped.
+    instance: String,
 }
 
 impl BuilderContainerHandler {
-    pub fn new(barrier: WorkerBarrier) -> Self {
+    pub fn new(barrier: WorkerBarrier, instance: String) -> Self {
         Self {
             runtime: runtime_from_env(),
             barrier,
+            instance,
         }
     }
 }
@@ -39,8 +50,9 @@ fn is_no_such_container(text: &str) -> bool {
     text.contains("No such container")
 }
 
-/// Convert a `LaunchWorkerRequest` into `RunOpts` for the container runtime.
-fn request_to_run_opts(req: &LaunchWorkerRequest) -> RunOpts {
+/// Convert a `LaunchWorkerRequest` into `RunOpts` for the container runtime,
+/// labeled with the worker id and `instance`.
+fn request_to_run_opts(req: &LaunchWorkerRequest, instance: &str) -> RunOpts {
     let volumes = req
         .volumes
         .iter()
@@ -97,6 +109,10 @@ fn request_to_run_opts(req: &LaunchWorkerRequest) -> RunOpts {
         command: vec![],
         network,
         add_hosts,
+        labels: vec![
+            (WORKER_ID_LABEL.to_owned(), req.worker_id.clone()),
+            (INSTANCE_LABEL.to_owned(), instance.to_owned()),
+        ],
     }
 }
 
@@ -211,7 +227,7 @@ impl BuilderContainerHandler {
             )));
         }
 
-        let opts = request_to_run_opts(&req);
+        let opts = request_to_run_opts(&req, &self.instance);
         let container_id = self.runtime.run(&opts).map_err(|e| {
             error!(error = %e, name = %req.name, "docker run failed");
             Status::internal(format!("docker run failed: {e}"))
@@ -236,91 +252,78 @@ impl BuilderContainerHandler {
         }
 
         info!(container_id = %container_id.0, name = %req.name, "container launched");
-        Ok(Response::new(LaunchWorkerResponse {
-            container_id: container_id.0,
-        }))
+        Ok(Response::new(LaunchWorkerResponse {}))
     }
 
-    /// `docker stop` + `rm` of `req.container_id`; a missing container is
-    /// `NotFound`.
-    fn stop_container(
+    /// `docker stop` + `rm` of one container; a container already gone is Ok.
+    fn remove_container(&self, id: &ContainerId) -> Result<(), Status> {
+        let gone = |op: &str, e: anyhow::Error| {
+            let msg = e.to_string();
+            if is_no_such_container(&msg) {
+                return Ok(());
+            }
+            error!(container_id = %id.0, error = %msg, "docker {op} failed");
+            Err(Status::internal(format!("docker {op} failed: {msg}")))
+        };
+        if let Err(e) = self.runtime.stop(id) {
+            return gone("stop", e);
+        }
+        if let Err(e) = self.runtime.rm(id) {
+            return gone("rm", e);
+        }
+        info!(container_id = %id.0, "container stopped and removed");
+        Ok(())
+    }
+
+    /// This instance's containers labeled with `worker_id`.
+    fn containers_of(&self, worker_id: &str) -> Result<Vec<ContainerId>, Status> {
+        self.runtime
+            .list_by_labels(
+                &[
+                    (WORKER_ID_LABEL, worker_id),
+                    (INSTANCE_LABEL, &self.instance),
+                ],
+                WORKER_ID_LABEL,
+            )
+            .map(|found| found.into_iter().map(|c| c.id).collect())
+            .map_err(|e| Status::internal(format!("list worker containers: {e}")))
+    }
+
+    /// Upgrade only: a pre-label container is stopped only when its
+    /// `UR_WORKER_ID` env names `worker_id` (container names were reused).
+    fn legacy_container_of(
         &self,
-        req: &StopWorkerRequest,
-    ) -> Result<Response<StopWorkerResponse>, Status> {
-        let id = ContainerId(req.container_id.clone());
-
-        info!(container_id = %req.container_id, "StopWorker request received");
-
-        // Attempt stop; tolerate "No such container" as NotFound.
-        let stop_result = self.runtime.stop(&id);
-        match stop_result {
-            Ok(()) => {}
-            Err(e) => {
-                let msg = e.to_string();
-                if is_no_such_container(&msg) {
-                    info!(container_id = %req.container_id, "container already gone (stop)");
-                    return Err(Status::not_found(format!(
-                        "container not found: {}",
-                        req.container_id
-                    )));
-                }
-                error!(container_id = %req.container_id, error = %msg, "docker stop failed");
-                return Err(Status::internal(format!("docker stop failed: {msg}")));
-            }
+        worker_id: &str,
+        legacy: &str,
+    ) -> Result<Option<ContainerId>, Status> {
+        if legacy.is_empty() {
+            return Ok(None);
         }
-
-        // Attempt rm; tolerate "No such container" as NotFound.
-        let rm_result = self.runtime.rm(&id);
-        match rm_result {
-            Ok(()) => {}
-            Err(e) => {
-                let msg = e.to_string();
-                if is_no_such_container(&msg) {
-                    info!(container_id = %req.container_id, "container already gone (rm)");
-                    return Err(Status::not_found(format!(
-                        "container not found: {}",
-                        req.container_id
-                    )));
-                }
-                error!(container_id = %req.container_id, error = %msg, "docker rm failed");
-                return Err(Status::internal(format!("docker rm failed: {msg}")));
-            }
-        }
-
-        info!(container_id = %req.container_id, "container stopped and removed");
-        Ok(Response::new(StopWorkerResponse {}))
+        let id = ContainerId(legacy.to_owned());
+        let env = self
+            .runtime
+            .env_of(&id)
+            .map_err(|e| Status::internal(format!("inspect legacy container: {e}")))?;
+        let owned = env.is_some_and(|env| {
+            env.iter()
+                .any(|e| *e == format!("{}={worker_id}", ur_config::UR_WORKER_ID_ENV))
+        });
+        Ok(owned.then_some(id))
     }
 
-    /// Stop as a barrier for `req.worker_id`: wait for its in-flight launch,
-    /// stop the requested container and the one that launch started (a
-    /// missing one is fine), and refuse later launches.
+    /// Stop as a barrier for `req.worker_id`: tombstone it, wait for its
+    /// in-flight launch, then remove every container labeled with it.
     async fn stop_worker_barrier(
         &self,
         req: StopWorkerRequest,
     ) -> Result<Response<StopWorkerResponse>, Status> {
+        info!(worker_id = %req.worker_id, "StopWorker request received");
         let _stopping = self.barrier.begin_stop(&req.worker_id).await;
-        let launched = self.barrier.launched(&req.worker_id);
-        let targets = [Some(req.container_id.clone()), launched]
-            .into_iter()
-            .flatten()
-            .filter(|c| !c.is_empty());
-        let mut stopped: Vec<String> = Vec::new();
-        for container_id in targets {
-            if stopped.contains(&container_id) {
-                continue;
-            }
-            let target = StopWorkerRequest {
-                container_id: container_id.clone(),
-                worker_id: String::new(),
-            };
-            match self.stop_container(&target) {
-                Ok(_) => {}
-                Err(status) if status.code() == tonic::Code::NotFound => {}
-                Err(status) => return Err(status),
-            }
-            stopped.push(container_id);
+        let mut targets = self.containers_of(&req.worker_id)?;
+        targets.extend(self.legacy_container_of(&req.worker_id, &req.legacy_container_id)?);
+        for id in &targets {
+            self.remove_container(id)?;
         }
-        self.barrier.forget_launched(&req.worker_id);
         Ok(Response::new(StopWorkerResponse {}))
     }
 }
@@ -335,16 +338,12 @@ impl BuilderContainerService for BuilderContainerHandler {
         req: Request<LaunchWorkerRequest>,
     ) -> Result<Response<LaunchWorkerResponse>, Status> {
         let (this, req) = (self.clone(), req.into_inner());
+        if req.worker_id.is_empty() {
+            return Err(Status::invalid_argument("LaunchWorker requires worker_id"));
+        }
         tokio::spawn(async move {
             let _launching = this.barrier.begin_launch(&req.worker_id).await?;
-            let worker_id = req.worker_id.clone();
-            // Before `docker run`: a failed launch whose cleanup also failed
-            // leaves a container that a waiting Stop must still target.
-            this.barrier.record_launched(&worker_id, &req.name);
-            let response = this.launch_container(req).await?;
-            this.barrier
-                .record_launched(&worker_id, &response.get_ref().container_id);
-            Ok(response)
+            this.launch_container(req).await
         })
         .await
         .map_err(|e| Status::internal(format!("launch task failed: {e}")))?
@@ -356,9 +355,27 @@ impl BuilderContainerService for BuilderContainerHandler {
     ) -> Result<Response<StopWorkerResponse>, Status> {
         let req = req.into_inner();
         if req.worker_id.is_empty() {
-            return self.stop_container(&req);
+            return Err(Status::invalid_argument("StopWorker requires worker_id"));
         }
         self.stop_worker_barrier(req).await
+    }
+
+    async fn list_worker_containers(
+        &self,
+        _req: Request<ListWorkerContainersRequest>,
+    ) -> Result<Response<ListWorkerContainersResponse>, Status> {
+        let containers = self
+            .runtime
+            .list_by_labels(&[(INSTANCE_LABEL, &self.instance)], WORKER_ID_LABEL)
+            .map_err(|e| Status::internal(format!("list worker containers: {e}")))?
+            .into_iter()
+            .filter(|c| !c.label.is_empty())
+            .map(|c| WorkerContainerStatus {
+                worker_id: c.label,
+                running: c.running,
+            })
+            .collect();
+        Ok(Response::new(ListWorkerContainersResponse { containers }))
     }
 
     async fn exec_container(
@@ -418,34 +435,6 @@ impl BuilderContainerService for BuilderContainerHandler {
         let exists = output.status.success();
         Ok(Response::new(InspectNetworkResponse { exists }))
     }
-
-    async fn inspect_worker(
-        &self,
-        req: Request<InspectWorkerRequest>,
-    ) -> Result<Response<InspectWorkerResponse>, Status> {
-        let req = req.into_inner();
-        let id = ContainerId(req.container_id.clone());
-
-        // An absent container is a definitive `running: false`. A runtime that
-        // cannot answer is an error, never a false — the server reconciles DB
-        // rows against this answer and would kill live workers otherwise.
-        let state = self.runtime.inspect_state(&id).map_err(|e| {
-            error!(container_id = %req.container_id, error = %e, "container liveness probe failed");
-            Status::internal(format!("container liveness probe failed: {e}"))
-        })?;
-
-        let response = match state {
-            Some(state) => InspectWorkerResponse {
-                running: state.running,
-                container_id: state.id.0,
-            },
-            None => InspectWorkerResponse {
-                running: false,
-                container_id: String::new(),
-            },
-        };
-        Ok(Response::new(response))
-    }
 }
 
 #[cfg(test)]
@@ -477,72 +466,223 @@ mod tests {
         }
     }
 
-    /// A StopWorker for a worker before its LaunchWorker arrives (the server
-    /// stopped it mid-launch) makes the launch refuse, before any docker
-    /// call; Ok from the stop means the worker will never run.
-    #[tokio::test]
-    async fn stop_before_launch_refuses_the_container_launch() {
-        let handler =
-            BuilderContainerHandler::new(WorkerBarrier::new(crate::barrier::TOMBSTONE_TTL));
-        handler
-            .stop_worker(Request::new(StopWorkerRequest {
-                container_id: String::new(),
-                worker_id: "w1".into(),
-            }))
-            .await
-            .unwrap();
-        let err = handler
-            .launch_worker(Request::new(make_request(Vec::new())))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
-        assert!(err.message().contains("was stopped"), "{err}");
-    }
-
-    /// Fake `docker`: containers are `dstate/c-<name>` files holding
-    /// `running`/`exited`; `cid-<name>` is the ID `run` prints. Flag files
-    /// in `dstate` inject health and stop failures.
-    const FAKE_DOCKER: &str = r#"#!/bin/sh
-D="$(dirname "$0")/dstate"; mkdir -p "$D"
-res() { echo "${1#cid-}"; }
+    /// Fake `docker`: each container is `dstate/c/<name>/` holding `state`
+    /// (`running`/`exited`), `labels` and `env` (one `k=v` per line) and
+    /// `id` (`id-<name>`). Flag files in `dstate` inject health and stop
+    /// failures; every successful `docker stop` appends the name to `KILLS`.
+    const FAKE_DOCKER: &str = r#"#!/bin/bash
+D="$(dirname "$0")/dstate"; mkdir -p "$D/c"
+res() { for c in "$D"/c/*; do [ -d "$c" ] || continue; n=$(basename "$c")
+  if [ "$n" = "$1" ] || [ "$(cat "$c/id")" = "$1" ]; then echo "$n"; return; fi; done; }
 case "$1" in
-  run) shift; name=""
-       while [ $# -gt 0 ]; do [ "$1" = "--name" ] && name="$2"; shift; done
-       echo running > "$D/c-$name"; echo "cid-$name";;
-  inspect) n=$(res "$4")
-       [ -f "$D/c-$n" ] || { echo "Error: No such container: $4" >&2; exit 1; }
+  run) shift; name=""; labels=""; env=""
+       while [ $# -gt 0 ]; do case "$1" in
+         --name) name="$2"; shift;; --label) labels="$labels$2"$'\n'; shift;; -e) env="$env$2"$'\n'; shift;;
+       esac; shift; done
+       mkdir "$D/c/$name" 2>/dev/null || { echo "Conflict. The container name $name is already in use" >&2; exit 1; }
+       echo running > "$D/c/$name/state"; printf '%s' "$labels" > "$D/c/$name/labels"
+       printf '%s' "$env" > "$D/c/$name/env"; echo "id-$name" > "$D/c/$name/id"; echo "id-$name";;
+  ps) shift; filters=""
+      while [ $# -gt 0 ]; do [ "$1" = "--filter" ] && filters="$filters ${2#label=}"; shift; done
+      for c in "$D"/c/*; do [ -d "$c" ] || continue; ok=1
+        for f in $filters; do grep -qxF "$f" "$c/labels" || ok=0; done
+        [ $ok = 1 ] || continue
+        wid=$(grep '^ur.worker_id=' "$c/labels" | cut -d= -f2-); st=$(cat "$c/state")
+        printf '%s\t%s\t%s\n' "$(cat "$c/id")" "$wid" "$st"; done;;
+  inspect) n=$(res "$4"); [ -n "$n" ] || { echo "Error: No such container: $4" >&2; exit 1; }
        case "$3" in
-         *Health*) sleep 0.3; [ -f "$D/HEALTH_FAIL" ] && { echo "health boom" >&2; exit 1; }; echo "";;
-         *) if [ "$(cat "$D/c-$n")" = running ]; then echo "true cid-$n"; else echo "false cid-$n"; fi;;
+         *Health*) [ -f "$D/HEALTH_DELAY" ] && sleep "$(cat "$D/HEALTH_DELAY")"
+                   [ -f "$D/HEALTH_FAIL" ] && { echo "health boom" >&2; exit 1; }; echo "";;
+         *Env*) cat "$D/c/$n/env";;
+         *) if [ "$(cat "$D/c/$n/state")" = running ]; then echo "true $(cat "$D/c/$n/id")"; else echo "false $(cat "$D/c/$n/id")"; fi;;
        esac;;
-  stop) n=$(res "$4"); [ -f "$D/c-$n" ] || { echo "No such container: $4" >&2; exit 1; }
+  stop) n=$(res "$4"); [ -n "$n" ] || { echo "No such container: $4" >&2; exit 1; }
         [ -f "$D/STOP_FAIL" ] && { echo "stop boom" >&2; exit 1; }
-        echo exited > "$D/c-$n";;
-  rm) n=$(res "$2"); [ -f "$D/c-$n" ] || { echo "No such container: $2" >&2; exit 1; }
-      [ "$(cat "$D/c-$n")" = running ] && { echo "cannot remove a running container" >&2; exit 1; }
-      rm -f "$D/c-$n";;
+        echo exited > "$D/c/$n/state"; echo "$n" >> "$D/KILLS";;
+  rm) n=$(res "$2"); [ -n "$n" ] || { echo "No such container: $2" >&2; exit 1; }
+      [ "$(cat "$D/c/$n/state")" = running ] && { echo "cannot remove a running container" >&2; exit 1; }
+      rm -rf "$D/c/$n";;
   logs) echo logs;;
   *) echo "unsupported $*" >&2; exit 1;;
 esac
 "#;
 
-    fn fake_docker_handler(dir: &std::path::Path) -> BuilderContainerHandler {
-        use std::os::unix::fs::PermissionsExt;
-        let docker = dir.join("docker");
-        std::fs::write(&docker, FAKE_DOCKER).unwrap();
-        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::fs::create_dir_all(dir.join("dstate")).unwrap();
-        BuilderContainerHandler {
-            runtime: DockerRuntime {
-                command: docker.display().to_string(),
-            },
-            barrier: WorkerBarrier::new(crate::barrier::TOMBSTONE_TTL),
+    struct FakeDocker {
+        dir: tempfile::TempDir,
+    }
+
+    impl FakeDocker {
+        fn new() -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let docker = dir.path().join("docker");
+            std::fs::write(&docker, FAKE_DOCKER).unwrap();
+            std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::create_dir_all(dir.path().join("dstate/c")).unwrap();
+            Self { dir }
+        }
+        fn handler(&self, instance: &str) -> BuilderContainerHandler {
+            BuilderContainerHandler {
+                runtime: DockerRuntime {
+                    command: self.dir.path().join("docker").display().to_string(),
+                },
+                barrier: WorkerBarrier::new(crate::barrier::TOMBSTONE_TTL),
+                instance: instance.to_owned(),
+            }
+        }
+        fn dstate(&self) -> std::path::PathBuf {
+            self.dir.path().join("dstate")
+        }
+        fn flag(&self, name: &str, on: bool) {
+            let path = self.dstate().join(name);
+            if on {
+                std::fs::write(path, "").unwrap();
+            } else {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        /// `running`, `exited`, or `None` when the container is gone.
+        fn state(&self, name: &str) -> Option<String> {
+            std::fs::read_to_string(self.dstate().join("c").join(name).join("state"))
+                .ok()
+                .map(|s| s.trim().to_owned())
+        }
+        /// A container as a pre-ur-ezhdb launch left it: no labels.
+        fn legacy(&self, name: &str, worker_id: &str) {
+            let c = self.dstate().join("c").join(name);
+            std::fs::create_dir_all(&c).unwrap();
+            std::fs::write(c.join("state"), "running").unwrap();
+            std::fs::write(c.join("labels"), "").unwrap();
+            std::fs::write(c.join("env"), format!("UR_WORKER_ID={worker_id}\n")).unwrap();
+            std::fs::write(c.join("id"), format!("id-{name}")).unwrap();
         }
     }
 
-    async fn wait_for_file(path: &std::path::Path) {
+    fn launch_request(worker_id: &str) -> LaunchWorkerRequest {
+        LaunchWorkerRequest {
+            name: format!("ur-worker-{worker_id}"),
+            worker_id: worker_id.into(),
+            ..make_request(Vec::new())
+        }
+    }
+
+    fn stop(worker_id: &str) -> Request<StopWorkerRequest> {
+        Request::new(StopWorkerRequest {
+            worker_id: worker_id.into(),
+            legacy_container_id: String::new(),
+        })
+    }
+
+    async fn listed(handler: &BuilderContainerHandler) -> Vec<(String, bool)> {
+        let mut list: Vec<_> = handler
+            .list_worker_containers(Request::new(ListWorkerContainersRequest {}))
+            .await
+            .unwrap()
+            .into_inner()
+            .containers
+            .into_iter()
+            .map(|c| (c.worker_id, c.running))
+            .collect();
+        list.sort();
+        list
+    }
+
+    /// A StopWorker for a worker before its LaunchWorker arrives (the server
+    /// stopped it mid-launch) makes the launch refuse, before any docker
+    /// call; Ok from the stop means the worker will never run.
+    #[tokio::test]
+    async fn stop_before_launch_refuses_the_container_launch() {
+        let docker = FakeDocker::new();
+        let handler = docker.handler("inst-a");
+        handler.stop_worker(stop("w1")).await.unwrap();
+        let err = handler
+            .launch_worker(Request::new(launch_request("w1")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(err.message().contains("was stopped"), "{err}");
+        assert_eq!(docker.state("ur-worker-w1"), None, "docker run never ran");
+    }
+
+    /// Launch and Stop are keyed by worker id only: Launch requires one.
+    #[tokio::test]
+    async fn launch_and_stop_require_a_worker_id() {
+        let handler = FakeDocker::new().handler("inst-a");
+        let err = handler
+            .launch_worker(Request::new(launch_request("")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        let err = handler.stop_worker(stop("")).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    /// Launch labels the container with its worker id and this instance;
+    /// List reports only this instance's containers, by worker id; Stop
+    /// removes only the stopped worker's container.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn list_and_stop_find_containers_by_worker_id_label_in_this_instance() {
+        let docker = FakeDocker::new();
+        let (mine, other) = (docker.handler("inst-a"), docker.handler("inst-b"));
+        for id in ["w1", "w2"] {
+            mine.launch_worker(Request::new(launch_request(id)))
+                .await
+                .unwrap();
+        }
+        other
+            .launch_worker(Request::new(launch_request("w9")))
+            .await
+            .unwrap();
+        assert_eq!(
+            listed(&mine).await,
+            vec![("w1".into(), true), ("w2".into(), true)]
+        );
+
+        mine.stop_worker(stop("w1")).await.unwrap();
+        assert_eq!(docker.state("ur-worker-w1"), None);
+        assert_eq!(docker.state("ur-worker-w2").as_deref(), Some("running"));
+        mine.stop_worker(stop("w9")).await.unwrap();
+        assert_eq!(
+            docker.state("ur-worker-w9").as_deref(),
+            Some("running"),
+            "another instance's container is never stopped"
+        );
+        assert_eq!(listed(&mine).await, vec![("w2".into(), true)]);
+        assert_eq!(listed(&other).await, vec![("w9".into(), true)]);
+    }
+
+    /// Upgrade: a pre-label container is stopped only when its env names the
+    /// stopped worker (its process-id name was reused across launches).
+    #[tokio::test]
+    async fn legacy_container_is_stopped_only_when_its_env_names_the_worker() {
+        let docker = FakeDocker::new();
+        let handler = docker.handler("inst-a");
+        docker.legacy("ur-worker-proj-1", "proj-1-new1");
+        let legacy_stop = |worker_id: &str| {
+            Request::new(StopWorkerRequest {
+                worker_id: worker_id.into(),
+                legacy_container_id: "id-ur-worker-proj-1".into(),
+            })
+        };
+        handler
+            .stop_worker(legacy_stop("proj-1-old0"))
+            .await
+            .unwrap();
+        assert_eq!(docker.state("ur-worker-proj-1").as_deref(), Some("running"));
+        handler
+            .stop_worker(legacy_stop("proj-1-new1"))
+            .await
+            .unwrap();
+        assert_eq!(docker.state("ur-worker-proj-1"), None);
+        assert!(
+            listed(&handler).await.is_empty(),
+            "legacy containers are not listed"
+        );
+    }
+
+    async fn wait_for_container(docker: &FakeDocker, name: &str) {
         for _ in 0..200 {
-            if path.exists() {
+            if docker.state(name).is_some() {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -550,57 +690,45 @@ esac
     }
 
     /// ur-ezhdb #1: a launch fails after `docker run` and its cleanup fails
-    /// too (container left running), while a Stop from a stopper that read
-    /// the row before the container was recorded (`container_id` empty)
-    /// waits on the barrier. That Stop must target the launched container
-    /// (here: fail, since docker stop fails), never return Ok over it.
+    /// too (container left running), while a Stop of the worker waits on the
+    /// barrier. That Stop finds the leftover by its label: here it fails
+    /// (docker stop fails), never returning Ok over a running container.
     #[tokio::test(flavor = "multi_thread")]
     async fn stop_waiting_on_a_failed_launch_targets_its_leftover_container() {
-        let tmp = tempfile::tempdir().unwrap();
-        let handler = fake_docker_handler(tmp.path());
-        let dstate = tmp.path().join("dstate");
-        std::fs::write(dstate.join("HEALTH_FAIL"), "").unwrap();
+        let docker = FakeDocker::new();
+        let handler = docker.handler("inst-a");
+        std::fs::write(docker.dstate().join("HEALTH_DELAY"), "0.3").unwrap();
+        docker.flag("HEALTH_FAIL", true);
         let launcher = handler.clone();
         let launch = tokio::spawn(async move {
             launcher
-                .launch_worker(Request::new(make_request(Vec::new())))
+                .launch_worker(Request::new(launch_request("w1")))
                 .await
         });
-        let container = dstate.join("c-test-container");
-        wait_for_file(&container).await;
-        assert!(container.exists(), "docker run happened");
-        std::fs::write(dstate.join("STOP_FAIL"), "").unwrap();
+        wait_for_container(&docker, "ur-worker-w1").await;
+        assert!(
+            docker.state("ur-worker-w1").is_some(),
+            "docker run happened"
+        );
+        docker.flag("STOP_FAIL", true);
         let stopper = handler.clone();
-        let stop = tokio::spawn(async move {
-            stopper
-                .stop_worker(Request::new(StopWorkerRequest {
-                    container_id: String::new(),
-                    worker_id: "w1".into(),
-                }))
-                .await
-        });
+        let stop_task = tokio::spawn(async move { stopper.stop_worker(stop("w1")).await });
 
         let err = launch.await.unwrap().unwrap_err();
         assert!(err.message().contains("cleanup also failed"), "{err}");
-        let stop = stop.await.unwrap();
         assert!(
-            stop.is_err(),
+            stop_task.await.unwrap().is_err(),
             "Stop returned Ok while the launched container is running"
         );
-        assert_eq!(
-            std::fs::read_to_string(&container).unwrap().trim(),
-            "running"
-        );
+        assert_eq!(docker.state("ur-worker-w1").as_deref(), Some("running"));
 
-        std::fs::remove_file(dstate.join("STOP_FAIL")).unwrap();
-        handler
-            .stop_worker(Request::new(StopWorkerRequest {
-                container_id: String::new(),
-                worker_id: "w1".into(),
-            }))
-            .await
-            .unwrap();
-        assert!(!container.exists(), "the retried Stop removed it");
+        docker.flag("STOP_FAIL", false);
+        handler.stop_worker(stop("w1")).await.unwrap();
+        assert_eq!(
+            docker.state("ur-worker-w1"),
+            None,
+            "the retried Stop removed it"
+        );
     }
 
     #[test]
@@ -610,7 +738,7 @@ esac
             container_path: "/workspace".into(),
         }]);
 
-        let opts = request_to_run_opts(&req);
+        let opts = request_to_run_opts(&req, "inst-a");
 
         assert_eq!(opts.image.0, "ur-worker-claude:latest");
         assert_eq!(opts.name, "test-container");
@@ -634,7 +762,7 @@ esac
     fn request_to_run_opts_empty_workdir() {
         let mut req = make_request(vec![]);
         req.workdir = String::new();
-        let opts = request_to_run_opts(&req);
+        let opts = request_to_run_opts(&req, "inst-a");
         assert_eq!(opts.workdir, None);
     }
 
@@ -642,7 +770,7 @@ esac
     fn request_to_run_opts_empty_network() {
         let mut req = make_request(vec![]);
         req.network = String::new();
-        let opts = request_to_run_opts(&req);
+        let opts = request_to_run_opts(&req, "inst-a");
         assert_eq!(opts.network, None);
     }
 

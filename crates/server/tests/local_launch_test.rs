@@ -14,8 +14,8 @@ use ur_rpc::proto::builder_container::builder_container_service_server::{
 };
 use ur_rpc::proto::builder_container::{
     ExecContainerRequest, ExecContainerResponse, InspectNetworkRequest, InspectNetworkResponse,
-    InspectWorkerRequest, InspectWorkerResponse, LaunchWorkerRequest, LaunchWorkerResponse,
-    StopWorkerRequest, StopWorkerResponse,
+    LaunchWorkerRequest, LaunchWorkerResponse, ListWorkerContainersRequest,
+    ListWorkerContainersResponse, StopWorkerRequest, StopWorkerResponse, WorkerContainerStatus,
 };
 use ur_rpc::proto::builder_local_worker::builder_local_worker_service_server::{
     BuilderLocalWorkerService, BuilderLocalWorkerServiceServer,
@@ -63,16 +63,21 @@ struct FakeBuilderd {
     /// Held by LaunchLocalWorker while it runs; StopLocalWorker waits on it,
     /// like builderd's per-worker barrier.
     in_flight: Arc<tokio::sync::Mutex<()>>,
-    /// Every `BuilderContainerService` StopWorker; any other container RPC
-    /// is refused (local workers must never use the container service).
+    /// Every `BuilderContainerService` StopWorker (local workers must never
+    /// use the container service).
     container_stops: Arc<Mutex<Vec<StopWorkerRequest>>>,
-    /// LaunchWorker answer; refused (unimplemented) when unset.
-    container_launch: Arc<Mutex<Option<Result<String, Status>>>>,
-    /// Error for StopWorker calls that carry a worker id.
+    /// Every LaunchWorker request.
+    container_launches: Arc<Mutex<Vec<LaunchWorkerRequest>>>,
+    /// LaunchWorker error; when unset a launch succeeds and its worker id
+    /// joins `containers` (running).
+    container_launch_error: Arc<Mutex<Option<Status>>>,
+    /// StopWorker error; when unset a stop removes the worker id from
+    /// `containers`.
     container_stop_error: Arc<Mutex<Option<Status>>>,
-    /// InspectWorker answer: container id or name → Docker ID of a running
-    /// container; anything else is absent.
-    container_alive: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    /// The containers builderd runs: worker id → running (what
+    /// `ListWorkerContainers` reports).
+    containers: Arc<Mutex<std::collections::BTreeMap<String, bool>>>,
+    container_list_error: Arc<Mutex<Option<Status>>>,
     /// When set, the next Launch (either service) notifies `arrived` and
     /// waits for this before it reaches the "builderd": a request in flight
     /// across a builderd restart.
@@ -84,13 +89,17 @@ struct FakeBuilderd {
 impl BuilderContainerService for FakeBuilderd {
     async fn launch_worker(
         &self,
-        _: Request<LaunchWorkerRequest>,
+        request: Request<LaunchWorkerRequest>,
     ) -> Result<Response<LaunchWorkerResponse>, Status> {
         self.arrive().await;
-        match self.container_launch.lock().unwrap().clone() {
-            Some(Ok(container_id)) => Ok(Response::new(LaunchWorkerResponse { container_id })),
-            Some(Err(status)) => Err(status),
-            None => Err(Status::unimplemented("launch_worker")),
+        let req = request.into_inner();
+        self.container_launches.lock().unwrap().push(req.clone());
+        match self.container_launch_error.lock().unwrap().clone() {
+            Some(status) => Err(status),
+            None => {
+                self.containers.lock().unwrap().insert(req.worker_id, true);
+                Ok(Response::new(LaunchWorkerResponse {}))
+            }
         }
     }
     async fn stop_worker(
@@ -98,12 +107,34 @@ impl BuilderContainerService for FakeBuilderd {
         request: Request<StopWorkerRequest>,
     ) -> Result<Response<StopWorkerResponse>, Status> {
         let req = request.into_inner();
-        let barrier = !req.worker_id.is_empty();
+        let worker_id = req.worker_id.clone();
         self.container_stops.lock().unwrap().push(req);
         match self.container_stop_error.lock().unwrap().clone() {
-            Some(status) if barrier => Err(status),
-            _ => Ok(Response::new(StopWorkerResponse {})),
+            Some(status) => Err(status),
+            None => {
+                self.containers.lock().unwrap().remove(&worker_id);
+                Ok(Response::new(StopWorkerResponse {}))
+            }
         }
+    }
+    async fn list_worker_containers(
+        &self,
+        _: Request<ListWorkerContainersRequest>,
+    ) -> Result<Response<ListWorkerContainersResponse>, Status> {
+        if let Some(status) = self.container_list_error.lock().unwrap().clone() {
+            return Err(status);
+        }
+        let containers = self
+            .containers
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(worker_id, running)| WorkerContainerStatus {
+                worker_id: worker_id.clone(),
+                running: *running,
+            })
+            .collect();
+        Ok(Response::new(ListWorkerContainersResponse { containers }))
     }
     async fn exec_container(
         &self,
@@ -116,17 +147,6 @@ impl BuilderContainerService for FakeBuilderd {
         _: Request<InspectNetworkRequest>,
     ) -> Result<Response<InspectNetworkResponse>, Status> {
         Ok(Response::new(InspectNetworkResponse { exists: true }))
-    }
-    async fn inspect_worker(
-        &self,
-        request: Request<InspectWorkerRequest>,
-    ) -> Result<Response<InspectWorkerResponse>, Status> {
-        let alive = self.container_alive.lock().unwrap().clone();
-        let id = alive.get(&request.into_inner().container_id).cloned();
-        Ok(Response::new(InspectWorkerResponse {
-            running: id.is_some(),
-            container_id: id.unwrap_or_default(),
-        }))
     }
 }
 
@@ -1188,9 +1208,8 @@ async fn failed_container_launch_releases_its_slot_only_after_stop() {
         ..claim_row(&h, "proj-1-cfai")
     };
     assert!(h.worker_repo.claim_slot(&row, &slot).await.unwrap());
-    *h.fake.container_launch.lock().unwrap() = Some(Err(Status::failed_precondition(
-        "worker exited during startup",
-    )));
+    *h.fake.container_launch_error.lock().unwrap() =
+        Some(Status::failed_precondition("worker exited during startup"));
     *h.fake.container_stop_error.lock().unwrap() = Some(Status::internal("docker stop: busy"));
     let config = ur_server::WorkerConfig {
         image_id: "img".into(),
@@ -1234,26 +1253,316 @@ async fn failed_container_launch_releases_its_slot_only_after_stop() {
     );
 }
 
-fn container_row(
-    h: &Harness,
-    worker_id: &str,
-    status: &str,
-    container_id: &str,
-) -> workflow_db::model::Worker {
-    workflow_db::model::Worker {
-        runtime: ur_config::WorkerRuntime::Container,
-        container_status: status.into(),
-        container_id: container_id.into(),
-        ..claim_row(h, worker_id)
+const LOCAL: ur_config::WorkerRuntime = ur_config::WorkerRuntime::Local;
+const CONTAINER: ur_config::WorkerRuntime = ur_config::WorkerRuntime::Container;
+
+/// What a launch records as the row's `container_id`: the session name, or
+/// the container name derived from the worker id.
+fn recorded_name(rt: ur_config::WorkerRuntime, worker_id: &str) -> String {
+    match rt {
+        LOCAL => format!("ur-{worker_id}"),
+        CONTAINER => format!("{}{worker_id}", ur_config::DEFAULT_WORKER_PREFIX),
     }
 }
 
-fn container_config(h: &Harness, worker_id: &str) -> ur_server::WorkerConfig {
-    ur_server::WorkerConfig {
-        image_id: "img".into(),
-        runtime: ur_config::WorkerRuntime::Container,
-        ..pool_config(h, worker_id)
+/// An unslotted row of runtime `rt` in `status`, as a launch records it.
+async fn row_in(h: &Harness, rt: ur_config::WorkerRuntime, worker_id: &str, status: &str) {
+    let row = workflow_db::model::Worker {
+        runtime: rt,
+        container_status: status.into(),
+        container_id: recorded_name(rt, worker_id),
+        project_key: String::new(),
+        workspace_path: None,
+        ..claim_row(h, worker_id)
+    };
+    h.worker_repo.insert_worker(&row).await.unwrap();
+}
+
+/// What builderd lists for `rt`: `(worker_id, alive)`.
+fn lists(h: &Harness, rt: ur_config::WorkerRuntime, listed: &[(&str, bool)]) {
+    match rt {
+        LOCAL => set_listed(h, listed),
+        CONTAINER => {
+            *h.fake.containers.lock().unwrap() =
+                listed.iter().map(|(id, a)| (id.to_string(), *a)).collect();
+        }
     }
+}
+
+/// Worker ids of every builderd Stop for `rt`, in order.
+fn stops_of(h: &Harness, rt: ur_config::WorkerRuntime) -> Vec<String> {
+    match rt {
+        LOCAL => h.fake.stops.lock().unwrap().clone(),
+        CONTAINER => h
+            .fake
+            .container_stops
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.worker_id.clone())
+            .collect(),
+    }
+}
+
+fn stop_error(h: &Harness, rt: ur_config::WorkerRuntime, status: Option<Status>) {
+    match rt {
+        LOCAL => *h.fake.stop_error.lock().unwrap() = status,
+        CONTAINER => *h.fake.container_stop_error.lock().unwrap() = status,
+    }
+}
+
+fn list_error(h: &Harness, rt: ur_config::WorkerRuntime, status: Option<Status>) {
+    match rt {
+        LOCAL => *h.fake.list_error.lock().unwrap() = status,
+        CONTAINER => *h.fake.container_list_error.lock().unwrap() = status,
+    }
+}
+
+/// Reconciler table: `running` + listed alive → none (both runtimes).
+#[tokio::test]
+async fn table_running_and_listed_alive_is_left_alone() {
+    for rt in [LOCAL, CONTAINER] {
+        let h = harness().await;
+        row_in(&h, rt, "proj-1-live", "running").await;
+        lists(&h, rt, &[("proj-1-live", true)]);
+        reconciler(&h).reconcile_once().await.unwrap();
+        reconciler(&h).startup().await.unwrap();
+        assert_eq!(status_of(&h, "proj-1-live").await, "running", "{rt:?}");
+        assert!(stops_of(&h, rt).is_empty(), "{rt:?}");
+    }
+}
+
+/// Reconciler table: `running` + absent, or listed but not alive → stop
+/// path (row `stopped` once builderd's Stop is Ok).
+#[tokio::test]
+async fn table_running_but_absent_or_dead_takes_the_stop_path() {
+    for rt in [LOCAL, CONTAINER] {
+        let h = harness().await;
+        row_in(&h, rt, "proj-1-gone", "running").await;
+        row_in(&h, rt, "proj-1-dead", "running").await;
+        lists(&h, rt, &[("proj-1-dead", false)]);
+        reconciler(&h).reconcile_once().await.unwrap();
+        assert_eq!(status_of(&h, "proj-1-gone").await, "stopped", "{rt:?}");
+        assert_eq!(status_of(&h, "proj-1-dead").await, "stopped", "{rt:?}");
+        let mut stops = stops_of(&h, rt);
+        stops.sort();
+        assert_eq!(stops, vec!["proj-1-dead", "proj-1-gone"], "{rt:?}");
+    }
+}
+
+/// Reconciler table: `stopping` → Stop(worker_id) every pass until Ok; the
+/// slot stays linked until then.
+#[tokio::test]
+async fn table_stopping_rows_are_retried_until_stop_is_ok() {
+    for rt in [LOCAL, CONTAINER] {
+        let h = harness().await;
+        let slot = pool_slot(&h).await;
+        let row = workflow_db::model::Worker {
+            runtime: rt,
+            container_id: recorded_name(rt, "proj-1-stck"),
+            ..claim_row(&h, "proj-1-stck")
+        };
+        assert!(h.worker_repo.claim_slot(&row, &slot).await.unwrap());
+        h.worker_repo.begin_stopping("proj-1-stck").await.unwrap();
+        lists(&h, rt, &[("proj-1-stck", true)]);
+        stop_error(&h, rt, Some(Status::internal("stop: busy")));
+
+        reconciler(&h).reconcile_once().await.unwrap();
+        assert_eq!(status_of(&h, "proj-1-stck").await, "stopping", "{rt:?}");
+        assert_eq!(slot_owner(&h, "proj-1-stck").await, Some(slot.clone()));
+
+        stop_error(&h, rt, None);
+        reconciler(&h).reconcile_once().await.unwrap();
+        assert_eq!(status_of(&h, "proj-1-stck").await, "stopped", "{rt:?}");
+        assert_eq!(slot_owner(&h, "proj-1-stck").await, None, "{rt:?}");
+        assert_eq!(
+            stops_of(&h, rt),
+            vec!["proj-1-stck", "proj-1-stck"],
+            "{rt:?}"
+        );
+    }
+}
+
+/// Reconciler table: `provisioning` → periodic passes leave it (and the
+/// worker builderd already runs for it) alone; startup → `stopping`, then
+/// stopped by the pass that follows.
+#[tokio::test]
+async fn table_provisioning_rows_wait_periodically_and_stop_at_startup() {
+    for rt in [LOCAL, CONTAINER] {
+        let h = harness().await;
+        row_in(&h, rt, "proj-1-prov", "provisioning").await;
+        lists(&h, rt, &[("proj-1-prov", true)]);
+        reconciler(&h).reconcile_once().await.unwrap();
+        assert_eq!(status_of(&h, "proj-1-prov").await, "provisioning", "{rt:?}");
+        assert!(stops_of(&h, rt).is_empty(), "{rt:?}");
+
+        reconciler(&h).startup().await.unwrap();
+        assert_eq!(status_of(&h, "proj-1-prov").await, "stopped", "{rt:?}");
+        assert_eq!(stops_of(&h, rt), vec!["proj-1-prov"], "{rt:?}");
+    }
+}
+
+/// Reconciler table: a listed worker with no active row (none, or
+/// `stopped`) → builderd Stop(worker_id), periodically and at startup; its
+/// row (if any) is not changed.
+#[tokio::test]
+async fn table_listed_without_an_active_row_is_stopped() {
+    for rt in [LOCAL, CONTAINER] {
+        let h = harness().await;
+        row_in(&h, rt, "proj-1-done", "stopped").await;
+        lists(&h, rt, &[("proj-1-done", true), ("proj-2-none", true)]);
+        reconciler(&h).reconcile_once().await.unwrap();
+        let mut stops = stops_of(&h, rt);
+        stops.sort();
+        assert_eq!(stops, vec!["proj-1-done", "proj-2-none"], "{rt:?}");
+        assert_eq!(status_of(&h, "proj-1-done").await, "stopped", "{rt:?}");
+
+        lists(&h, rt, &[("proj-3-strt", false)]);
+        reconciler(&h).startup().await.unwrap();
+        assert_eq!(stops_of(&h, rt).last().unwrap(), "proj-3-strt", "{rt:?}");
+    }
+}
+
+/// Reconciler table: a failed list changes nothing for that runtime this
+/// pass (the pass reports it), while the other runtime still converges.
+#[tokio::test]
+async fn table_list_failure_changes_nothing_for_that_runtime() {
+    for (rt, other) in [(LOCAL, CONTAINER), (CONTAINER, LOCAL)] {
+        let h = harness().await;
+        row_in(&h, rt, "proj-1-gone", "running").await;
+        row_in(&h, rt, "proj-1-stop", "stopping").await;
+        row_in(&h, other, "proj-2-gone", "running").await;
+        lists(&h, rt, &[("proj-9-xtra", true)]);
+        list_error(&h, rt, Some(Status::unavailable("builderd restarting")));
+
+        let err = reconciler(&h).reconcile_once().await.unwrap_err();
+        assert!(err.contains("builderd restarting"), "{err}");
+        assert_eq!(status_of(&h, "proj-1-gone").await, "running", "{rt:?}");
+        assert_eq!(status_of(&h, "proj-1-stop").await, "stopping", "{rt:?}");
+        assert!(stops_of(&h, rt).is_empty(), "{rt:?}");
+        assert_eq!(status_of(&h, "proj-2-gone").await, "stopped", "{other:?}");
+    }
+}
+
+/// P1: a relaunch of the same process while the previous worker's row is
+/// still `stopping` (its Stop failed). The new container is named by its
+/// own worker id, and retrying the old row's stop names only the old
+/// worker, so the new worker's container is never stopped.
+#[tokio::test]
+async fn retrying_an_old_stop_never_stops_the_relaunched_workers_container() {
+    let h = harness().await;
+    row_in(&h, CONTAINER, "local-1-old0", "stopping").await;
+    lists(&h, CONTAINER, &[("local-1-old0", true)]);
+    let config = ur_server::WorkerConfig {
+        image_id: "img".into(),
+        runtime: CONTAINER,
+        ..local_config(&h, "local-1-new1")
+    };
+    let (recorded, _) = h.worker_manager.run_and_record(config).await.unwrap();
+
+    let launches = h.fake.container_launches.lock().unwrap().clone();
+    assert_eq!(launches[0].name, recorded_name(CONTAINER, "local-1-new1"));
+    assert_eq!(launches[0].worker_id, "local-1-new1");
+    assert_eq!(recorded, recorded_name(CONTAINER, "local-1-new1"));
+    let row = h
+        .worker_repo
+        .get_worker("local-1-new1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.container_id, recorded,
+        "the row records the worker-id name"
+    );
+
+    reconciler(&h).reconcile_once().await.unwrap();
+    let stops = h.fake.container_stops.lock().unwrap().clone();
+    assert_eq!(stops.len(), 1, "{stops:?}");
+    assert_eq!(stops[0].worker_id, "local-1-old0");
+    assert_eq!(
+        stops[0].legacy_container_id, "",
+        "a labeled container needs no legacy id"
+    );
+    assert_eq!(status_of(&h, "local-1-new1").await, "running");
+    assert_eq!(
+        h.fake.containers.lock().unwrap().get("local-1-new1"),
+        Some(&true)
+    );
+}
+
+/// M6: after migration 005, a pre-ur-ezhdb `running` winner (its row holds a
+/// Docker ID: its container is unlabeled, so never listed) and a `stopping`
+/// loser of the same process. Reconciling must stop only the loser (whose
+/// legacy name builderd checks against its env) and leave the winner alone.
+#[tokio::test]
+async fn legacy_running_winner_is_not_stopped_by_reconcile() {
+    let h = harness().await;
+    let winner = workflow_db::model::Worker {
+        runtime: CONTAINER,
+        container_status: "running".into(),
+        container_id: "0123abcd0123abcd".into(),
+        ..claim_row(&h, "local-1-wwww")
+    };
+    h.worker_repo.insert_worker(&winner).await.unwrap();
+    let loser = workflow_db::model::Worker {
+        runtime: CONTAINER,
+        container_status: "stopping".into(),
+        container_id: format!("{}local-1", ur_config::DEFAULT_WORKER_PREFIX),
+        ..claim_row(&h, "local-1-pppp")
+    };
+    h.worker_repo.insert_worker(&loser).await.unwrap();
+
+    reconciler(&h).startup().await.unwrap();
+    let stops = h.fake.container_stops.lock().unwrap().clone();
+    assert_eq!(stops.len(), 1, "{stops:?}");
+    assert_eq!(stops[0].worker_id, "local-1-pppp");
+    assert_eq!(stops[0].legacy_container_id, loser.container_id);
+    assert_eq!(status_of(&h, "local-1-wwww").await, "running");
+    assert_eq!(status_of(&h, "local-1-pppp").await, "stopped");
+
+    // The winner's own stop names its Docker ID for builderd to check.
+    h.worker_manager
+        .stop_by_worker_id(&ur_server::WorkerId("local-1-wwww".into()))
+        .await
+        .unwrap();
+    let last = h
+        .fake
+        .container_stops
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(last.legacy_container_id, "0123abcd0123abcd");
+}
+
+/// P3b-4b: builderd's list fails at startup, then stale-row cleanup deletes
+/// the `stopped` row of a worker whose labeled container is still running.
+/// The container stays findable by its label: the next pass stops it.
+#[tokio::test]
+async fn stale_cleanup_never_hides_a_labeled_container() {
+    let h = harness().await;
+    row_in(&h, CONTAINER, "proj-1-stry", "stopped").await;
+    lists(&h, CONTAINER, &[("proj-1-stry", true)]);
+    list_error(&h, CONTAINER, Some(Status::unavailable("builderd down")));
+    reconciler(&h).startup().await.unwrap();
+    assert!(stops_of(&h, CONTAINER).is_empty());
+
+    sqlx_set_old(&h, "proj-1-stry").await;
+    let deleted = h.worker_repo.cleanup_stale_workers(7).await.unwrap();
+    assert_eq!(deleted, vec!["proj-1-stry"]);
+
+    list_error(&h, CONTAINER, None);
+    reconciler(&h).reconcile_once().await.unwrap();
+    assert_eq!(stops_of(&h, CONTAINER), vec!["proj-1-stry"]);
+    assert!(h.fake.containers.lock().unwrap().is_empty());
+}
+
+async fn sqlx_set_old(h: &Harness, worker_id: &str) {
+    let mut row = h.worker_repo.get_worker(worker_id).await.unwrap().unwrap();
+    row.updated_at = "2020-01-01T00:00:00Z".into();
+    h.worker_repo.delete_worker(worker_id).await.unwrap();
+    h.worker_repo.insert_worker(&row).await.unwrap();
 }
 
 /// Hold the next Launch before it reaches the fake builderd, start
@@ -1275,164 +1584,64 @@ async fn launch_held_in_flight(
     (launch, gate)
 }
 
-/// ur-ezhdb #2 (local): builderd restarts between a stopper's Stop (Ok from
-/// the old process, where nothing was in flight) and the arrival of the
-/// worker's Launch at the new process, which runs it. The launch's finalize
-/// finds the row stopped, so the launch itself must stop what it started.
-#[tokio::test(flavor = "multi_thread")]
-async fn launch_reaching_a_restarted_builderd_after_its_stop_stops_itself_local() {
-    let h = harness().await;
-    let slot = pool_slot(&h).await;
-    claim(&h, "local-1-rest", &slot).await;
-    let (launch, gate) = launch_held_in_flight(&h, pool_config(&h, "local-1-rest")).await;
-    h.worker_manager
-        .stop_by_worker_id(&ur_server::WorkerId("local-1-rest".into()))
-        .await
-        .unwrap();
-    assert_eq!(status_of(&h, "local-1-rest").await, "stopped");
-    gate.notify_one();
-
-    let err = launch.await.unwrap().unwrap_err();
-    assert!(err.contains("was stopped during launch"), "{err}");
-    assert_eq!(h.fake.launches.lock().unwrap().len(), 1, "the launch ran");
-    assert_eq!(
-        *h.fake.stops.lock().unwrap(),
-        vec!["local-1-rest", "local-1-rest"],
-        "the stopper's Stop, then the launch's own"
-    );
-
-    // A failing launch-side Stop is reported, not swallowed.
-    claim(&h, "local-1-rst2", &slot).await;
-    let (launch, gate) = launch_held_in_flight(&h, pool_config(&h, "local-1-rst2")).await;
-    h.worker_manager
-        .stop_by_worker_id(&ur_server::WorkerId("local-1-rst2".into()))
-        .await
-        .unwrap();
-    *h.fake.stop_error.lock().unwrap() = Some(Status::internal("kill tmux session: no"));
-    gate.notify_one();
-    let err = launch.await.unwrap().unwrap_err();
-    assert!(
-        err.contains("was stopped during launch") && err.contains("kill tmux session: no"),
-        "{err}"
-    );
+fn runtime_config(
+    h: &Harness,
+    rt: ur_config::WorkerRuntime,
+    worker_id: &str,
+) -> ur_server::WorkerConfig {
+    ur_server::WorkerConfig {
+        image_id: "img".into(),
+        runtime: rt,
+        ..pool_config(h, worker_id)
+    }
 }
 
-/// ur-ezhdb #2 (container): as above; the launch stops the container ID
-/// builderd returned, through the Stop barrier for its worker id.
+/// P2 (both runtimes): a builderd restart between a stopper's Stop (Ok from
+/// the old process, where nothing was in flight) and the Launch reaching
+/// the new process, which runs it. The launch's finalize changes no row, so
+/// it Stops the worker itself. If that Stop fails too, the worker is left
+/// running with no active row, and the next pass's List sweep stops it.
 #[tokio::test(flavor = "multi_thread")]
-async fn launch_reaching_a_restarted_builderd_after_its_stop_stops_itself_container() {
+async fn launch_reaching_a_restarted_builderd_after_its_stop_converges() {
+    for rt in [LOCAL, CONTAINER] {
+        for launch_stop_fails in [false, true] {
+            lost_launch_converges(rt, launch_stop_fails).await;
+        }
+    }
+}
+
+async fn lost_launch_converges(rt: ur_config::WorkerRuntime, launch_stop_fails: bool) {
     let h = harness().await;
     let slot = pool_slot(&h).await;
-    let row = container_row(&h, "proj-1-rest", "provisioning", "");
+    let row = workflow_db::model::Worker {
+        runtime: rt,
+        ..claim_row(&h, "proj-1-rest")
+    };
     assert!(h.worker_repo.claim_slot(&row, &slot).await.unwrap());
-    *h.fake.container_launch.lock().unwrap() = Some(Ok("cid-launched".into()));
-    let (launch, gate) = launch_held_in_flight(&h, container_config(&h, "proj-1-rest")).await;
+    let (launch, gate) = launch_held_in_flight(&h, runtime_config(&h, rt, "proj-1-rest")).await;
     h.worker_manager
         .stop_by_worker_id(&ur_server::WorkerId("proj-1-rest".into()))
         .await
         .unwrap();
     assert_eq!(status_of(&h, "proj-1-rest").await, "stopped");
+    if launch_stop_fails {
+        stop_error(&h, rt, Some(Status::internal("stop: busy")));
+    }
+    // The "restarted builderd" runs the launch.
+    lists(&h, rt, &[("proj-1-rest", true)]);
     gate.notify_one();
 
     let err = launch.await.unwrap().unwrap_err();
-    assert!(err.contains("was stopped during launch"), "{err}");
-    let stops = h.fake.container_stops.lock().unwrap().clone();
-    let last = stops.last().unwrap();
+    assert!(err.contains("was stopped during launch"), "{rt:?}: {err}");
     assert_eq!(
-        (last.container_id.as_str(), last.worker_id.as_str()),
-        ("cid-launched", "proj-1-rest"),
-        "the launch stopped its container: {stops:?}"
+        stops_of(&h, rt),
+        vec!["proj-1-rest", "proj-1-rest"],
+        "{rt:?}: the stopper's Stop, then the launch's own"
     );
-}
-
-/// ur-ezhdb #4: the periodic pass retries container rows left `stopping`
-/// (here by a failed Stop) until builderd's Stop is Ok, and never touches a
-/// container `provisioning` row.
-#[tokio::test]
-async fn reconcile_retries_container_stops_and_leaves_container_launches_alone() {
-    let h = harness().await;
-    let slot = pool_slot(&h).await;
-    let stuck = container_row(&h, "proj-1-stck", "provisioning", "cid-stuck");
-    assert!(h.worker_repo.claim_slot(&stuck, &slot).await.unwrap());
-    h.worker_repo.begin_stopping("proj-1-stck").await.unwrap();
-    let launching = container_row(&h, "proj-2-prov", "provisioning", "ur-worker-proj-2");
-    h.worker_repo.insert_worker(&launching).await.unwrap();
-    *h.fake.container_stop_error.lock().unwrap() = Some(Status::internal("docker stop: busy"));
-
-    reconciler(&h).reconcile_once().await.unwrap();
-    assert_eq!(status_of(&h, "proj-1-stck").await, "stopping");
-    assert_eq!(slot_owner(&h, "proj-1-stck").await, Some(slot.clone()));
-
-    *h.fake.container_stop_error.lock().unwrap() = None;
-    reconciler(&h).reconcile_once().await.unwrap();
-    assert_eq!(status_of(&h, "proj-1-stck").await, "stopped");
-    assert_eq!(slot_owner(&h, "proj-1-stck").await, None);
-    let stops = h.fake.container_stops.lock().unwrap().clone();
-    assert_eq!(
-        stops
-            .iter()
-            .filter(|s| s.worker_id == "proj-1-stck")
-            .count(),
-        2,
-        "{stops:?}"
-    );
-    assert!(
-        stops.iter().all(|s| s.worker_id != "proj-2-prov"),
-        "{stops:?}"
-    );
-    assert_eq!(status_of(&h, "proj-2-prov").await, "provisioning");
-}
-
-/// ur-ezhdb #3 / ur-rkufm: at server startup a `stopped` container row whose
-/// container is alive gets that container stopped through builderd's Stop
-/// for its worker id; the row stays `stopped` and no slot changes hands.
-/// A container a live row owns now (the name passed to the slot's next
-/// worker) is left alone. A failed stray stop fails startup.
-#[tokio::test]
-async fn startup_stops_live_containers_of_stopped_rows_without_reviving_them() {
-    let h = harness().await;
-    let slot = pool_slot(&h).await;
-    let rows = [
-        container_row(&h, "proj-1-stry", "stopped", "cid-stray"),
-        container_row(&h, "proj-2-oldn", "stopped", "ur-worker-proj-2"),
-        container_row(&h, "proj-2-newr", "running", "cid-new"),
-    ];
-    for row in &rows {
-        h.worker_repo.insert_worker(row).await.unwrap();
+    if launch_stop_fails {
+        assert!(err.contains("stop: busy"), "{err}");
+        stop_error(&h, rt, None);
+        reconciler(&h).reconcile_once().await.unwrap();
+        assert_eq!(stops_of(&h, rt).len(), 3, "{rt:?}: the sweep stopped it");
     }
-    h.worker_repo
-        .link_worker_slot("proj-2-newr", &slot)
-        .await
-        .unwrap();
-    *h.fake.container_alive.lock().unwrap() = [
-        ("cid-stray", "cid-stray"),
-        ("ur-worker-proj-2", "cid-new"),
-        ("cid-new", "cid-new"),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_owned(), v.to_owned()))
-    .collect();
-
-    reconciler(&h).startup().await.unwrap();
-    assert_eq!(status_of(&h, "proj-1-stry").await, "stopped");
-    assert_eq!(status_of(&h, "proj-2-oldn").await, "stopped");
-    assert_eq!(status_of(&h, "proj-2-newr").await, "running");
-    assert_eq!(slot_owner(&h, "proj-2-newr").await, Some(slot));
-    assert_eq!(slot_owner(&h, "proj-1-stry").await, None);
-    let stops: Vec<_> = h
-        .fake
-        .container_stops
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|s| (s.container_id.clone(), s.worker_id.clone()))
-        .collect();
-    assert_eq!(
-        stops,
-        vec![("cid-stray".to_owned(), "proj-1-stry".to_owned())]
-    );
-
-    *h.fake.container_stop_error.lock().unwrap() = Some(Status::internal("docker stop: busy"));
-    let err = reconciler(&h).startup().await.unwrap_err();
-    assert!(err.contains("proj-1-stry") && err.contains("busy"), "{err}");
 }

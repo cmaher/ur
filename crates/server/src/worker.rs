@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use chrono::Utc;
 use rand::Rng;
 use serde::Deserialize;
-use tracing::{info, warn};
+use tracing::info;
 use uuid::Uuid;
 
 use ur_config::{GlobalSkillsConfig, NetworkConfig};
@@ -12,10 +12,7 @@ use workflow_db::WorkerRepo;
 
 use crate::network_manager::NetworkManager;
 
-use tonic::Code;
-use ur_rpc::proto::builder_container::{
-    InspectWorkerRequest, LaunchWorkerRequest, StopWorkerRequest,
-};
+use ur_rpc::proto::builder_container::{LaunchWorkerRequest, StopWorkerRequest};
 
 use crate::builder_container_client::BuilderContainerClient;
 use crate::builder_local_worker_client::BuilderLocalWorkerClient;
@@ -977,24 +974,12 @@ impl WorkerManager {
         // Generate worker secret for worker auth
         let worker_secret = Uuid::new_v4().to_string();
 
-        let container_name = format!("{}{}", self.network_config.worker_prefix, config.process_id);
-
-        // Remove any stopped/orphaned container with this name before launching.
-        // A crash can leave a container in Docker that isn't tracked in the DB,
-        // which would cause docker run to fail with a name conflict.
-        tolerate_missing(
-            self.builder_container_client
-                .stop_worker(StopWorkerRequest {
-                    container_id: container_name.clone(),
-                    worker_id: String::new(),
-                })
-                .await,
-            &container_name,
-            "pre-launch cleanup",
-        )?;
-
+        // Named by worker id (unique per launch); builderd also labels it
+        // with the worker id, which is how Stop and List find it.
+        let container_name = self
+            .network_config
+            .worker_container_name(&config.worker_id.0);
         let mut opts = self.build_launch_request(&config, &worker_secret, &container_name)?;
-        // builderd orders this launch against StopWorker of the same worker.
         opts.worker_id = config.worker_id.0.clone();
 
         // Workerd authenticates with the server during initialization, before
@@ -1005,27 +990,18 @@ impl WorkerManager {
 
         // Launch the container via builderd on the host, which stats each volume
         // source against the host filesystem before calling docker run.
-        let launch_resp = match self.builder_container_client.launch_worker(opts).await {
-            Ok(response) => response,
-            Err(status) => {
-                let error = format!("launch_worker gRPC error: {status}");
-                return Err(self.abandon_launch(&config.worker_id, error).await);
-            }
-        };
-        let container_id = launch_resp.container_id;
-
+        if let Err(status) = self.builder_container_client.launch_worker(opts).await {
+            let error = format!("launch_worker gRPC error: {status}");
+            return Err(self.abandon_launch(&config.worker_id, error).await);
+        }
         info!(
             process_id = config.process_id,
             worker_id = %config.worker_id,
-            container_id,
+            container_name,
             "process launched"
         );
-
-        match self.finalize_worker_launch(&config, &container_id).await {
-            Ok(true) => Ok((container_id, worker_secret)),
-            Ok(false) => Err(self.stop_lost_launch(&config, &container_id).await),
-            Err(error) => Err(self.abandon_launch(&config.worker_id, error).await),
-        }
+        self.finish_launch(&config, container_name, worker_secret)
+            .await
     }
 
     /// Resolve all host paths and configuration needed by builderd to launch
@@ -1150,18 +1126,36 @@ impl WorkerManager {
         }
     }
 
-    /// `provisioning → running` with Docker's immutable container ID (or the
-    /// session name). `Ok(false)`: the worker was stopped mid-launch; the
-    /// caller stops what it launched ([`Self::stop_lost_launch`]).
-    pub(crate) async fn finalize_worker_launch(
+    /// Finalize (`provisioning → running`, CAS) after builderd's Launch was
+    /// Ok. If finalize changes no row (the worker was stopped mid-launch) or
+    /// fails, the worker is stopped like any failed launch
+    /// ([`Self::abandon_launch`]). Returns `(recorded, worker_secret)`;
+    /// `recorded` is the container or session name.
+    pub(crate) async fn finish_launch(
         &self,
         config: &WorkerConfig,
-        container_id: &str,
-    ) -> Result<bool, String> {
-        self.worker_repo
-            .finalize_worker_launch(&config.worker_id.0, container_id)
+        recorded: String,
+        worker_secret: String,
+    ) -> Result<(String, String), String> {
+        let finalized = self
+            .worker_repo
+            .finalize_worker_launch(&config.worker_id.0, &recorded)
             .await
-            .map_err(|e| format!("failed to finalize worker launch: {e}"))
+            .map_err(|e| format!("failed to finalize worker launch: {e}"));
+        match finalized {
+            Ok(true) => Ok((recorded, worker_secret)),
+            Ok(false) => Err(self
+                .abandon_launch(&config.worker_id, stopped_during_launch(&config.worker_id))
+                .await),
+            Err(error) => Err(self.abandon_launch(&config.worker_id, error).await),
+        }
+    }
+
+    /// Whether `worker` runs a container launched before containers were
+    /// labeled by worker id ([`legacy_container_id`]); such a container is
+    /// never listed by builderd.
+    pub fn is_legacy_container(&self, worker: &workflow_db::model::Worker) -> bool {
+        legacy_container_id(&self.network_config.worker_prefix, worker).is_some()
     }
 
     /// Clean up after a failed launch: stop it like any other worker, since
@@ -1172,37 +1166,6 @@ impl WorkerManager {
         match self.stop_by_worker_id(worker_id).await {
             Ok(()) => error,
             Err(e) => format!("{error}; failed to clean up, left stopping: {e}"),
-        }
-    }
-
-    /// Finalize found the row stopped mid-launch. Its stopper's builderd
-    /// Stop covers this launch only if both reached the same builderd
-    /// process: across a builderd restart the launch ran anyway. So stop
-    /// `launched` (the container ID or session this launch started) here.
-    /// A failed Stop leaves a `stopping` row `stopping` for the reconcile
-    /// loop. Returns the launch error.
-    pub(crate) async fn stop_lost_launch(&self, config: &WorkerConfig, launched: &str) -> String {
-        let error = stopped_during_launch(&config.worker_id);
-        let stopped = match config.runtime {
-            ur_config::WorkerRuntime::Container => tolerate_missing(
-                self.builder_container_client
-                    .stop_worker(StopWorkerRequest {
-                        container_id: launched.to_owned(),
-                        worker_id: config.worker_id.0.clone(),
-                    })
-                    .await,
-                launched,
-                "stop_worker",
-            ),
-            ur_config::WorkerRuntime::Local => self.stop_local_worker(&config.worker_id).await,
-        };
-        let finished = match stopped {
-            Ok(()) => self.worker_repo.finish_stop(&config.worker_id.0).await,
-            Err(e) => return format!("{error}; failed to stop what it launched: {e}"),
-        };
-        match finished {
-            Ok(_) => error,
-            Err(e) => format!("{error}; failed to mark worker stopped: {e}"),
         }
     }
 
@@ -1244,16 +1207,20 @@ impl WorkerManager {
             .await
             .map_err(|e| format!("failed to update worker status: {e}"))?;
         match worker.runtime {
-            ur_config::WorkerRuntime::Container => tolerate_missing(
-                self.builder_container_client
-                    .stop_worker(StopWorkerRequest {
-                        container_id: worker.container_id.clone(),
-                        worker_id: worker_id.0.clone(),
-                    })
-                    .await,
-                &worker.container_id,
-                "stop_worker",
-            )?,
+            ur_config::WorkerRuntime::Container => self
+                .builder_container_client
+                .stop_worker(StopWorkerRequest {
+                    worker_id: worker_id.0.clone(),
+                    legacy_container_id: legacy_container_id(
+                        &self.network_config.worker_prefix,
+                        &worker,
+                    )
+                    .unwrap_or_default()
+                    .to_owned(),
+                })
+                .await
+                .map(|_| ())
+                .map_err(|status| format!("stop_worker gRPC error: {status}"))?,
             ur_config::WorkerRuntime::Local => self.stop_local_worker(worker_id).await?,
         }
         self.worker_repo
@@ -1327,79 +1294,7 @@ impl WorkerManager {
             let worker_id = WorkerId::parse(&worker.worker_id)?;
             return self.stop_by_worker_id(&worker_id).await;
         }
-
-        self.stop_unrecorded_by_name(process_id).await
-    }
-
-    /// Stop the container occupying a slot's container name when no running
-    /// worker row claims it.
-    ///
-    /// The container name is derived from the process_id, which names a slot —
-    /// so the name outlives any single worker and is re-used by the next one.
-    /// Killing it blind would take down whichever worker holds the slot now,
-    /// which is why the container is resolved to an ID first: if a worker row
-    /// owns it, that row has merely drifted out of `running` and gets a proper
-    /// graceful stop (releasing its slot). Only a container no row claims is
-    /// treated as an orphan and removed by name.
-    async fn stop_unrecorded_by_name(&self, process_id: &str) -> Result<(), String> {
-        let container_name = format!("{}{}", self.network_config.worker_prefix, process_id);
-        warn!(
-            process_id,
-            container_name, "no running worker row for process; resolving container by name"
-        );
-
-        let state = self
-            .builder_container_client
-            .inspect_worker(InspectWorkerRequest {
-                container_id: container_name.clone(),
-            })
-            .await
-            .map_err(|status| {
-                format!("cannot determine what occupies container {container_name}: {status}")
-            })?;
-
-        if state.container_id.is_empty() {
-            return Err(format!("unknown worker: {process_id}"));
-        }
-
-        let owner = self
-            .worker_repo
-            .get_worker_by_container_id(&state.container_id)
-            .await
-            .map_err(|e| format!("db error: {e}"))?;
-
-        if let Some(owner) = owner {
-            warn!(
-                process_id,
-                container_name,
-                worker_id = %owner.worker_id,
-                container_status = %owner.container_status,
-                "container belongs to a worker whose row drifted; stopping it by worker id"
-            );
-            let worker_id = WorkerId::parse(&owner.worker_id)?;
-            return self.stop_by_worker_id(&worker_id).await;
-        }
-
-        warn!(
-            process_id,
-            container_name,
-            container_id = %state.container_id,
-            "no worker row owns container; removing as an orphan"
-        );
-        match self
-            .builder_container_client
-            .stop_worker(StopWorkerRequest {
-                container_id: state.container_id,
-                worker_id: String::new(),
-            })
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(status) if status.code() == Code::NotFound => {
-                Err(format!("unknown worker: {process_id}"))
-            }
-            Err(status) => Err(status.to_string()),
-        }
+        Err(format!("unknown worker: {process_id}"))
     }
 }
 
@@ -1407,25 +1302,21 @@ fn stopped_during_launch(worker_id: &WorkerId) -> String {
     format!("worker {worker_id} was stopped during launch")
 }
 
-/// Swallow `NotFound` responses from a builderd `stop_worker` call, logging a
-/// warning instead. All other errors bubble up as-is.
-///
-/// "Is missing acceptable here?" is server-side policy — builderd returns
-/// `Code::NotFound` for any already-absent container, and the caller decides
-/// whether to treat that as benign.
-fn tolerate_missing(
-    res: Result<impl Sized, tonic::Status>,
-    container_id: &str,
-    op: &str,
-) -> Result<(), String> {
-    match res {
-        Ok(_) => Ok(()),
-        Err(status) if status.code() == Code::NotFound => {
-            warn!(%container_id, op, "container already gone, skipping");
-            Ok(())
-        }
-        Err(status) => Err(status.to_string()),
-    }
+/// The Docker ID (or name) of a container launched before containers were
+/// labeled by worker id (ur-ezhdb), or `None`. Such a row recorded something
+/// other than its worker-id name; builderd's Stop then also stops that
+/// container, but only after checking its env names this worker. Upgrade
+/// only: such containers are not listed, and the reconciler leaves their
+/// `running` rows alone.
+pub fn legacy_container_id<'a>(
+    worker_prefix: &str,
+    worker: &'a workflow_db::model::Worker,
+) -> Option<&'a str> {
+    let named = format!("{worker_prefix}{}", worker.worker_id);
+    let legacy = worker.runtime == ur_config::WorkerRuntime::Container
+        && !worker.container_id.is_empty()
+        && worker.container_id != named;
+    legacy.then_some(worker.container_id.as_str())
 }
 
 /// Build the environment variables for a worker container launch.
@@ -1854,24 +1745,17 @@ mod tests {
         assert!(result.unwrap_err().contains("process already running"));
     }
 
-    /// With no worker row and no reachable container runtime, a stop must fail
-    /// loudly about the unanswerable probe. It must not fall through to
-    /// removing the slot's container by name: that name is shared by every
-    /// worker that has used the slot, so a blind kill takes down whichever
-    /// worker holds it now.
+    /// A stop by process id with no running row is an unknown worker: it
+    /// never falls back to a container name (or any builderd call); a
+    /// container no row wants is the reconciler's List sweep's.
     #[tokio::test]
-    async fn stop_unknown_process_errors_when_runtime_unreachable() {
+    async fn stop_unknown_process_is_an_unknown_worker() {
         let (mut mgr, _workspace, _test_db) = test_manager().await;
         let unreachable =
             tonic::transport::Channel::from_static("http://127.0.0.1:0").connect_lazy();
         mgr.builder_container_client = BuilderContainerClient::new(unreachable);
-        let result = mgr.stop("nonexistent").await;
-        let err = result.unwrap_err();
-        assert!(
-            err.contains("cannot determine what occupies container"),
-            "expected an unresolved-container error, got: {err}"
-        );
-        assert!(err.contains("ur-worker-nonexistent"), "got: {err}");
+        let err = mgr.stop("nonexistent").await.unwrap_err();
+        assert_eq!(err, "unknown worker: nonexistent");
     }
 
     #[test]
@@ -3332,30 +3216,6 @@ agent = "claude"
         let result = mgr.stop_by_worker_id(&wid).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown worker"));
-    }
-
-    #[test]
-    fn tolerate_missing_swallows_not_found() {
-        // A fake builderd NotFound response is treated as success (container already gone).
-        let not_found: Result<(), tonic::Status> =
-            Err(tonic::Status::not_found("container not found: abc123"));
-        tolerate_missing(not_found, "abc123", "stop_worker").expect("NotFound should be tolerated");
-    }
-
-    #[test]
-    fn tolerate_missing_propagates_other_errors() {
-        // Internal errors from builderd must not be swallowed.
-        let internal: Result<(), tonic::Status> =
-            Err(tonic::Status::internal("docker stop failed"));
-        let err = tolerate_missing(internal, "abc123", "stop_worker")
-            .expect_err("Internal error should propagate");
-        assert!(err.contains("docker stop failed"));
-    }
-
-    #[test]
-    fn tolerate_missing_ok_passes_through() {
-        let ok: Result<(), tonic::Status> = Ok(());
-        tolerate_missing(ok, "abc123", "stop_worker").expect("Ok result should pass through");
     }
 
     // ---- merge_global_skills tests ----

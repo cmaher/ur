@@ -1,7 +1,6 @@
 // WorkerRepo: CRUD operations for worker and slot tables, plus startup reconciliation.
 
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
 use std::path::Path;
 
 use chrono::Utc;
@@ -16,21 +15,6 @@ pub struct SlotReconcileResult {
     pub deleted_stale: Vec<String>,
     /// Slot IDs that were inserted because an on-disk directory had no DB row.
     pub inserted_orphaned: Vec<String>,
-}
-
-/// Result of startup worker reconciliation. No row is ever moved to `running`.
-pub struct WorkerReconcileResult {
-    /// `running` worker IDs whose containers are still alive (left as is).
-    pub reclaimed: Vec<String>,
-    /// `running` worker IDs whose containers are dead (marked stopped, slots released).
-    pub marked_stopped: Vec<String>,
-    /// `provisioning` worker IDs (unfinished launches) moved to `stopping`.
-    pub marked_stopping: Vec<String>,
-    /// `stopped` workers whose container is alive: the caller stops the
-    /// container; the row stays `stopped`.
-    pub stray: Vec<Worker>,
-    /// Worker IDs whose liveness could not be determined, left untouched.
-    pub indeterminate: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -121,26 +105,6 @@ impl WorkerRepo {
              FROM worker WHERE worker_id = $1",
         )
         .bind(worker_id)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        row.map(worker_from_row).transpose()
-    }
-
-    /// Look up a worker by the container it owns.
-    ///
-    /// Container IDs are unique per launch, unlike the slot-derived container
-    /// name, so this is the safe way to ask "which worker does this live
-    /// container belong to?" before acting on it.
-    pub async fn get_worker_by_container_id(
-        &self,
-        container_id: &str,
-    ) -> Result<Option<Worker>, sqlx::Error> {
-        let row = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime
-             FROM worker WHERE container_id = $1 ORDER BY created_at DESC LIMIT 1",
-        )
-        .bind(container_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -708,63 +672,6 @@ impl WorkerRepo {
         Ok(())
     }
 
-    /// Reconcile container worker rows with live Docker containers at server
-    /// startup (no launch or stop is in flight). Never moves a row to
-    /// `running` and never re-links a slot:
-    /// - `provisioning`: a launch the previous server never finished →
-    ///   `stopping` (not probed; its slot link stays, the stop paths converge it).
-    /// - `stopping`: left for the stop retry (not probed).
-    /// - `running` + alive: unchanged. `running` + dead: `stopped`, slot unlinked.
-    /// - `stopped` + alive: reported in `stray` for the caller to stop; the
-    ///   row stays `stopped`. `stopped` + dead: unchanged.
-    ///
-    /// `is_container_alive` returns `Err` when liveness cannot be determined
-    /// (the container runtime is unreachable, for instance). Such a worker is
-    /// left exactly as it is and reported in `indeterminate`: an unanswered
-    /// probe must never be read as "dead", or a reconcile pass would mark
-    /// every live worker stopped and release the slots they are still using.
-    ///
-    /// `runtime = local` rows have no container to probe and are skipped
-    /// (left unchanged, not reported): the server's
-    /// `WorkerReconcileManager` reconciles them against builderd.
-    pub async fn reconcile_workers<F, Fut>(
-        &self,
-        is_container_alive: F,
-    ) -> Result<WorkerReconcileResult, sqlx::Error>
-    where
-        F: Fn(String) -> Fut,
-        Fut: Future<Output = Result<bool, String>>,
-    {
-        let mut result = WorkerReconcileResult {
-            reclaimed: Vec::new(),
-            marked_stopped: Vec::new(),
-            marked_stopping: Vec::new(),
-            stray: Vec::new(),
-            indeterminate: Vec::new(),
-        };
-
-        for worker in self.list_all_workers().await? {
-            match (worker.runtime, worker.container_status.as_str()) {
-                (WorkerRuntime::Local, _) | (_, "stopping") => continue,
-                (_, "provisioning") => {
-                    self.begin_stopping(&worker.worker_id).await?;
-                    result.marked_stopping.push(worker.worker_id);
-                    continue;
-                }
-                _ => {}
-            }
-            match is_container_alive(worker.container_id.clone()).await {
-                Ok(alive) => {
-                    self.reconcile_single_worker(worker, alive, &mut result)
-                        .await?;
-                }
-                Err(_) => result.indeterminate.push(worker.worker_id),
-            }
-        }
-
-        Ok(result)
-    }
-
     /// Delete workers where container_status='stopped' and updated_at is older than `ttl_days`.
     ///
     /// Returns the list of deleted worker IDs. Associated worker_slot rows are
@@ -779,27 +686,6 @@ impl WorkerRepo {
         .await?;
 
         Ok(rows.into_iter().map(|(id,)| id).collect())
-    }
-
-    /// Probed `running` or `stopped` worker (see [`Self::reconcile_workers`]).
-    async fn reconcile_single_worker(
-        &self,
-        worker: Worker,
-        alive: bool,
-        result: &mut WorkerReconcileResult,
-    ) -> Result<(), sqlx::Error> {
-        match (worker.container_status.as_str(), alive) {
-            ("stopped", true) => result.stray.push(worker),
-            ("stopped", false) => {}
-            (_, true) => result.reclaimed.push(worker.worker_id),
-            (_, false) => {
-                self.update_worker_container_status(&worker.worker_id, "stopped")
-                    .await?;
-                self.unlink_worker_slot(&worker.worker_id).await?;
-                result.marked_stopped.push(worker.worker_id);
-            }
-        }
-        Ok(())
     }
 }
 
@@ -1061,43 +947,6 @@ mod tests {
             "loser updated_at"
         );
         assert_eq!(updated("live").await, "2026-01-01T00:00:00Z");
-
-        // ur-ezhdb #3: server-startup reconcile (every container alive) must
-        // not revive the losers or the stopped row to `running`.
-        let result = repo
-            .reconcile_workers(|_| async { Ok(true) })
-            .await
-            .unwrap();
-        assert_eq!(status("stale").await, "stopping");
-        assert_eq!(status("old").await, "stopping");
-        assert_eq!(status("only").await, "stopping");
-        assert_eq!(status("gone").await, "stopped");
-        assert_eq!(owner("old").await, None);
-        let stray: Vec<_> = result.stray.iter().map(|w| w.worker_id.as_str()).collect();
-        assert_eq!(stray, vec!["gone"], "stopped + alive is left to the caller");
-        assert_eq!(result.reclaimed.len(), 2, "{:?}", result.reclaimed);
-    }
-
-    /// ur-ezhdb #3: an unfinished container launch from a previous server
-    /// becomes `stopping` (slot link kept), whatever its container says.
-    #[tokio::test]
-    async fn startup_reconcile_holds_unfinished_container_launches_for_a_stop() {
-        let test_db = TestDb::new().await;
-        let repo = WorkerRepo::new(test_db.workflow_pool().clone());
-        slot_row(&repo, "slot-0").await;
-        assert!(
-            repo.claim_slot(&provisioning("w1"), "slot-0")
-                .await
-                .unwrap()
-        );
-        let result = repo
-            .reconcile_workers(|_| async { Ok(true) })
-            .await
-            .unwrap();
-        assert_eq!(result.marked_stopping, vec!["w1"]);
-        let w1 = repo.get_worker("w1").await.unwrap().unwrap();
-        assert_eq!(w1.container_status, "stopping");
-        assert!(repo.get_worker_slot("w1").await.unwrap().is_some());
     }
 
     #[tokio::test]
