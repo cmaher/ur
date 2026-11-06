@@ -218,7 +218,8 @@ pub const UR_AGENT_TYPE_ENV: &str = "UR_AGENT_TYPE";
 ///
 /// Set by the server at launch. workerd reads it twice: `InitInstructionsManager`
 /// picks `.agent-shared/instructions/{value}.md`, and the exit watcher treats
-/// `"design"` as "shut the container down when the agent exits".
+/// `"code"` and `"design"` as "stop the worker when the agent exits"
+/// (`workerd::watches_agent_process`).
 pub const UR_WORKER_INSTRUCTION_STRATEGY_ENV: &str = "UR_WORKER_INSTRUCTION_STRATEGY";
 
 /// Environment variable: comma-separated skill names workerd installs from

@@ -199,7 +199,7 @@ are never removed.
 
 | Termination | Trigger | Path |
 |---|---|---|
-| Agent exits | `ExitWatcherManager` (workerd lib) polls window 0: pane dead, probe failure, or (design workers only) the foreground process back at a shell | `LocalExitSink` → teardown. Within 15s the reconcile pass sees the id missing from the list → `stop_by_worker_id` (a Stop of an unknown id is Ok) → `finish_stop`. A non-design agent that quits leaves its shell alive, so nothing fires and the worker stays `running` until stopped (same as containers) |
+| Agent exits | `ExitWatcherManager` (workerd lib) polls window 0: pane dead, probe failure, or (code and design workers; `watches_agent_process` on the strategy) the foreground process back at a shell after the agent was seen running | `LocalExitSink` → teardown. Within 15s the reconcile pass sees the id missing from the list → `stop_by_worker_id` (a Stop of an unknown id is Ok) → `finish_stop`. A manual worker's agent that quits leaves its shell alive, so nothing fires and the worker stays `running` until stopped (same as containers) |
 | External kill (`tmux -L ur kill-session`, agent crash) | same exit watcher (session gone) | same as agent exit |
 | `ur worker stop`, `launch -f`, `--rm` attach exit, workflow completion (merge, GitHub poller), ticket close | `WorkerStop` / server-internal stop | `stop_by_worker_id`: `begin_stopping` → `StopLocalWorker` (barrier) → teardown → `finish_stop`; a failure leaves the row `stopping` for the reconcile loop |
 | Failed launch | builderd step error, LaunchLocalWorker error, or finalize error | builderd: a failed build removes what it built, and a later failure runs teardown before returning. Server: `abandon_launch` → `stop_by_worker_id` (row `stopped`, or `stopping` if Stop fails). Finalize false: the concurrent stopper finishes it |
@@ -262,7 +262,7 @@ Open tickets:
 Other limits (in code comments):
 
 - Sync startup hooks run with builderd's environment, not the session env.
-- An adopted design worker whose agent had already returned to the shell before the restart is
+- An adopted code or design worker whose agent had already returned to the shell before the restart is
   not detected as exited. A Stop still tears it down.
 - Orphan-drive failures at builderd startup are only logged. Drives hold only links, and the next
   startup retries.

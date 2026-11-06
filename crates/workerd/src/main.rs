@@ -17,6 +17,7 @@ use workerd::{
     ContainerExitSink, ExitWatcherManager, InitGitHooksManager, InitInstructionsManager,
     InitSettingsManager, InitSkillHooksManager, InitSkillsManager, SkillLayout,
     StartupHooksManager, WorkerDaemonServiceImpl, WorkerIdentity, WorkerInitInputs, WorkerPaths,
+    watches_agent_process,
 };
 
 mod logging;
@@ -27,7 +28,6 @@ const MAX_BACKOFF_MS: u64 = 5000;
 const WORKERD_GRPC_PORT: u16 = 9120;
 const EXIT_WATCHER_POLL_SECS: u64 = 5;
 const AGENT_SESSION_NAME: &str = "agent";
-const DESIGN_STRATEGY: &str = "design";
 
 #[derive(Parser)]
 #[command(name = "workerd", about = "Ur worker daemon")]
@@ -193,11 +193,15 @@ async fn run_daemon_only(agent: ur_config::AgentType, inputs: &WorkerInitInputs)
     info!(cmd = %spawn_cmd, agent = agent.name(), "agent launched in tmux session");
 
     // 3b. Watch for the agent exiting; the container sink stops the container.
-    let is_design_worker = inputs.instructions.strategy.as_deref() == Some(DESIGN_STRATEGY);
+    let watch_agent_process = inputs
+        .instructions
+        .strategy
+        .as_deref()
+        .is_some_and(watches_agent_process);
     let exit_watcher = ExitWatcherManager::new(
         Arc::new(session.clone()),
         Arc::new(ContainerExitSink::new(identity.clone())),
-        is_design_worker,
+        watch_agent_process,
         Duration::from_secs(EXIT_WATCHER_POLL_SECS),
     )
     .spawn();

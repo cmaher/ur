@@ -19,7 +19,7 @@
 //! # Known limits
 //!
 //! - Sync startup hooks run with builderd's environment, not the session env.
-//! - An adopted design worker whose agent had already returned to the shell
+//! - An adopted code or design worker whose agent had already returned to the shell
 //!   before the restart is not detected as exited (its watcher starts in the
 //!   waiting state); a Stop still tears it down.
 //! - Orphan drive listing/teardown failures at startup are logged only and
@@ -37,7 +37,7 @@ use tracing::{error, info};
 use ur_config::{AgentType, WorkerRuntime};
 use workerd::{
     AgentExitReason, AgentExitSink, ExitWatcherManager, HookKind, SkillLayout, StartupHooksManager,
-    WorkerDaemonServiceImpl, WorkerIdentity,
+    WorkerDaemonServiceImpl, WorkerIdentity, watches_agent_process,
 };
 
 use crate::barrier::WorkerBarrier;
@@ -49,8 +49,6 @@ pub const UR_DRIVE_ENV: &str = "UR_DRIVE";
 pub const UR_RUNTIME_ENV: &str = "UR_RUNTIME";
 /// Window that runs background startup hooks.
 const BG_WINDOW: &str = "bg";
-/// Strategy whose agent exit is detected by the pane returning to a shell.
-const DESIGN_STRATEGY: &str = "design";
 
 type Result<T> = std::result::Result<T, Status>;
 
@@ -300,7 +298,9 @@ impl LocalWorkerManager {
         );
         let watcher = self.spawn_exit_watcher(
             &req.worker_id,
-            req.instruction_strategy.as_deref() == Some(DESIGN_STRATEGY),
+            req.instruction_strategy
+                .as_deref()
+                .is_some_and(watches_agent_process),
             &session,
         );
         self.registry.insert(
@@ -329,7 +329,7 @@ impl LocalWorkerManager {
     fn spawn_exit_watcher(
         &self,
         worker_id: &str,
-        is_design: bool,
+        watch_agent_process: bool,
         session: &tmux::Session,
     ) -> AbortHandle {
         let sink = LocalExitSink {
@@ -339,7 +339,7 @@ impl LocalWorkerManager {
         let watcher = ExitWatcherManager::new(
             Arc::new(session.clone()),
             Arc::new(sink),
-            is_design,
+            watch_agent_process,
             self.exit_poll_interval,
         );
         let worker_id = worker_id.to_owned();
@@ -539,9 +539,11 @@ impl LocalWorkerManager {
             worker_id: worker_id.to_owned(),
             worker_secret: env_value(&env, ur_config::UR_WORKER_SECRET_ENV).to_owned(),
         };
-        let is_design =
-            env_value(&env, ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) == DESIGN_STRATEGY;
-        let watcher = self.spawn_exit_watcher(worker_id, is_design, &session);
+        let watch_agent_process = watches_agent_process(env_value(
+            &env,
+            ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV,
+        ));
+        let watcher = self.spawn_exit_watcher(worker_id, watch_agent_process, &session);
         let daemon =
             WorkerDaemonServiceImpl::new(identity, agent, SkillLayout::ur_plugin(), session);
         self.registry.insert(

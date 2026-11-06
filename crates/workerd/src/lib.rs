@@ -21,7 +21,9 @@ mod test_support;
 
 pub use container_exit::ContainerExitSink;
 pub use dispatch::dispatch_commands;
-pub use exit_watcher::{AgentExitReason, AgentExitSink, AgentPane, ExitWatcherManager};
+pub use exit_watcher::{
+    AgentExitReason, AgentExitSink, AgentPane, ExitWatcherManager, watches_agent_process,
+};
 pub use grpc_service::{WorkerDaemonServiceImpl, WorkerIdentity};
 pub use init::{
     HookKind, InitInstructionsManager, InitSettingsManager, InitSkillsManager, InstructionInputs,
