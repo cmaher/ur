@@ -492,6 +492,8 @@ struct TestEnv {
     project_bare_repo: PathBuf,
     /// Host directories bind-mounted into the `mountproj` worker.
     mount_dirs: MountDirs,
+    /// Mount source and memory dir of the `localrtproj` local-runtime worker.
+    local_runtime_dirs: LocalRuntimeDirs,
     /// Host directory configured as the top-level `workspace_brain_dir`, mounted at
     /// `/brain` for `-w` workers that have no project.
     workspace_brain_dir: PathBuf,
@@ -606,6 +608,74 @@ fn setup_mount_projects(config_path: &Path) -> (MountDirs, Vec<ProjectEntry>) {
         },
         vec![mountproj, badmountproj],
     )
+}
+
+/// Project key of the pool project `scenario_local_runtime` launches with
+/// `--runtime local`.
+const LOCAL_RUNTIME_PROJECT_KEY: &str = "localrtproj";
+
+/// Where `localrtproj`'s `mounts` entry lands, relative to the worker's drive.
+const LOCAL_RUNTIME_MOUNT_DEST: &str = "/mnt/localrt";
+
+/// Host fixtures for `localrtproj`. Both live under a system temp dir, so the
+/// scenario can assert that teardown removed only links and left these (and
+/// their contents) alone.
+struct LocalRuntimeDirs {
+    /// Parent TempDir keeping every directory below alive for the whole run.
+    _parent: tempfile::TempDir,
+    /// `mounts` source, linked into the drive at `LOCAL_RUNTIME_MOUNT_DEST`;
+    /// holds `hello.txt`.
+    mount_source: PathBuf,
+    /// Project `memory_dir`, seeded with `seed.md`.
+    memory: PathBuf,
+}
+
+/// Set up the `localrtproj` project entry: its own bare repo, one host mount
+/// and a `memory_dir`.
+fn setup_local_runtime_project(config_path: &Path) -> (LocalRuntimeDirs, ProjectEntry) {
+    let parent = tempfile::tempdir().expect("failed to create local runtime dirs parent");
+    let mount_source = parent.path().join("mount-source");
+    let memory = parent.path().join("memory");
+    for dir in [&mount_source, &memory] {
+        std::fs::create_dir_all(dir).expect("failed to create local runtime dir");
+    }
+    std::fs::write(mount_source.join("hello.txt"), "local-mount-content\n")
+        .expect("failed to write local mount fixture");
+    std::fs::write(memory.join("seed.md"), "local-memory-seed\n")
+        .expect("failed to seed local memory dir");
+
+    let bare_repo = create_bare_repo(&config_path.join("local-runtime-repos"), &[]);
+    let entry = ProjectEntry {
+        mounts: vec![format!(
+            "{}:{LOCAL_RUNTIME_MOUNT_DEST}:ro",
+            mount_source.display()
+        )],
+        memory_dir: Some(memory.to_string_lossy().into_owned()),
+        ..ProjectEntry::pool(LOCAL_RUNTIME_PROJECT_KEY, &bare_repo)
+    };
+    (
+        LocalRuntimeDirs {
+            _parent: parent,
+            mount_source,
+            memory,
+        },
+        entry,
+    )
+}
+
+/// Fill `$UR_CONFIG/agent-shared` (builderd's default `--agent-shared`) with
+/// the same script `install.sh` uses, so local workers find their skills and
+/// instructions in the temp config.
+fn install_agent_assets(config_path: &Path) {
+    let script = workspace_root().join("scripts/build/install-agent-assets.sh");
+    let dest = config_path.join("agent-shared");
+    let output = run_cmd(&script, &[dest.to_str().unwrap()], &[]);
+    assert!(
+        output.status.success(),
+        "install-agent-assets.sh failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 /// Kill any process listening on the given TCP port. Used to clean up orphaned
@@ -728,6 +798,7 @@ struct ProjectFixtures {
     project_bare_repo: PathBuf,
     skills_extra_toml: String,
     mount_dirs: MountDirs,
+    local_runtime_dirs: LocalRuntimeDirs,
     /// Host dir wired up as the top-level `workspace_brain_dir`.
     workspace_brain_dir: BrainDirInfo,
 }
@@ -777,6 +848,7 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
     );
 
     let (mount_dirs, mount_projects) = setup_mount_projects(config_path);
+    let (local_runtime_dirs, local_runtime_project) = setup_local_runtime_project(config_path);
 
     let mut projects = vec![
         ProjectEntry::pool(project_key, &project_bare_repo),
@@ -801,12 +873,14 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
         },
     ];
     projects.extend(mount_projects);
+    projects.push(local_runtime_project);
 
     ProjectFixtures {
         projects,
         project_bare_repo,
         skills_extra_toml,
         mount_dirs,
+        local_runtime_dirs,
         workspace_brain_dir: setup_workspace_brain(),
     }
 }
@@ -848,6 +922,7 @@ fn e2e_all() {
         &fixtures.skills_extra_toml,
     );
     write_git_hostexec_override(&config_path);
+    install_agent_assets(&config_path);
 
     let ur = bin("ur");
     assert!(ur.exists(), "ur binary not found at {}", ur.display());
@@ -861,6 +936,7 @@ fn e2e_all() {
         project_key,
         project_bare_repo: fixtures.project_bare_repo,
         mount_dirs: fixtures.mount_dirs,
+        local_runtime_dirs: fixtures.local_runtime_dirs,
         workspace_brain_dir: fixtures.workspace_brain_dir.path,
         _workspace_brain_dir_parent: fixtures.workspace_brain_dir.parent,
     };
@@ -942,6 +1018,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_missing_mount_source(&env);
         scenario_codex_manual_worker(&env);
         scenario_agy_manual_worker(&env);
+        scenario_local_runtime(&env);
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
@@ -2803,5 +2880,265 @@ fn scenario_agy_manual_worker(env: &TestEnv) {
     if let Err(error) = result {
         force_remove_container(&env.runtime, &container);
         std::panic::resume_unwind(error);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Local runtime (`--runtime local`)
+// ---------------------------------------------------------------------------
+
+/// How long an external `kill-session` may take to show up as a stopped worker
+/// with no drive: the exit watcher tears the drive down at once, and the
+/// server's reconcile pass (every 15s) then stops the row.
+const LOCAL_EXIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A local worker this scenario launched, as far as it is known. Cleanup acts
+/// only on these: the `ur` tmux socket is shared with the developer's real
+/// local agents.
+#[derive(Default)]
+struct LocalLaunches {
+    /// Process ids passed to `ur worker launch` (recorded before the launch).
+    process_ids: Vec<String>,
+    /// `(worker_id_full, slot)` of every launch that reached `ur worker list`.
+    workers: Vec<(String, PathBuf)>,
+}
+
+/// Run `tmux -L ur <args>` (the host socket builderd's local workers use).
+fn local_tmux(args: &[&str]) -> std::process::Output {
+    Command::new("tmux")
+        .args(["-L", ur_config::LOCAL_TMUX_SOCKET])
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run tmux {}: {e}", args.join(" ")))
+}
+
+/// Exact-match tmux target for a local worker's session `ur-<worker_id_full>`.
+fn local_session_target(worker_id_full: &str) -> String {
+    format!("=ur-{worker_id_full}")
+}
+
+fn local_session_alive(worker_id_full: &str) -> bool {
+    local_tmux(&["has-session", "-t", &local_session_target(worker_id_full)])
+        .status
+        .success()
+}
+
+/// `drive/<worker_id_full>` under the shared stack's workspace.
+fn local_drive(env: &TestEnv, worker_id_full: &str) -> PathBuf {
+    env.config_path
+        .join("workspace")
+        .join("drive")
+        .join(worker_id_full)
+}
+
+/// Claude's memory dir for `slot` under the real `$HOME` (builderd runs as the
+/// developer, so that is where it links the project `memory_dir`).
+fn local_memory_link(slot: &Path) -> PathBuf {
+    let home = PathBuf::from(std::env::var("HOME").expect("HOME env var"));
+    ur_config::AgentType::Claude
+        .local_memory_dir(&home, slot)
+        .expect("claude has a local memory dir")
+}
+
+/// Whether `path` exists without following a final symlink.
+fn path_present(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+fn worker_listed(env: &TestEnv, process_id: &str) -> bool {
+    let output = run_cmd(&env.ur, &["--output", "json", "worker", "list"], &env.env());
+    assert!(
+        output.status.success(),
+        "ur worker list failed.\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("worker list output should be valid JSON");
+    json["data"].as_array().is_some_and(|workers| {
+        workers
+            .iter()
+            .any(|w| w["worker_id"].as_str() == Some(process_id))
+    })
+}
+
+/// `ur worker launch <ticket> --runtime local -p localrtproj`, then assert the
+/// listed runtime and the live session. Records the launch in `launches`.
+fn launch_local_worker(
+    env: &TestEnv,
+    ticket: &str,
+    launches: &mut LocalLaunches,
+) -> (String, PathBuf) {
+    launches.process_ids.push(ticket.to_owned());
+    launch_worker(
+        env,
+        &[
+            ticket,
+            "-p",
+            LOCAL_RUNTIME_PROJECT_KEY,
+            "--runtime",
+            "local",
+        ],
+    );
+    let worker = worker_list_entry(env, ticket);
+    let full = worker["worker_id_full"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| panic!("worker '{ticket}' should list a worker_id_full: {worker}"))
+        .to_owned();
+    let slot = PathBuf::from(worker["directory"].as_str().unwrap_or_default());
+    launches.workers.push((full.clone(), slot.clone()));
+    assert_eq!(
+        worker["runtime"].as_str(),
+        Some("local"),
+        "worker '{ticket}' should run locally: {worker}"
+    );
+    assert!(
+        slot.is_absolute(),
+        "worker '{ticket}' should list its slot directory: {worker}"
+    );
+    assert!(
+        local_session_alive(&full),
+        "tmux -L ur session ur-{full} should exist after launch"
+    );
+    (full, slot)
+}
+
+/// The drive links the project mount and holds the generated `.ur/` files, and
+/// the slot's Claude memory dir links the project `memory_dir`.
+fn assert_local_drive_built(env: &TestEnv, full: &str, slot: &Path) {
+    let drive = local_drive(env, full);
+    let dirs = &env.local_runtime_dirs;
+    let mount_link = drive.join(LOCAL_RUNTIME_MOUNT_DEST.trim_start_matches('/'));
+    assert_eq!(
+        std::fs::read_link(&mount_link)
+            .unwrap_or_else(|e| panic!("{} should be a link: {e}", mount_link.display())),
+        dirs.mount_source,
+        "drive mount link should point at the mount source"
+    );
+    assert_host_file(&mount_link.join("hello.txt"), "local-mount-content");
+    for rel in [".ur/settings.json", ".ur/instructions.md", ".ur/plugin"] {
+        assert!(
+            drive.join(rel).exists(),
+            "{} should exist in the local drive",
+            drive.join(rel).display()
+        );
+    }
+    let memory_link = local_memory_link(slot);
+    let target = std::fs::read_link(&memory_link)
+        .unwrap_or_else(|e| panic!("{} should be a link: {e}", memory_link.display()));
+    assert_eq!(
+        std::fs::canonicalize(&target).expect("memory link target should resolve"),
+        std::fs::canonicalize(&dirs.memory).expect("memory fixture should resolve"),
+        "slot memory link should point at the project memory_dir"
+    );
+}
+
+/// After a stop: session, drive and memory link gone; the link targets (and
+/// their contents) intact; the worker no longer listed as running.
+fn assert_local_torn_down(env: &TestEnv, process_id: &str, full: &str, slot: &Path) {
+    assert!(
+        !local_session_alive(full),
+        "session ur-{full} should be gone"
+    );
+    let drive = local_drive(env, full);
+    assert!(
+        !path_present(&drive),
+        "drive {} should be removed",
+        drive.display()
+    );
+    let memory_link = local_memory_link(slot);
+    assert!(
+        !path_present(&memory_link),
+        "memory link {} should be removed",
+        memory_link.display()
+    );
+    let dirs = &env.local_runtime_dirs;
+    assert_host_file(&dirs.memory.join("seed.md"), "local-memory-seed");
+    assert_host_file(&dirs.mount_source.join("hello.txt"), "local-mount-content");
+    assert!(
+        !worker_listed(env, process_id),
+        "worker '{process_id}' should no longer be listed as running"
+    );
+}
+
+/// Poll until an externally killed worker is stopped and its drive removed.
+fn wait_for_local_exit_teardown(env: &TestEnv, process_id: &str, full: &str) {
+    let deadline = std::time::Instant::now() + LOCAL_EXIT_TIMEOUT;
+    loop {
+        let drive_gone = !path_present(&local_drive(env, full));
+        let stopped = !worker_listed(env, process_id);
+        if drive_gone && stopped {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "after kill-session, worker '{process_id}' should be stopped (stopped: {stopped}) \
+             with its drive removed (removed: {drive_gone}) within {}s",
+            LOCAL_EXIT_TIMEOUT.as_secs()
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Remove `~/.claude/projects/<encoded slot>` (the memory link's parent, and
+/// where the host agent keeps its transcripts) — only for a slot inside this
+/// run's temp config, so the encoded name is unique to the run.
+fn remove_local_agent_project_dir(env: &TestEnv, slot: &Path) {
+    let config = std::fs::canonicalize(&env.config_path).unwrap_or(env.config_path.clone());
+    if !(slot.starts_with(&env.config_path) || slot.starts_with(&config)) {
+        return;
+    }
+    if let Some(dir) = local_memory_link(slot).parent() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// Failure cleanup: stop every worker this scenario launched, then kill only
+/// their own `ur-<id>` sessions and remove their drives.
+fn cleanup_local_launches(env: &TestEnv, launches: &LocalLaunches) {
+    for process_id in &launches.process_ids {
+        let _ = run_cmd(&env.ur, &["worker", "stop", process_id], &env.env());
+    }
+    for (full, _) in &launches.workers {
+        let _ = local_tmux(&["kill-session", "-t", &local_session_target(full)]);
+        let _ = std::fs::remove_dir_all(local_drive(env, full));
+    }
+}
+
+/// Local runtime anchor (`--runtime local`, a pool project with a mount and a
+/// `memory_dir`): the agent runs on the host in tmux session `ur-<id>` on the
+/// `ur` socket, with no container. No model turn is driven.
+///
+/// 1. launch → listed with `runtime: "local"`, session alive, drive holds the
+///    mount link and `.ur/{settings.json,instructions.md,plugin}`, the slot's
+///    memory link points at the fixture `memory_dir`;
+/// 2. `ur worker stop` → session, drive and memory link gone; fixture dirs and
+///    their contents intact; no longer listed;
+/// 3. a second launch, then an external `kill-session` → within
+///    `LOCAL_EXIT_TIMEOUT` the worker is stopped and its drive removed.
+fn scenario_local_runtime(env: &TestEnv) {
+    let mut launches = LocalLaunches::default();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let first = "local-rt-stop";
+        let (full, slot) = launch_local_worker(env, first, &mut launches);
+        assert_local_drive_built(env, &full, &slot);
+        stop_worker(env, first);
+        assert_local_torn_down(env, first, &full, &slot);
+
+        let second = "local-rt-kill";
+        let (full, slot) = launch_local_worker(env, second, &mut launches);
+        let kill = local_tmux(&["kill-session", "-t", &local_session_target(&full)]);
+        assert_exec_success(&kill, "external tmux kill-session");
+        wait_for_local_exit_teardown(env, second, &full);
+        assert_local_torn_down(env, second, &full, &slot);
+    }));
+    if result.is_err() {
+        cleanup_local_launches(env, &launches);
+    }
+    for (_, slot) in &launches.workers {
+        remove_local_agent_project_dir(env, slot);
+    }
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
     }
 }

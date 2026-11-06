@@ -29,6 +29,7 @@ and nothing else:
 | `scenario_missing_mount_source` | builderd refuses a missing mount source (no container starts) |
 | `scenario_codex_manual_worker` | codex image + layout, dispatched |
 | `scenario_agy_manual_worker` | agy image + layout, token mount, Stop hook → NotifyIdle |
+| `scenario_local_runtime` | `--runtime local -p` (no container): `runtime: "local"`, `ur-<id>` session on `tmux -L ur`, drive mount link + `.ur/`, slot memory link; `ur worker stop` teardown; external `kill-session` → stopped + drive removed |
 
 **Adding coverage:** a new in-container check goes into the anchor whose configuration it
 needs — never a new launch. A new launch mode or agent image gets one new anchor. Anything
@@ -43,11 +44,26 @@ parsing in `ur_config` / `WorkerModesConfig` tests, Lua transforms in `lua_trans
 
 ## Test architecture
 
-`e2e_all` is the sole `#[test]` entry point. It creates one shared `TestEnv` (temp config dir, bare repos, `ur start`), runs all scenarios sequentially as plain helper functions, then tears down. Each scenario gets a `&TestEnv` reference and uses its own ticket IDs and container names. Scenarios use `catch_unwind` to force-remove their worker containers on failure before re-raising.
+`e2e_all` is the sole `#[test]` entry point. It creates one shared `TestEnv` (temp config dir, bare repos, `ur start`), runs all scenarios sequentially as plain helper functions, then tears down. Each scenario gets a `&TestEnv` reference and uses its own ticket IDs and container names. Scenarios use `catch_unwind` to force-remove their worker containers (local: stop and kill their own sessions) on failure before re-raising.
 
 ## Design principle
 
 Tests MUST use only CLI commands (`ur`, `git`, the container runtime) — never programmatic/in-process wiring. The point of acceptance tests is to validate the real user-facing workflow. If a test scenario requires manual setup that the CLI doesn't support, that means the CLI is incomplete and needs a new feature — not that the test should work around it with code.
+
+## Local runtime (host tmux, host `claude`)
+
+`scenario_local_runtime` runs the host's `claude` in a session on the shared `ur` tmux
+socket — the same socket as the developer's real local agents, since the suite runs on every
+`git push` on their host. Cleanup MUST only ever touch the `ur-<worker_id_full>` sessions of
+workers the scenario itself launched (after `ur worker stop` on them); never a blanket `ur-*`
+kill or `kill-server`. The only real `~/.claude` path it touches is
+`projects/<encoded slot>/` for slots under the temp config (the memory link builderd creates
+there), which the scenario removes. builderd reads skills/instructions from
+`$UR_CONFIG/agent-shared`; `install_agent_assets` fills the temp config's copy with
+`scripts/build/install-agent-assets.sh`, the same script `install.sh` uses. No model turn is
+driven; config precedence and unsupported-agent rejection are unit-tested
+(`runtime_precedence_per_level`, `local_rejects_unsupported_agents`,
+`codex_with_local_is_unsupported`).
 
 ## Image aliases resolve against `UR_IMAGE_TAG`
 

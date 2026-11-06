@@ -10,6 +10,7 @@ dependencies = [
  "tempfile",
  "tracing-appender",
  "tracing-subscriber",
+ "ur_config",
 ]
 
 [[package]]
