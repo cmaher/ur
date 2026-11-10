@@ -121,6 +121,7 @@ impl Fixture {
             project_key: "p".into(),
             project_instruction_path: None,
             allow_no_verify: false,
+            forge: None,
         }
     }
 

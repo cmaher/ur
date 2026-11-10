@@ -76,6 +76,8 @@ pub struct LocalWorkspaceRequest {
     pub project_key: String,
     pub project_instruction_path: Option<PathBuf>,
     pub allow_no_verify: bool,
+    /// `UR_WORKER_FORGE` from the session env; selects the forge instructions.
+    pub forge: Option<String>,
 }
 
 /// A built drive and the agent command to launch in the slot.
@@ -385,7 +387,7 @@ impl LocalWorkspaceManager {
         // does not expand `@` imports.
         let inputs = InstructionInputs {
             strategy: req.instruction_strategy.clone(),
-            forge: None,
+            forge: req.forge.clone(),
             project: req
                 .project_instruction_path
                 .as_ref()
@@ -687,6 +689,7 @@ mod tests {
                 project_key: "p".into(),
                 project_instruction_path: None,
                 allow_no_verify: false,
+                forge: None,
             }
         }
 
@@ -1057,12 +1060,29 @@ mod tests {
 
     #[tokio::test]
     async fn instructions_golden() {
+        assert_instructions_golden(None, "").await;
+    }
+
+    #[tokio::test]
+    async fn instructions_golden_with_gitea_forge() {
+        assert_instructions_golden(
+            Some("gitea"),
+            "# Forge Collaboration\n\nThis repository is hosted on Gitea. Use `tea` for pull \
+             requests, reviews, comments, and CI status checks (do not use `gh`).\n\n\n",
+        )
+        .await;
+    }
+
+    /// The full `.ur/instructions.md`; `forge_section` sits between the skill
+    /// precedence fragment and the project instructions.
+    async fn assert_instructions_golden(forge: Option<&str>, forge_section: &str) {
         let f = Fixture::new();
         let req = LocalWorkspaceRequest {
             mounts: vec![mount(f.path("src/ctx"), "/ctx", true)],
             brain_dir: Some(f.path("src/brain")),
             instruction_strategy: Some("code".into()),
             project_instruction_path: Some(f.path("slot/PROJECT.md")),
+            forge: forge.map(str::to_owned),
             ..f.request()
         };
         f.manager.build(&req).await.unwrap();
@@ -1075,7 +1095,7 @@ mod tests {
              Worker skills are installed as the `ur` plugin and are invoked as \
              `ur:<name>` (e.g. `/ur:implement`). When a skill exists as both \
              `ur:<name>` and `<name>`, ALWAYS use `ur:<name>`.\n\
-             \n\nProject at {slot}\n\n\
+             \n\n{forge_section}Project at {slot}\n\n\
              # Drive\n\nYour drive is `{d}`. It links these host paths:\n\n\
              - `{d}/ctx` -> `{s}/ctx` (read-only: advisory — do not write)\n\
              - `{d}/brain` -> `{s}/brain`\n\

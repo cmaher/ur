@@ -33,7 +33,11 @@ fn workspace_request(
     }
     let agent = AgentType::parse(&req.agent_type)
         .map_err(|e| Status::invalid_argument(format!("agent_type: {e}")))?;
-    let env = req.env.into_iter().map(|e| (e.key, e.value)).collect();
+    let env: Vec<(String, String)> = req.env.into_iter().map(|e| (e.key, e.value)).collect();
+    let forge = env
+        .iter()
+        .find(|(key, _)| key == ur_config::UR_WORKER_FORGE_ENV)
+        .and_then(|(_, value)| non_empty(value.clone()));
     let workspace = LocalWorkspaceRequest {
         worker_id: req.worker_id,
         slot_path: PathBuf::from(req.slot_path),
@@ -61,6 +65,7 @@ fn workspace_request(
         project_key: req.project_key,
         project_instruction_path: non_empty(req.project_instruction_path).map(PathBuf::from),
         allow_no_verify: req.allow_no_verify,
+        forge,
     };
     Ok((workspace, env))
 }
@@ -99,5 +104,37 @@ impl BuilderLocalWorkerService for BuilderLocalWorkerHandler {
             })
             .collect();
         Ok(Response::new(ListLocalWorkersResponse { workers }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ur_rpc::proto::builder_local_worker::EnvVar;
+
+    fn launch(env: &[(&str, &str)]) -> LaunchLocalWorkerRequest {
+        LaunchLocalWorkerRequest {
+            worker_id: "w1".into(),
+            slot_path: "/slot".into(),
+            agent_type: "claude".into(),
+            env: env
+                .iter()
+                .map(|(key, value)| EnvVar {
+                    key: (*key).into(),
+                    value: (*value).into(),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn forge_is_read_from_the_session_env() {
+        let (req, env) =
+            workspace_request(launch(&[(ur_config::UR_WORKER_FORGE_ENV, "gitea")])).unwrap();
+        assert_eq!(req.forge.as_deref(), Some("gitea"));
+        assert_eq!(env.len(), 1, "the forge stays in the session env");
+        let (req, _) = workspace_request(launch(&[("UR_PROJECT", "p")])).unwrap();
+        assert_eq!(req.forge, None);
     }
 }
