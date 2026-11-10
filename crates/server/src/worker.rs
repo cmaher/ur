@@ -1302,18 +1302,21 @@ impl WorkerManager {
         result
     }
 
-    /// Look up the workspace/slot directory for a running process by its process ID.
-    pub async fn get_workspace_dir(&self, process_id: &str) -> Result<Option<PathBuf>, String> {
-        let workers = self
+    /// Find the active (provisioning/running/stopping) worker an id names:
+    /// the row with that full worker id, else the newest row for that
+    /// process id (see [`Self::stop`] for why newest).
+    pub async fn find_active_worker(&self, id: &str) -> Result<workflow_db::model::Worker, String> {
+        let mut workers = self
             .worker_repo
-            .list_workers_by_container_status("running")
+            .list_active_workers()
             .await
             .map_err(|e| format!("db error: {e}"))?;
-        let worker = workers
+        let index = workers
             .iter()
-            .find(|w| w.process_id == process_id)
-            .ok_or_else(|| format!("unknown worker: {process_id}"))?;
-        Ok(worker.workspace_path.as_ref().map(PathBuf::from))
+            .position(|w| w.worker_id == id)
+            .or_else(|| newest_for_process(&workers, id))
+            .ok_or_else(|| format!("unknown worker: {id}"))?;
+        Ok(workers.swap_remove(index))
     }
 
     /// Stop a running worker process by process_id (searches all entries).
@@ -1327,14 +1330,19 @@ impl WorkerManager {
             .list_workers_by_container_status("running")
             .await
             .map_err(|e| format!("db error: {e}"))?;
-        // list_workers_by_container_status orders oldest-first; take the last
-        // match so a re-used slot stops its current worker, not a stale row.
-        if let Some(worker) = workers.iter().rev().find(|w| w.process_id == process_id) {
-            let worker_id = WorkerId::parse(&worker.worker_id)?;
+        if let Some(index) = newest_for_process(&workers, process_id) {
+            let worker_id = WorkerId::parse(&workers[index].worker_id)?;
             return self.stop_by_worker_id(&worker_id).await;
         }
         Err(format!("unknown worker: {process_id}"))
     }
+}
+
+/// Index of the newest of `workers` (ordered oldest-first, as the repo lists
+/// them) for `process_id`, so a re-used slot resolves to its current worker,
+/// not a stale row.
+fn newest_for_process(workers: &[workflow_db::model::Worker], process_id: &str) -> Option<usize> {
+    workers.iter().rposition(|w| w.process_id == process_id)
 }
 
 /// Who may finish a stop (`stopping → stopped` + unlink) of a worker whose

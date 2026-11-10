@@ -1074,24 +1074,16 @@ impl CoreService for CoreServiceHandler {
     ) -> Result<Response<WorkerInfoResponse>, Status> {
         let req = req.into_inner();
         info!(worker_id = req.worker_id, "worker_info request received");
-        let workspace_dir = self
+        let worker = self
             .worker_manager
-            .get_workspace_dir(&req.worker_id)
+            .find_active_worker(&req.worker_id)
             .await
             .map_err(|_| CoreError::WorkspaceNotFound {
                 process_id: req.worker_id.clone(),
             })?;
-        let workspace_dir = workspace_dir
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
-        let worker = self
-            .worker_repo
-            .get_worker(&req.worker_id)
-            .await
-            .map_err(|e| Status::internal(format!("failed to get worker: {e}")))?;
-        let (agent_status, runtime) = worker
-            .map(|w| (w.agent_status, w.runtime.as_str().to_owned()))
-            .unwrap_or_default();
+        let workspace_dir = worker.workspace_path.unwrap_or_default();
+        let agent_status = worker.agent_status;
+        let runtime = worker.runtime.as_str().to_owned();
         Ok(Response::new(WorkerInfoResponse {
             workspace_dir,
             agent_status,
