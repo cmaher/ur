@@ -1725,7 +1725,8 @@ fn launch_and_verify_local_worker(
     env: &TestEnv,
     key: &str,
     project_dir: &Path,
-    container_name: &str,
+    // Resolved only after the launch below: the name carries the worker id.
+    container_name: &WorkerContainer,
 ) {
     // `--output json` so the generated process_id can be asserted from
     // `data.worker_id`. The human-readable "Launching worker ..." line is built from
