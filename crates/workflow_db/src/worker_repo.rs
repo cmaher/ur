@@ -164,13 +164,14 @@ impl WorkerRepo {
     }
 
     /// Refresh a claimed `provisioning` row with the launch's final details
-    /// (container name, secret, ...). `false` when it is no longer
-    /// `provisioning` (stopped mid-launch) or gone.
+    /// (container name, secret, ...) and mark its launch pending
+    /// ([`Self::mark_launch_pending`]), in one statement. `false` when it is
+    /// no longer `provisioning` (stopped mid-launch) or gone.
     pub async fn update_provisioning_worker(&self, worker: &Worker) -> Result<bool, sqlx::Error> {
         let result = sqlx::query(
             "UPDATE worker SET process_id = $2, project_key = $3, container_id = $4,
                worker_secret = $5, strategy = $6, agent_type = $7, workspace_path = $8,
-               updated_at = $9, brain_path = $10, runtime = $11
+               updated_at = $9, brain_path = $10, runtime = $11, launch_pending = true
              WHERE worker_id = $1 AND container_status = 'provisioning'",
         )
         .bind(&worker.worker_id)
@@ -203,20 +204,87 @@ impl WorkerRepo {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Mark a `provisioning` worker's launch pending: its Launch RPC is about
+    /// to be sent. `false` when the row is no longer `provisioning`.
+    pub async fn mark_launch_pending(&self, worker_id: &str) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE worker SET launch_pending = true
+             WHERE worker_id = $1 AND container_status = 'provisioning'",
+        )
+        .bind(worker_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// The launch path resolved its Launch RPC and its own stop attempt
+    /// failed: from now on any stopper's confirmed Stop covers the worker.
+    pub async fn clear_launch_pending(&self, worker_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE worker SET launch_pending = false WHERE worker_id = $1")
+            .bind(worker_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Server startup: no Launch of a previous server can still be
+    /// delivered, so every pending marker is cleared. Returns the worker ids.
+    pub async fn clear_all_launch_pending(&self) -> Result<Vec<String>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String,)>(
+            "UPDATE worker SET launch_pending = false WHERE launch_pending RETURNING worker_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// Whether the worker's own Launch RPC is still unresolved.
+    pub async fn is_launch_pending(&self, worker_id: &str) -> Result<bool, sqlx::Error> {
+        let pending =
+            sqlx::query_scalar::<_, bool>("SELECT launch_pending FROM worker WHERE worker_id = $1")
+                .bind(worker_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(pending.unwrap_or(false))
+    }
+
     /// `stopping → stopped` and delete the worker's slot link, together.
     /// Called only once the worker is confirmed gone. `false` (nothing
-    /// changed) when the row is not `stopping`.
+    /// changed) when the row is not `stopping`, or when its launch is
+    /// pending: then only the launch path may finish it
+    /// ([`Self::finish_launch_stop`]).
     pub async fn finish_stop(&self, worker_id: &str) -> Result<bool, sqlx::Error> {
-        let mut tx = self.pool.begin().await?;
-        let stopped = sqlx::query(
+        self.finish_stop_where(
+            worker_id,
             "UPDATE worker SET container_status = 'stopped', updated_at = $1
+             WHERE worker_id = $2 AND container_status = 'stopping' AND NOT launch_pending",
+        )
+        .await
+    }
+
+    /// [`Self::finish_stop`] for the launch path, whose Stop came after its
+    /// own Launch resolved: finishes a pending row too and clears the marker.
+    pub async fn finish_launch_stop(&self, worker_id: &str) -> Result<bool, sqlx::Error> {
+        self.finish_stop_where(
+            worker_id,
+            "UPDATE worker SET container_status = 'stopped', updated_at = $1, launch_pending = false
              WHERE worker_id = $2 AND container_status = 'stopping'",
         )
-        .bind(Utc::now().to_rfc3339())
-        .bind(worker_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
+        .await
+    }
+
+    async fn finish_stop_where(
+        &self,
+        worker_id: &str,
+        update: &'static str,
+    ) -> Result<bool, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let stopped = sqlx::query(update)
+            .bind(Utc::now().to_rfc3339())
+            .bind(worker_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
             > 0;
         if stopped {
             sqlx::query("DELETE FROM worker_slot WHERE worker_id = $1")
@@ -228,11 +296,11 @@ impl WorkerRepo {
         Ok(stopped)
     }
 
-    /// `provisioning → running`, recording Docker's immutable ID (or the
-    /// local session name). `false` when the row is no longer
-    /// `provisioning` (it was stopped mid-launch): the launch path then
-    /// stops what it launched itself, since its stopper's builderd Stop does
-    /// not cover a Launch that reached a restarted builderd.
+    /// `provisioning → running` (the only transition to `running`),
+    /// recording the container or session name and clearing the launch's
+    /// pending marker. `false` when the row is no longer `provisioning` (it
+    /// was stopped mid-launch): the launch path then stops the worker like a
+    /// failed launch and finishes that stop itself.
     pub async fn finalize_worker_launch(
         &self,
         worker_id: &str,
@@ -240,7 +308,8 @@ impl WorkerRepo {
     ) -> Result<bool, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
-            "UPDATE worker SET container_id = $1, container_status = 'running', updated_at = $2
+            "UPDATE worker SET container_id = $1, container_status = 'running', updated_at = $2,
+               launch_pending = false
              WHERE worker_id = $3 AND container_status = 'provisioning'",
         )
         .bind(container_id)

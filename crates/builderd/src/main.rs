@@ -97,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
         .workspace
         .clone()
         .unwrap_or_else(|| config_dir.join("workspace"));
-    let instance_id = pool_workspace.display().to_string();
+    let instance_id = instance_id(&pool_workspace)?;
     let overlays = overlay::LocalOverlayManager {
         workspace: pool_workspace.clone(),
         config_dir: config_dir.clone(),
@@ -169,9 +169,40 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// This instance's `ur.instance` container label: the canonical workspace
+/// path (created if missing), so a symlink or another spelling of the same
+/// directory gives the same instance.
+fn instance_id(workspace: &std::path::Path) -> anyhow::Result<String> {
+    std::fs::create_dir_all(workspace)
+        .map_err(|e| anyhow::anyhow!("create workspace {}: {e}", workspace.display()))?;
+    let canonical = std::fs::canonicalize(workspace)
+        .map_err(|e| anyhow::anyhow!("canonicalize workspace {}: {e}", workspace.display()))?;
+    Ok(canonical.display().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ur-ezhdb gap #2: every spelling of the workspace is one instance.
+    #[test]
+    fn instance_id_is_the_canonical_workspace_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let id = instance_id(&workspace).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&workspace, &link).unwrap();
+        assert_eq!(instance_id(&link).unwrap(), id, "through a symlink");
+        let dotted = tmp.path().join("workspace/./../workspace/");
+        assert_eq!(instance_id(&dotted).unwrap(), id, "another spelling");
+        assert_eq!(
+            id,
+            std::fs::canonicalize(&workspace)
+                .unwrap()
+                .display()
+                .to_string()
+        );
+    }
 
     #[test]
     fn host_workerd_addr_maps_unspecified_binds_to_loopback() {

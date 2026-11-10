@@ -218,10 +218,12 @@ RPC cannot abandon one halfway. Contract: Stop(id) returning Ok means the id is 
 this builderd and never will be. Tombstones expire after an hour (`TOMBSTONE_TTL`) and do not
 survive a builderd restart. Launch RPCs are never resent, but a Launch first sent after its
 worker's Stop reached the previous builderd process still runs in the new one. The server
-converges it: that launch's finalize changes no row, so it Stops the worker; if that Stop fails,
-the reconciler's List sweep finds the worker with no active row and stops it. Until then the
-slot (released by the earlier stopper) is free under a live worker: the remaining window,
-bounded by the launch's own Stop or one reconcile interval. `StopWorker` requires `worker_id`.
+converges it: that launch's finalize changes no row, so it Stops the worker. The slot is never
+free meanwhile: while a worker's own Launch RPC is unresolved (`worker.launch_pending`,
+migration 006), only the launch path (`finish_launch_stop`) or the server's startup pass may
+finish its stop; any other stopper or reconcile pass marks it `stopping` and sends Stop, but
+`finish_stop` refuses and the slot stays linked. If the launch's own Stop fails, it clears the
+marker and the reconciler finishes once a Stop succeeds. `StopWorker` requires `worker_id`.
 
 ### Termination paths and reconciliation (ur-j5puq)
 
@@ -276,6 +278,21 @@ A legacy container `running` row (pre-ur-ezhdb, never listed) is left alone. Sta
 container: the sweep keys on labels, not rows. Known limit: a local `provisioning` row written
 by a pre-ur-j5puq build has no slot link (that build linked at finalize), so its slot is free
 while startup's stop converges it.
+
+Known limits (ur-ezhdb):
+
+- **`--workspace` changed while containers run.** `ur.instance` is builderd's canonical workspace path, so a
+  symlink or another spelling is the same instance, but an actual path change makes the old instance's containers
+  invisible to List and Stop: they keep running until removed by hand.
+- **Upgrade strays.** If the server restarted without `ur stop` across the upgrade, a pre-change `stopped` row whose
+  unlabeled container is still alive is never found (not listed, row inactive): the container runs on a freed slot
+  until removed by hand. A pre-change `provisioning` row is moved to `stopping` at startup and stopped only through
+  its recorded legacy name, after builderd checks the container's `UR_WORKER_ID` env.
+- **builderd dies inside `docker run -d`.** The docker CLI can outlive builderd and create the (labeled) container
+  after the server's Launch RPC already failed and its Stop on the restarted builderd returned Ok, so the slot is
+  free under that container until the next reconcile pass lists it with no active row and stops it (≤ one interval).
+- **Legacy `running` rows are skipped.** A pre-change container is never listed, so the reconciler leaves its
+  `running` row alone; it runs until stopped through its row (`ur worker stop`, workflow completion).
 
 The routed `WorkerDaemonService` (`crates/builderd/src/workerd_router.rs`, `WorkerdRouter`)
 reads the `ur-worker-id` header (`ur_config::WORKER_ID_HEADER`) and delegates to that

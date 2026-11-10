@@ -37,3 +37,4 @@ The `ui_events` table DDL used in this crate's migrations must stay identical to
 - Managers implement `Clone` and accept dependencies via constructor (dependency injection).
 - Never modify existing migration files — always add new ones for schema changes.
 - Migration files are embedded at compile time via `sqlx::migrate!()`.
+- `worker.launch_pending` (migration 006, ur-ezhdb): set by `update_provisioning_worker` / `mark_launch_pending` just before a Launch RPC, cleared by `finalize_worker_launch`, `finish_launch_stop`, `clear_launch_pending` or (startup) `clear_all_launch_pending`. `finish_stop` refuses while it is set. Migration 005 is final; schema changes go in new migrations.

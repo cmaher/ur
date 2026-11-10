@@ -23,8 +23,12 @@
 //! is re-read before it is stopped, because a launch records its row before
 //! builderd starts the worker.
 //!
+//! A stop path on a row whose own Launch RPC is unresolved (launch pending)
+//! leaves it `stopping` with its slot linked; the launch path finishes it.
+//!
 //! [`WorkerReconcileManager::startup`] runs before the server serves or
-//! dispatches, so no launch is in flight: a `provisioning` row then is a
+//! dispatches, so no launch is in flight: it clears every launch-pending
+//! marker (a dead server cannot deliver a Launch), and a `provisioning` row then is a
 //! launch the previous server never finished. It becomes `stopping` (its slot
 //! link, inserted with the row, keeps the slot out of the pool) and the pass
 //! that follows stops it. While the server runs, a stop of a `provisioning`
@@ -90,6 +94,19 @@ impl WorkerReconcileManager {
     /// `Err` only when stale `provisioning` rows cannot be marked (DB
     /// errors); a failed builderd list is logged and left to the loop.
     pub async fn startup(&self) -> Result<(), String> {
+        // A dead server can no longer deliver a Launch: its pending markers
+        // go, so this pass finishes those workers' stops.
+        let pending = self
+            .worker_repo
+            .clear_all_launch_pending()
+            .await
+            .map_err(|e| format!("clear launch markers: {e}"))?;
+        if !pending.is_empty() {
+            warn!(
+                ?pending,
+                "launches a previous server left pending; stops can finish"
+            );
+        }
         let stale = self
             .worker_repo
             .list_workers_by_container_status("provisioning")

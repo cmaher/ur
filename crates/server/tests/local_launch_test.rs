@@ -1,8 +1,9 @@
-// `runtime = local` launch/stop through `WorkerManager` against a fake
-// builderd serving only `BuilderLocalWorkerService`: builderd errors reach the
-// caller, a failed launch deletes the provisional row, and a failed stop
-// leaves the row `stopping`. Also `WorkerReconcileManager` passes against
-// the fake's `ListLocalWorkers` and container `InspectWorker`/`StopWorker`.
+// Launch/stop through `WorkerManager` (both runtimes) against a fake
+// builderd (`BuilderLocalWorkerService`, `BuilderContainerService`,
+// `BuilderPoolService`): builderd errors reach the caller, a failed launch is
+// stopped, and a failed stop leaves the row `stopping`. Also
+// `WorkerReconcileManager` passes against the fake's `ListLocalWorkers` and
+// `ListWorkerContainers` (the `table_*` tests cover its table per runtime).
 
 use std::sync::{Arc, Mutex};
 
@@ -1596,11 +1597,13 @@ fn runtime_config(
     }
 }
 
-/// P2 (both runtimes): a builderd restart between a stopper's Stop (Ok from
-/// the old process, where nothing was in flight) and the Launch reaching
-/// the new process, which runs it. The launch's finalize changes no row, so
-/// it Stops the worker itself. If that Stop fails too, the worker is left
-/// running with no active row, and the next pass's List sweep stops it.
+/// P2 / design gap #1 (both runtimes): stoppers run after the launch
+/// recorded its row but before its Launch reached builderd. Their Stop may
+/// reach a builderd that then restarts (losing its tombstone), so the
+/// Launch, delivered for the first time to the new process, runs. While the
+/// Launch is unresolved, no stopper and no reconcile pass may free the slot:
+/// it stays linked until the launch resolves and the launch's own Stop is
+/// Ok. If that Stop fails, the reconciler finishes once a Stop succeeds.
 #[tokio::test(flavor = "multi_thread")]
 async fn launch_reaching_a_restarted_builderd_after_its_stop_converges() {
     for rt in [LOCAL, CONTAINER] {
@@ -1619,11 +1622,48 @@ async fn lost_launch_converges(rt: ur_config::WorkerRuntime, launch_stop_fails: 
     };
     assert!(h.worker_repo.claim_slot(&row, &slot).await.unwrap());
     let (launch, gate) = launch_held_in_flight(&h, runtime_config(&h, rt, "proj-1-rest")).await;
+    let worker_id = ur_server::WorkerId("proj-1-rest".into());
+
+    // A stopper, a reconcile pass and a second stopper, all in the window.
     h.worker_manager
-        .stop_by_worker_id(&ur_server::WorkerId("proj-1-rest".into()))
+        .stop_by_worker_id(&worker_id)
         .await
         .unwrap();
-    assert_eq!(status_of(&h, "proj-1-rest").await, "stopped");
+    assert_eq!(status_of(&h, "proj-1-rest").await, "stopping", "{rt:?}");
+    assert_eq!(
+        slot_owner(&h, "proj-1-rest").await,
+        Some(slot.clone()),
+        "{rt:?}"
+    );
+    reconciler(&h).reconcile_once().await.unwrap();
+    assert_eq!(
+        slot_owner(&h, "proj-1-rest").await,
+        Some(slot.clone()),
+        "{rt:?}"
+    );
+    h.worker_manager
+        .stop_by_worker_id(&worker_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        slot_owner(&h, "proj-1-rest").await,
+        Some(slot.clone()),
+        "{rt:?}"
+    );
+    assert!(
+        h.worker_repo
+            .find_available_slots(PROJECT)
+            .await
+            .unwrap()
+            .is_empty(),
+        "{rt:?}: the slot is not reusable while the Launch is unresolved"
+    );
+    assert_eq!(
+        stops_of(&h, rt).len(),
+        3,
+        "{rt:?}: each stopper still Stops"
+    );
+
     if launch_stop_fails {
         stop_error(&h, rt, Some(Status::internal("stop: busy")));
     }
@@ -1634,14 +1674,116 @@ async fn lost_launch_converges(rt: ur_config::WorkerRuntime, launch_stop_fails: 
     let err = launch.await.unwrap().unwrap_err();
     assert!(err.contains("was stopped during launch"), "{rt:?}: {err}");
     assert_eq!(
-        stops_of(&h, rt),
-        vec!["proj-1-rest", "proj-1-rest"],
-        "{rt:?}: the stopper's Stop, then the launch's own"
+        stops_of(&h, rt).len(),
+        4,
+        "{rt:?}: then the launch's own Stop"
     );
-    if launch_stop_fails {
-        assert!(err.contains("stop: busy"), "{err}");
-        stop_error(&h, rt, None);
+    if !launch_stop_fails {
+        assert_eq!(status_of(&h, "proj-1-rest").await, "stopped", "{rt:?}");
+        assert_eq!(slot_owner(&h, "proj-1-rest").await, None, "{rt:?}");
+        return;
+    }
+    assert!(err.contains("stop: busy"), "{err}");
+    assert_eq!(status_of(&h, "proj-1-rest").await, "stopping", "{rt:?}");
+    assert_eq!(
+        slot_owner(&h, "proj-1-rest").await,
+        Some(slot.clone()),
+        "{rt:?}"
+    );
+    assert!(
+        !h.worker_repo
+            .is_launch_pending("proj-1-rest")
+            .await
+            .unwrap(),
+        "{rt:?}: the Launch resolved, so a later confirmed Stop covers it"
+    );
+    stop_error(&h, rt, None);
+    reconciler(&h).reconcile_once().await.unwrap();
+    assert_eq!(status_of(&h, "proj-1-rest").await, "stopped", "{rt:?}");
+    assert_eq!(slot_owner(&h, "proj-1-rest").await, None, "{rt:?}");
+}
+
+/// Design gap #1: a server that died with a launch pending can no longer
+/// deliver that Launch. Until the next server's startup pass, a stopper only
+/// marks the row `stopping` (slot linked); startup clears the marker and its
+/// pass finishes the stop (both runtimes).
+#[tokio::test]
+async fn startup_finishes_a_stop_left_pending_by_a_dead_launch() {
+    for rt in [LOCAL, CONTAINER] {
+        let h = harness().await;
+        let slot = pool_slot(&h).await;
+        let row = workflow_db::model::Worker {
+            runtime: rt,
+            container_id: recorded_name(rt, "proj-1-dead"),
+            ..claim_row(&h, "proj-1-dead")
+        };
+        assert!(h.worker_repo.claim_slot(&row, &slot).await.unwrap());
+        // As record_provisioning_worker leaves it just before the Launch RPC.
+        assert!(
+            h.worker_repo
+                .mark_launch_pending("proj-1-dead")
+                .await
+                .unwrap()
+        );
+        h.worker_manager
+            .stop_by_worker_id(&ur_server::WorkerId("proj-1-dead".into()))
+            .await
+            .unwrap();
         reconciler(&h).reconcile_once().await.unwrap();
-        assert_eq!(stops_of(&h, rt).len(), 3, "{rt:?}: the sweep stopped it");
+        assert_eq!(status_of(&h, "proj-1-dead").await, "stopping", "{rt:?}");
+        assert_eq!(
+            slot_owner(&h, "proj-1-dead").await,
+            Some(slot.clone()),
+            "{rt:?}"
+        );
+
+        reconciler(&h).startup().await.unwrap();
+        assert_eq!(status_of(&h, "proj-1-dead").await, "stopped", "{rt:?}");
+        assert_eq!(slot_owner(&h, "proj-1-dead").await, None, "{rt:?}");
+        assert!(
+            !h.worker_repo
+                .is_launch_pending("proj-1-dead")
+                .await
+                .unwrap()
+        );
+    }
+}
+
+/// The launch marker is set with the provisioning refresh that precedes the
+/// Launch RPC and cleared by finalize (both runtimes).
+#[tokio::test]
+async fn launch_marker_spans_the_launch_rpc() {
+    for rt in [LOCAL, CONTAINER] {
+        let h = harness().await;
+        let slot = pool_slot(&h).await;
+        let row = workflow_db::model::Worker {
+            runtime: rt,
+            ..claim_row(&h, "proj-1-mark")
+        };
+        assert!(h.worker_repo.claim_slot(&row, &slot).await.unwrap());
+        assert!(
+            !h.worker_repo
+                .is_launch_pending("proj-1-mark")
+                .await
+                .unwrap()
+        );
+        let (launch, gate) = launch_held_in_flight(&h, runtime_config(&h, rt, "proj-1-mark")).await;
+        assert!(
+            h.worker_repo
+                .is_launch_pending("proj-1-mark")
+                .await
+                .unwrap(),
+            "{rt:?}"
+        );
+        gate.notify_one();
+        launch.await.unwrap().unwrap();
+        assert!(
+            !h.worker_repo
+                .is_launch_pending("proj-1-mark")
+                .await
+                .unwrap(),
+            "{rt:?}"
+        );
+        assert_eq!(status_of(&h, "proj-1-mark").await, "running");
     }
 }

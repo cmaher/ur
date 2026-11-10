@@ -1120,9 +1120,21 @@ impl WorkerManager {
         match self.worker_repo.insert_worker(&worker).await {
             // The claim row exists but is no longer `provisioning`.
             Err(sqlx::Error::Database(e)) if e.code().is_some_and(|c| c == "23505") => {
-                Err(stopped_during_launch(&config.worker_id))
+                return Err(stopped_during_launch(&config.worker_id));
             }
-            result => result.map_err(db),
+            result => result.map_err(db)?,
+        }
+        // The Launch RPC goes out only with the marker set (a stop may have
+        // landed since the insert).
+        if self
+            .worker_repo
+            .mark_launch_pending(&config.worker_id.0)
+            .await
+            .map_err(db)?
+        {
+            Ok(())
+        } else {
+            Err(stopped_during_launch(&config.worker_id))
         }
     }
 
@@ -1162,10 +1174,21 @@ impl WorkerManager {
     /// a failed launch may still have left a live worker. Releases the slot
     /// (row `stopped`) only once builderd's Stop is Ok; otherwise the row
     /// stays `stopping`, still holding the slot. Returns the launch error.
+    ///
+    /// This is the launch path's own stop, after its Launch RPC resolved, so
+    /// it finishes the stop even while the launch is pending (no other
+    /// stopper may). If its Stop fails, the pending marker is cleared: any
+    /// later confirmed Stop covers the worker, so the reconciler can finish.
     pub(crate) async fn abandon_launch(&self, worker_id: &WorkerId, error: String) -> String {
-        match self.stop_by_worker_id(worker_id).await {
+        match self.stop_worker(worker_id, StopFinisher::LaunchPath).await {
             Ok(()) => error,
-            Err(e) => format!("{error}; failed to clean up, left stopping: {e}"),
+            Err(e) => {
+                let cleared = match self.worker_repo.clear_launch_pending(&worker_id.0).await {
+                    Ok(()) => String::new(),
+                    Err(db) => format!("; failed to clear its launch marker: {db}"),
+                };
+                format!("{error}; failed to clean up, left stopping: {e}{cleared}")
+            }
         }
     }
 
@@ -1181,7 +1204,21 @@ impl WorkerManager {
     }
 
     /// Stop a running worker process by worker ID. Stops + removes the container.
+    ///
+    /// While the worker's own Launch RPC is unresolved (launch pending), the
+    /// row is only marked `stopping` and builderd's Stop is sent: the slot
+    /// stays linked, and the launch path (or the server's startup pass)
+    /// finishes the stop. This Stop may have reached a builderd that then
+    /// restarted, so its Ok does not cover a Launch not yet delivered.
     pub async fn stop_by_worker_id(&self, worker_id: &WorkerId) -> Result<(), String> {
+        self.stop_worker(worker_id, StopFinisher::Any).await
+    }
+
+    async fn stop_worker(
+        &self,
+        worker_id: &WorkerId,
+        finisher: StopFinisher,
+    ) -> Result<(), String> {
         let worker = self
             .worker_repo
             .get_worker(&worker_id.0)
@@ -1223,15 +1260,17 @@ impl WorkerManager {
                 .map_err(|status| format!("stop_worker gRPC error: {status}"))?,
             ur_config::WorkerRuntime::Local => self.stop_local_worker(worker_id).await?,
         }
-        self.worker_repo
-            .finish_stop(&worker_id.0)
-            .await
-            .map_err(|e| format!("failed to mark worker stopped: {e}"))?;
+        let finished = match finisher {
+            StopFinisher::Any => self.worker_repo.finish_stop(&worker_id.0).await,
+            StopFinisher::LaunchPath => self.worker_repo.finish_launch_stop(&worker_id.0).await,
+        }
+        .map_err(|e| format!("failed to mark worker stopped: {e}"))?;
 
         info!(
             process_id = worker.process_id,
             %worker_id,
-            "process stopped"
+            finished,
+            "process stopped (unfinished: already stopped, or its launch path finishes it)"
         );
 
         Ok(())
@@ -1296,6 +1335,16 @@ impl WorkerManager {
         }
         Err(format!("unknown worker: {process_id}"))
     }
+}
+
+/// Who may finish a stop (`stopping → stopped` + unlink) of a worker whose
+/// launch is pending.
+#[derive(Clone, Copy)]
+enum StopFinisher {
+    /// Any stopper: not while the launch is pending.
+    Any,
+    /// The launch path, after its own Launch RPC resolved.
+    LaunchPath,
 }
 
 fn stopped_during_launch(worker_id: &WorkerId) -> String {

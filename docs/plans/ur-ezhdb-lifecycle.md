@@ -17,6 +17,14 @@ correctness comes from identity + observation.
   (migration 005) means one owner per slot; the insert decides who gets a slot.
 - A slot is unlinked only by `finish_stop` (`stopping → stopped` + unlink, one transaction), and only after builderd
   `Stop(worker_id)` returned Ok.
+- **Launch pending (migration 006, `worker.launch_pending`).** Set with the `provisioning` refresh just before the
+  Launch RPC (`record_provisioning_worker`), cleared by finalize, or by the launch path once its Launch RPC resolved
+  and its own stop was attempted. **While a worker's own Launch RPC is unresolved, only the launch path
+  (`abandon_launch` / `finish_launch`, via `finish_launch_stop`) or the server startup pass may finish its stop.**
+  Other stoppers and the reconciler still mark it `stopping` and send `Stop(worker_id)`, but `finish_stop` refuses
+  (the slot stays linked): their Stop may have reached a builderd that then restarted and lost its tombstone, so its
+  Ok does not cover a Launch not yet delivered. Startup clears every marker first (a dead server can no longer deliver
+  a Launch), then its pass finishes those stops.
 
 ## 2. builderd (executor, keyed only by worker id)
 
@@ -100,7 +108,22 @@ one table for both runtimes:
 ## Upgrade
 
 Containers launched before this change have process-id names and no labels. They are not listed; their rows keep the
-current row-based stop path until they stop. Documented as a known limit.
+current row-based stop path until they stop (`StopWorkerRequest.legacy_container_id`, env-checked by builderd).
+
+Known limits:
+
+- **`--workspace` changed while containers run.** `ur.instance` is builderd's canonical workspace path, so a
+  symlink or another spelling is the same instance, but an actual path change makes the old instance's containers
+  invisible to List and Stop: they keep running until removed by hand.
+- **Upgrade strays.** If the server restarted without `ur stop` across the upgrade, a pre-change `stopped` row whose
+  unlabeled container is still alive is never found (not listed, row inactive): the container runs on a freed slot
+  until removed by hand. A pre-change `provisioning` row is moved to `stopping` at startup and stopped only through
+  its recorded legacy name, after builderd checks the container's `UR_WORKER_ID` env.
+- **builderd dies inside `docker run -d`.** The docker CLI can outlive builderd and create the (labeled) container
+  after the server's Launch RPC already failed and its Stop on the restarted builderd returned Ok, so the slot is
+  free under that container until the next reconcile pass lists it with no active row and stops it (≤ one interval).
+- **Legacy `running` rows are skipped.** A pre-change container is never listed, so the reconciler leaves its
+  `running` row alone; it runs until stopped through its row (`ur worker stop`, workflow completion).
 
 ## Non-goals
 
