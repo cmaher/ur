@@ -182,30 +182,6 @@ fn probe_worker_startup(
     }
 }
 
-fn cleanup_failed_launch(
-    runtime: &impl ContainerRuntime,
-    container_id: &ContainerId,
-) -> Result<(), String> {
-    let mut errors = Vec::new();
-    match runtime.inspect_state(container_id) {
-        Ok(Some(state)) if state.running => {
-            if let Err(error) = runtime.stop(container_id) {
-                errors.push(format!("failed to stop container: {error}"));
-            }
-        }
-        Ok(_) => {}
-        Err(error) => errors.push(format!("failed to inspect container for cleanup: {error}")),
-    }
-    if let Err(error) = runtime.rm(container_id) {
-        errors.push(format!("failed to remove container: {error}"));
-    }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("; "))
-    }
-}
-
 impl BuilderContainerHandler {
     /// `docker run` plus the startup wait (the old LaunchWorker body).
     async fn launch_container(
@@ -243,12 +219,10 @@ impl BuilderContainerHandler {
         .await
         .map_err(|error| format!("worker startup check failed: {error}"))
         .and_then(|result| result);
+        // A failed start leaves the container: the server's Stop of the
+        // worker (which follows any failed Launch) removes it by label.
         if let Err(error) = startup_result {
-            let cleanup = cleanup_failed_launch(&self.runtime, &container_id).map_or_else(
-                |cleanup| format!("; cleanup also failed: {cleanup}"),
-                |()| String::new(),
-            );
-            return Err(Status::failed_precondition(format!("{error}{cleanup}")));
+            return Err(Status::failed_precondition(error));
         }
 
         info!(container_id = %container_id.0, name = %req.name, "container launched");
@@ -689,9 +663,8 @@ esac
         }
     }
 
-    /// ur-ezhdb #1: a launch fails after `docker run` and its cleanup fails
-    /// too (container left running), while a Stop of the worker waits on the
-    /// barrier. That Stop finds the leftover by its label: here it fails
+    /// ur-ezhdb #1: a launch fails after `docker run` (container left
+    /// running), while a Stop of the worker waits on the barrier. That Stop finds the leftover by its label: here it fails
     /// (docker stop fails), never returning Ok over a running container.
     #[tokio::test(flavor = "multi_thread")]
     async fn stop_waiting_on_a_failed_launch_targets_its_leftover_container() {
@@ -714,8 +687,7 @@ esac
         let stopper = handler.clone();
         let stop_task = tokio::spawn(async move { stopper.stop_worker(stop("w1")).await });
 
-        let err = launch.await.unwrap().unwrap_err();
-        assert!(err.message().contains("cleanup also failed"), "{err}");
+        launch.await.unwrap().unwrap_err();
         assert!(
             stop_task.await.unwrap().is_err(),
             "Stop returned Ok while the launched container is running"

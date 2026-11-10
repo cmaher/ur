@@ -609,8 +609,8 @@ impl LaunchManager {
                 .await
         {
             let reason = self
-                .worker_manager
-                .remove_provisioning_worker(&worker_id, e.to_string())
+                .repo_pool_manager
+                .drop_claim(&worker_id.0, e.to_string())
                 .await;
             return Err(CoreError::PoolSlotFailed { reason }.into());
         }
@@ -847,8 +847,8 @@ impl LaunchManager {
             Err(status) if claimed => {
                 // Nothing was started: drop the claim so the slot is free again.
                 let message = self
-                    .worker_manager
-                    .remove_provisioning_worker(&worker_id, status.message().to_owned())
+                    .repo_pool_manager
+                    .drop_claim(&worker_id.0, status.message().to_owned())
                     .await;
                 return Err(Status::new(status.code(), message));
             }

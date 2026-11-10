@@ -226,8 +226,8 @@ the same fields to **host paths** (templates against the host config dir, `%PROJ
   host user).
 - **Memory link ownership.** The memory dir is created if missing. A real non-empty directory at
   the link path fails the launch (`FailedPrecondition`); an empty one or a symlink elsewhere is
-  replaced. The drive's `.ur/owner` records agent, slot and memory target; teardown removes the
-  link only while it still points at that target, and an orphan drive whose slot a live worker
+  replaced. The drive's `.ur/owner` records agent and slot; teardown removes the link (a
+  symlink only), and an orphan drive whose slot a live worker
   now uses leaves the link alone. Teardown never removes a link target (`remove_dir_all` does not
   follow symlinks).
 

@@ -84,6 +84,10 @@ struct FakeBuilderd {
     /// across a builderd restart.
     arrival_gate: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
     arrived: Arc<tokio::sync::Notify>,
+    /// When set, the next Stop (either service) notifies `stop_held` and
+    /// waits for this before answering (its error is read after the wait).
+    hold_next_stop: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
+    stop_held: Arc<tokio::sync::Notify>,
 }
 
 #[tonic::async_trait]
@@ -110,6 +114,7 @@ impl BuilderContainerService for FakeBuilderd {
         let req = request.into_inner();
         let worker_id = req.worker_id.clone();
         self.container_stops.lock().unwrap().push(req);
+        self.hold_stop().await;
         match self.container_stop_error.lock().unwrap().clone() {
             Some(status) => Err(status),
             None => {
@@ -152,6 +157,14 @@ impl BuilderContainerService for FakeBuilderd {
 }
 
 impl FakeBuilderd {
+    async fn hold_stop(&self) {
+        let hold = self.hold_next_stop.lock().unwrap().take();
+        if let Some(hold) = hold {
+            self.stop_held.notify_one();
+            hold.notified().await;
+        }
+    }
+
     async fn arrive(&self) {
         let gate = self.arrival_gate.lock().unwrap().take();
         if let Some(gate) = gate {
@@ -238,6 +251,7 @@ impl BuilderLocalWorkerService for FakeBuilderd {
         };
         // builderd's Stop waits for an in-flight Launch of the worker.
         drop(self.in_flight.lock().await);
+        self.hold_stop().await;
         let hold = self.hold_later_stops.lock().unwrap().clone();
         if let Some(hold) = hold {
             if earlier {
@@ -1691,10 +1705,7 @@ async fn lost_launch_converges(rt: ur_config::WorkerRuntime, launch_stop_fails: 
         "{rt:?}"
     );
     assert!(
-        !h.worker_repo
-            .is_launch_pending("proj-1-rest")
-            .await
-            .unwrap(),
+        !launch_pending(&h, "proj-1-rest").await.unwrap(),
         "{rt:?}: the Launch resolved, so a later confirmed Stop covers it"
     );
     stop_error(&h, rt, None);
@@ -1721,7 +1732,7 @@ async fn startup_finishes_a_stop_left_pending_by_a_dead_launch() {
         // As record_provisioning_worker leaves it just before the Launch RPC.
         assert!(
             h.worker_repo
-                .mark_launch_pending("proj-1-dead")
+                .update_provisioning_worker(&row)
                 .await
                 .unwrap()
         );
@@ -1740,12 +1751,7 @@ async fn startup_finishes_a_stop_left_pending_by_a_dead_launch() {
         reconciler(&h).startup().await.unwrap();
         assert_eq!(status_of(&h, "proj-1-dead").await, "stopped", "{rt:?}");
         assert_eq!(slot_owner(&h, "proj-1-dead").await, None, "{rt:?}");
-        assert!(
-            !h.worker_repo
-                .is_launch_pending("proj-1-dead")
-                .await
-                .unwrap()
-        );
+        assert!(!launch_pending(&h, "proj-1-dead").await.unwrap());
     }
 }
 
@@ -1761,29 +1767,75 @@ async fn launch_marker_spans_the_launch_rpc() {
             ..claim_row(&h, "proj-1-mark")
         };
         assert!(h.worker_repo.claim_slot(&row, &slot).await.unwrap());
-        assert!(
-            !h.worker_repo
-                .is_launch_pending("proj-1-mark")
-                .await
-                .unwrap()
-        );
+        assert!(!launch_pending(&h, "proj-1-mark").await.unwrap());
         let (launch, gate) = launch_held_in_flight(&h, runtime_config(&h, rt, "proj-1-mark")).await;
-        assert!(
-            h.worker_repo
-                .is_launch_pending("proj-1-mark")
-                .await
-                .unwrap(),
-            "{rt:?}"
-        );
+        assert!(launch_pending(&h, "proj-1-mark").await.unwrap(), "{rt:?}");
         gate.notify_one();
         launch.await.unwrap().unwrap();
-        assert!(
-            !h.worker_repo
-                .is_launch_pending("proj-1-mark")
-                .await
-                .unwrap(),
-            "{rt:?}"
-        );
+        assert!(!launch_pending(&h, "proj-1-mark").await.unwrap(), "{rt:?}");
         assert_eq!(status_of(&h, "proj-1-mark").await, "running");
+    }
+}
+
+/// `worker.launch_pending`, read directly (no repo method needs it).
+async fn launch_pending(h: &Harness, worker_id: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT launch_pending FROM worker WHERE worker_id = $1")
+        .bind(worker_id)
+        .fetch_one(h._test_db.workflow_pool())
+        .await
+}
+
+/// R1 (the reviewer's D1 probe, both runtimes): a stopper S begins while the
+/// launch is pending, and its Stop is held (it reached a builderd that then
+/// restarts). The Launch resolves, the launch's own Stop fails, so the launch
+/// path clears the marker. S's Stop then returns Ok: S must not release the
+/// slot, because its Stop predates the Launch's delivery. A Stop begun after
+/// the launch resolved (the reconciler's) finishes it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stopper_that_began_while_the_launch_was_pending_never_finishes() {
+    for rt in [LOCAL, CONTAINER] {
+        let h = harness().await;
+        let slot = pool_slot(&h).await;
+        let row = workflow_db::model::Worker {
+            runtime: rt,
+            ..claim_row(&h, "proj-1-stal")
+        };
+        assert!(h.worker_repo.claim_slot(&row, &slot).await.unwrap());
+        let (launch, gate) = launch_held_in_flight(&h, runtime_config(&h, rt, "proj-1-stal")).await;
+
+        let hold = Arc::new(tokio::sync::Notify::new());
+        *h.fake.hold_next_stop.lock().unwrap() = Some(hold.clone());
+        let wm = h.worker_manager.clone();
+        let stale = tokio::spawn(async move {
+            wm.stop_by_worker_id(&ur_server::WorkerId("proj-1-stal".into()))
+                .await
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            h.fake.stop_held.notified(),
+        )
+        .await
+        .expect("the stale stopper's Stop reached builderd");
+
+        stop_error(&h, rt, Some(Status::internal("stop: busy")));
+        lists(&h, rt, &[("proj-1-stal", true)]);
+        gate.notify_one();
+        let err = launch.await.unwrap().unwrap_err();
+        assert!(err.contains("stop: busy"), "{rt:?}: {err}");
+        assert!(!launch_pending(&h, "proj-1-stal").await.unwrap(), "{rt:?}");
+
+        stop_error(&h, rt, None);
+        hold.notify_one();
+        stale.await.unwrap().unwrap();
+        assert_eq!(
+            slot_owner(&h, "proj-1-stal").await,
+            Some(slot.clone()),
+            "{rt:?}: the stale stopper released the slot under the relaunched worker"
+        );
+        assert_eq!(status_of(&h, "proj-1-stal").await, "stopping", "{rt:?}");
+
+        reconciler(&h).reconcile_once().await.unwrap();
+        assert_eq!(status_of(&h, "proj-1-stal").await, "stopped", "{rt:?}");
+        assert_eq!(slot_owner(&h, "proj-1-stal").await, None, "{rt:?}");
     }
 }

@@ -4,14 +4,12 @@ A local worker runs the agent natively on the host, in a pool slot, inside a tmu
 builderd owns. Slot acquisition, dispatch (`WorkerDaemonService`) and the worker row are the same
 as for containers. What changes is that builderd launches and supervises the agent in tmux, and
 serves the worker's daemon in-process, where a container would run `docker run` and `workerd`.
-Design: ur-wdfir. Built on branch ur-y94lc (ur-vatwl, ur-4p34c, ur-y1f6n, ur-j5puq, ur-dc3yc,
-ur-hld78).
 
 This file is the cross-cutting map. These codeflows have the detail:
 
 - [builderd.md](builderd.md#builderlocalworkerservice-and-the-routed-workerdaemonservice): RPCs, session env, Stop barrier, adoption, reconcile pass
 - [pool-git-builder-flow.md](pool-git-builder-flow.md#slot-claim-ur-j5puq): DB slot claim and unlink-only release
-- [server-lifecycle.md](server-lifecycle.md): `ur start` builderd health wait, `ur stop` double sweep, loopback worker port
+- [server-lifecycle.md](server-lifecycle.md): `ur start` builderd health wait, `ur stop` builderd sweep, loopback worker port
 - [config.md](config.md#runtime-precedence): `runtime` key and its precedence
 - [skill-loading.md](skill-loading.md#skill-layouts-skilllayout): `ur` plugin layout, `ur:` rewrite, `%UR_SKILL_HOOKS%`
 
@@ -106,7 +104,7 @@ on Linux it binds the Docker bridge IP.
   <mount dest without leading />  -> <mount source>     container.mounts and context repos
   brain                           -> <brain_dir>
   .ur/
-    owner                    agent, slot path, memory target (one per line)
+    owner                    agent, slot path (one per line)
     settings.json            layered over the user's settings via --settings
     instructions.md          strategy + shared fragments + skill precedence + project
                              instruction (inlined) + drive map + host-tools note
@@ -161,40 +159,24 @@ on Linux it binds the Docker bridge IP.
 
 ## Slot ownership
 
-The database is the only record of who owns a slot (ur-j5puq). Full flow:
-[pool-git-builder-flow.md](pool-git-builder-flow.md#slot-claim-ur-j5puq).
-
-- **Claim.** `WorkerRepo::claim_slot` inserts the `provisioning` worker row and its `worker_slot`
-  link in one transaction. `UNIQUE (slot_id)` (migration 005) decides between racing launches.
-  Migration 005 resolves existing duplicates first: links of inactive workers are dropped, a
-  `running` worker beats the others and then the newest wins, and each loser moves to `stopping`.
-- **Transitions are conditional UPDATEs.** finalize `provisioning → running`, `begin_stopping`
-  (active → `stopping`), `finish_stop` (`stopping → stopped` + delete this worker's link).
-- **Release is unlink-only** (both runtimes). The slot's contents are not touched. The next
-  acquire's `RecycleSlot` resets it under the new owner's claim. Downside: a stopped worker's
-  dirty tree stays on disk until then.
-- **Release requires confirmation.** `finish_stop` runs only after `StopLocalWorker` returns Ok.
-  On any failure the row stays `stopping` and keeps its slot.
+The database is the only record of who owns a slot, the same for both runtimes: claim (row +
+link in one transaction, `UNIQUE (slot_id)`), conditional transitions, unlink-only release, and
+release only after builderd's Stop is Ok (never by a stopper that began while the worker's own
+Launch was pending). Full flow: [pool-git-builder-flow.md](pool-git-builder-flow.md#slot-claim-ur-j5puq)
+and the rules in [the ur-ezhdb plan](../plans/ur-ezhdb-lifecycle.md#1-database-desired-state).
 
 ## builderd Stop barrier
 
-`WorkerBarrier` (`crates/builderd/src/barrier.rs`), used by the local and container services:
-`begin_stop(id)` records an in-memory tombstone, then takes the id's lock, which waits for any
-in-flight launch. `begin_launch(id)` takes the lock and refuses a tombstoned id. Launches run on
-a spawned task, so a cancelled RPC cannot leave one half done. So **Stop Ok means the id is not
-running in this builderd and never will be.** Tombstones expire after `TOMBSTONE_TTL` (1h). A
-builderd restart loses them. Launch RPCs are never resent (`ur_rpc::retry::NEVER_RETRIED`); a
-Launch first sent after its worker's Stop reached the old process still runs in the new one, and
-converges: its finalize changes no row, so the launch Stops the worker, and failing that the
-reconciler's List sweep stops it (no active row). Stopping an unregistered id kills a leftover `ur-<id>` session we own and tears
-down a leftover drive. Details: [builderd.md](builderd.md#stop-is-a-barrier-ur-j5puq).
+`WorkerBarrier` orders Launch and Stop per worker id, so Stop Ok means the id is not running in
+builderd and never will be (until a builderd restart drops the in-memory tombstones). Stopping
+an unregistered id kills a leftover `ur-<id>` session we own and tears down a leftover drive.
+Details: [builderd.md](builderd.md#stop-is-a-barrier-ur-j5puq).
 
 ## Teardown
 
 Builderd teardown (`LocalWorkerManager::teardown`) runs in this order: kill session `ur-<id>`
 (including window `bg`), abort the exit watcher (unless the watcher is the caller), then
-`LocalWorkspaceManager::teardown` (remove the slot memory symlink only while it still points at
-the target in `.ur/owner`, then `remove_dir_all` the drive, which never follows symlinks), then
+`LocalWorkspaceManager::teardown` (remove the slot memory symlink, then `remove_dir_all` the drive, which never follows symlinks), then
 deregister. Each step is idempotent. If a step fails, teardown stops there and the id stays
 registered (listed), so a retried Stop runs it again. Link targets (mount sources, brain, memory)
 are never removed.
@@ -208,7 +190,7 @@ are never removed.
 | builderd restart / host reboot | builderd startup, `adopt_existing` before `serve` | Our `ur-<id>` sessions (`UR_DRIVE` under our drive root) are re-registered from their env and start dir with a new exit watcher. Ours with unusable env are killed. Sessions that are not ours are left alone. Every drive without a registered worker gets `teardown_orphan` (its memory link is kept if a registered worker uses that slot). Listing failure, a read error on a live session, or a failed kill aborts startup, and `ur start` reports the builderd logs |
 | Server restart | `WorkerReconcileManager::startup`, before serving or dispatching | Every `provisioning` row of either runtime (an unfinished launch) → `stopping`, then one reconcile pass |
 | Periodic reconcile | every 15s (`DEFAULT_RECONCILE_INTERVAL`) | One table for both runtimes ([builderd.md](builderd.md#termination-paths-and-reconciliation-ur-j5puq)). Rows are read first, then `ListLocalWorkers` (and `ListWorkerContainers`). `running` + not listed, `running` + session dead, or `stopping` → `stop_by_worker_id`. `provisioning` → none. A listed id with no active row (re-read first) → `StopLocalWorker`. A list error changes nothing for that runtime |
-| `ur stop` | CLI | Server stops running workers, then builderd sweep (`ListLocalWorkers` → `StopLocalWorker` each, from the host), `compose down`, a second sweep (catches a launch the server finished during the first), then builderd exits. A sweep failure aborts `ur stop`. If builderd is not running: warn, and its next start adopts the sessions. See [server-lifecycle.md](server-lifecycle.md) |
+| `ur stop` | CLI | Server stops running workers, `compose down`, then builderd sweep (`ListLocalWorkers` → `StopLocalWorker` each, from the host), then builderd exits. A sweep failure aborts `ur stop`. If builderd is not running: warn, and its next start adopts the sessions. See [server-lifecycle.md](server-lifecycle.md) |
 
 **Own-session rule** (ur-hld78): every ur instance on the host shares the `ur` socket. builderd
 adopts, kills or lists a `ur-*` session only if its `UR_DRIVE` is set and lies under its own
@@ -219,7 +201,8 @@ sessions survive builderd restarts and the acceptance suite.
 
 `ur worker attach <id>` (also `launch -a` and `--rm`) goes through `AttachManager`
 (`crates/ur/src/attach.rs`). It resolves the worker with `WorkerList` (newest running row for the
-process id) rather than `WorkerInfo` (ur-z5u7e), then branches on `runtime`:
+process id), which carries the full worker id that names the session and container, then
+branches on `runtime`:
 
 - container: `docker exec -it <prefix><worker_id_full> tmux -u attach-session -t =agent` (a
   pre-ur-ezhdb container: its recorded Docker ID)
@@ -253,11 +236,6 @@ Deliberate:
 - Release leaves the stopped worker's tree in the slot until the next acquire resets it.
 - A local `provisioning` row written by a pre-ur-j5puq build has no slot link, so its slot is
   free while server startup's stop converges it.
-
-Open tickets:
-
-- ur-z5u7e: `WorkerInfo` returns empty `runtime`/`agent_status` for CLI callers; attach works
-  around it with `WorkerList`.
 
 Other limits (in code comments):
 

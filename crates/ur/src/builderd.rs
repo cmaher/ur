@@ -201,27 +201,6 @@ pub fn local_stop_endpoint(config: &ur_config::Config) -> Option<String> {
     })
 }
 
-/// `ur stop`'s order: sweep builderd's local workers, take the server down,
-/// sweep again (a launch the server finished during the first sweep), then
-/// stop builderd. A failed sweep aborts before the next step, so no local
-/// worker is left in a stopped builderd. `compose_down` returning `false`
-/// (server not running) ends the sequence early.
-pub async fn shutdown_sequence<Fut>(
-    sweep: impl Fn() -> Fut,
-    compose_down: impl FnOnce() -> Result<bool>,
-    stop_builderd: impl FnOnce() -> Result<()>,
-) -> Result<()>
-where
-    Fut: std::future::Future<Output = Result<()>>,
-{
-    sweep().await?;
-    if !compose_down()? {
-        return Ok(());
-    }
-    sweep().await?;
-    stop_builderd()
-}
-
 /// `ur stop`: tear down every local worker builderd hosts, whatever its row
 /// says (rows converge on the next server start). `endpoint` is `None` when
 /// no builderd is running: surviving sessions are adopted on the next start.
@@ -260,7 +239,7 @@ pub async fn stop_local_workers(endpoint: Option<String>, output: &OutputManager
     }
     if !failed.is_empty() {
         anyhow::bail!(
-            "failed to stop local workers; server and builderd left running:\n{}",
+            "failed to stop local workers; builderd left running:\n{}",
             failed.join("\n")
         );
     }
@@ -430,65 +409,6 @@ mod tests {
         let _ = std::process::Command::new("kill")
             .arg(pid.to_string())
             .output();
-    }
-
-    /// U5: compose down runs only after the first sweep succeeds, builderd
-    /// stops only after the second, and the second catches a worker launched
-    /// while the first ran.
-    #[tokio::test]
-    async fn shutdown_sweeps_before_and_after_compose_down() {
-        let output = OutputManager::from_args(None);
-        let fake = FakeBuilderd {
-            listed: Arc::new(Mutex::new(vec!["w1".into()])),
-            ..Default::default()
-        };
-        let endpoint = serve(fake.clone()).await;
-        let sweep = || stop_local_workers(Some(endpoint.clone()), &output);
-        let stopped_builderd = std::cell::Cell::new(false);
-        shutdown_sequence(
-            sweep,
-            || {
-                // A launch the server finishes while it goes down.
-                fake.listed.lock().unwrap().push("w2".into());
-                Ok(true)
-            },
-            || {
-                stopped_builderd.set(true);
-                Ok(())
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(*fake.stops.lock().unwrap(), vec!["w1", "w2"]);
-        assert!(stopped_builderd.get());
-
-        let ran = std::cell::Cell::new(0);
-        let failing = || async { anyhow::bail!("w1: boom") };
-        let err = shutdown_sequence(failing, || Ok(true), || Ok(()))
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("w1: boom"));
-        let sweeps = std::cell::Cell::new(0);
-        let second_fails = || {
-            sweeps.set(sweeps.get() + 1);
-            let failure = (sweeps.get() == 2).then(|| anyhow::anyhow!("w2: boom"));
-            std::future::ready(failure.map_or(Ok(()), Err))
-        };
-        let err = shutdown_sequence(
-            second_fails,
-            || {
-                ran.set(ran.get() + 1);
-                Ok(true)
-            },
-            || {
-                ran.set(ran.get() + 10);
-                Ok(())
-            },
-        )
-        .await
-        .unwrap_err();
-        assert!(err.to_string().contains("w2: boom"));
-        assert_eq!(ran.get(), 1, "compose down ran, builderd stop did not");
     }
 
     /// U6: only a live process named `builderd` owning the PID file counts.

@@ -15,10 +15,10 @@
 //!
 //! # Known limits
 //!
-//! - Teardown removes the slot memory symlink only while it still points at
-//!   the target recorded in the drive's `.ur/owner`; a drive without one
-//!   (built before ur-j5puq) leaves the link in place. An orphan drive whose
-//!   slot a live worker now uses keeps the link (`teardown_orphan`).
+//! - Teardown removes the slot memory symlink (whatever it points at; a real
+//!   directory there is left). An orphan drive whose slot a live worker now
+//!   uses keeps the link (`teardown_orphan`); one without `.ur/owner` (built
+//!   before ur-j5puq) leaves it in place.
 //! - A mount dest under `.ur/` makes the generated files write through into
 //!   the mount source. Dests are trusted config.
 //! - With no `instruction_strategy`, the project `instruction_md` and the
@@ -39,8 +39,7 @@ use crate::local_settings::{DriveLink, LocalSettingsManager};
 const DRIVE_DIR: &str = "drive";
 const UR_DIR: &str = ".ur";
 const BRAIN_LINK: &str = "brain";
-/// `.ur/owner`: agent name, slot path and memory link target (empty when
-/// none), one per line.
+/// `.ur/owner`: agent name and slot path, one per line.
 const OWNER_FILE: &str = "owner";
 /// Per-drive `agent_shared` stand-in holding only `potential-skills/`, with
 /// one link per requested skill to its resolved source.
@@ -166,21 +165,13 @@ impl LocalWorkspaceManager {
         tokio::fs::create_dir_all(&ur_dir)
             .await
             .map_err(io(format!("create {}", ur_dir.display())))?;
-        // Written before the memory link so teardown (also without a
-        // session, see `teardown_orphan`) knows which link is this drive's.
+        // Written before the memory link so teardown without a session
+        // (`teardown_orphan`) finds the slot's link.
         let owner = ur_dir.join(OWNER_FILE);
-        let memory = req.memory_dir.as_deref().map(Path::display);
-        tokio::fs::write(
-            &owner,
-            format!(
-                "{}\n{}\n{}",
-                req.agent.name(),
-                req.slot_path.display(),
-                memory.map(|m| m.to_string()).unwrap_or_default()
-            ),
-        )
-        .await
-        .map_err(io(format!("write {}", owner.display())))?;
+        let text = format!("{}\n{}", req.agent.name(), req.slot_path.display());
+        tokio::fs::write(&owner, text)
+            .await
+            .map_err(io(format!("write {}", owner.display())))?;
 
         let links = self.link_mounts(&drive, req).await?;
         self.link_memory(req).await?;
@@ -453,9 +444,8 @@ impl LocalWorkspaceManager {
         argv
     }
 
-    /// Remove the slot's memory symlink (only while it points at the target
-    /// in `.ur/owner`) and the drive. Idempotent; every step is attempted and
-    /// the first error returned.
+    /// Remove the slot's memory symlink and the drive. Idempotent; every
+    /// step is attempted and the first error returned.
     pub async fn teardown(
         &self,
         worker_id: &str,
@@ -463,19 +453,14 @@ impl LocalWorkspaceManager {
         agent: AgentType,
     ) -> Result<()> {
         validate_worker_id(worker_id)?;
-        let target = self.read_owner(worker_id).await.and_then(|o| o.memory);
-        let link = agent.local_memory_dir(&self.home, slot_path).zip(target);
+        let link = agent.local_memory_dir(&self.home, slot_path);
         self.remove_drive_and_link(worker_id, link).await
     }
 
-    async fn remove_drive_and_link(
-        &self,
-        worker_id: &str,
-        link: Option<(PathBuf, PathBuf)>,
-    ) -> Result<()> {
+    async fn remove_drive_and_link(&self, worker_id: &str, link: Option<PathBuf>) -> Result<()> {
         let mut first_err = None;
-        if let Some((link, target)) = link
-            && let Err(e) = remove_symlink_to(&link, &target).await
+        if let Some(link) = link
+            && let Err(e) = remove_symlink(&link).await
         {
             first_err = Some(e);
         }
@@ -491,12 +476,7 @@ impl LocalWorkspaceManager {
         let mut lines = text.split('\n');
         let agent = AgentType::parse(lines.next()?).ok()?;
         let slot = PathBuf::from(lines.next()?);
-        let memory = lines.next().filter(|m| !m.is_empty()).map(PathBuf::from);
-        Some(DriveOwner {
-            agent,
-            slot,
-            memory,
-        })
+        Some(DriveOwner { agent, slot })
     }
 
     /// Ids with a directory under `drive/`; none when `drive/` is missing.
@@ -516,8 +496,8 @@ impl LocalWorkspaceManager {
         Ok(ids)
     }
 
-    /// Tear down a drive with no session, taking the slot, agent and memory
-    /// target from its `.ur/owner`. The memory link stays when the owner is
+    /// Tear down a drive with no session, taking the slot and agent from its
+    /// `.ur/owner`. The memory link stays when the owner is
     /// unreadable or a live worker uses the same slot (`live_slots`), since
     /// the link then belongs to that worker.
     pub async fn teardown_orphan(&self, worker_id: &str, live_slots: &[PathBuf]) -> Result<()> {
@@ -526,7 +506,7 @@ impl LocalWorkspaceManager {
             .read_owner(worker_id)
             .await
             .filter(|o| !live_slots.contains(&o.slot))
-            .and_then(|o| o.agent.local_memory_dir(&self.home, &o.slot).zip(o.memory));
+            .and_then(|o| o.agent.local_memory_dir(&self.home, &o.slot));
         self.remove_drive_and_link(worker_id, link).await
     }
 }
@@ -535,7 +515,6 @@ impl LocalWorkspaceManager {
 struct DriveOwner {
     agent: AgentType,
     slot: PathBuf,
-    memory: Option<PathBuf>,
 }
 
 /// The drive's generated `.ur/settings.json`.
@@ -596,12 +575,11 @@ async fn create_link(drive: &Path, source: &Path, link: &Path) -> Result<()> {
     )))
 }
 
-/// Remove `link` only if it is a symlink pointing at `target`.
-async fn remove_symlink_to(link: &Path, target: &Path) -> Result<()> {
+/// Remove `link` only if it is a symlink.
+async fn remove_symlink(link: &Path) -> Result<()> {
     let ctx = format!("remove {}", link.display());
     match tokio::fs::read_link(link).await {
-        Ok(current) if current == target => tokio::fs::remove_file(link).await.map_err(io(ctx)),
-        Ok(_) => Ok(()),
+        Ok(_) => tokio::fs::remove_file(link).await.map_err(io(ctx)),
         // Missing, or not a symlink (EINVAL): not ours.
         Err(e)
             if matches!(

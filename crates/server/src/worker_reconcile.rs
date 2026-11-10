@@ -23,8 +23,9 @@
 //! is re-read before it is stopped, because a launch records its row before
 //! builderd starts the worker.
 //!
-//! A stop path on a row whose own Launch RPC is unresolved (launch pending)
-//! leaves it `stopping` with its slot linked; the launch path finishes it.
+//! A stop path that begins while the row's own Launch RPC is unresolved
+//! (launch pending) leaves it `stopping` with its slot linked; a stop begun
+//! after the launch resolves finishes it.
 //!
 //! [`WorkerReconcileManager::startup`] runs before the server serves or
 //! dispatches, so no launch is in flight: it clears every launch-pending

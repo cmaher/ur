@@ -170,9 +170,9 @@ Session env: the request env (the server supplies `UR_WORKER_SECRET`,
 `UR_SERVER_ADDR=127.0.0.1:<worker_port>`, `UR_PROJECT`, `UR_WORKER_FORGE`) followed by
 builderd's own `UR_WORKER_ID`, `UR_WORKERD_ADDR`, `UR_AGENT_TYPE`, `UR_DRIVE`,
 `UR_RUNTIME=local` and (when set) `UR_WORKER_INSTRUCTION_STRATEGY`, which the request cannot
-override. Adoption reads them back. The drive's `.ur/owner` records the agent, slot path and
-memory link target; teardown removes the slot memory symlink only while it still points at
-that target, and an orphan drive whose slot a registered worker uses keeps the link. builderd derives `UR_WORKERD_ADDR`
+override. Adoption reads them back. The drive's `.ur/owner` records the agent and slot path;
+teardown removes the slot memory symlink, and an orphan drive whose slot a registered worker
+uses keeps the link. builderd derives `UR_WORKERD_ADDR`
 from its own listen address (an unspecified bind maps to `127.0.0.1`), because on Linux it
 binds the Docker bridge IP, which the server cannot know.
 
@@ -219,11 +219,11 @@ this builderd and never will be. Tombstones expire after an hour (`TOMBSTONE_TTL
 survive a builderd restart. Launch RPCs are never resent, but a Launch first sent after its
 worker's Stop reached the previous builderd process still runs in the new one. The server
 converges it: that launch's finalize changes no row, so it Stops the worker. The slot is never
-free meanwhile: while a worker's own Launch RPC is unresolved (`worker.launch_pending`,
-migration 006), only the launch path (`finish_launch_stop`) or the server's startup pass may
-finish its stop; any other stopper or reconcile pass marks it `stopping` and sends Stop, but
-`finish_stop` refuses and the slot stays linked. If the launch's own Stop fails, it clears the
-marker and the reconciler finishes once a Stop succeeds. `StopWorker` requires `worker_id`.
+free meanwhile: a stop that began while the worker's own Launch RPC was unresolved
+(`worker.launch_pending`, migration 006, returned by `begin_stopping`) marks it `stopping` and
+sends Stop but never finishes; the slot stays linked. Once the Launch resolves the launch path
+clears the marker and stops the worker; if that Stop fails, the reconciler finishes with a later
+one. `StopWorker` requires `worker_id`.
 
 ### Termination paths and reconciliation (ur-j5puq)
 
@@ -236,19 +236,9 @@ no `UR_DRIVE`) is never adopted, killed or listed. Wrongly releasing a live work
 let the next worker reset it and destroy uncommitted work, so the server releases a local slot only after
 `StopLocalWorker` succeeded (also when builderd no longer lists the id).
 
-Teardown (stop, failed launch, agent exit, external kill): kill the session (abort the exit
-watcher unless it is the caller) → `LocalWorkspaceManager.teardown` → deregister. A failed
-step stops there and the worker stays registered (listed, `session_alive` false once killed),
-so the server's retried Stop runs teardown again.
-
-| Trigger | Path |
-|---|---|
-| Agent exit, external `kill-session` | exit watcher (pane dead, probe failure, or — code/design workers only — the agent's pane back at a shell with no child process left under it) → exit sink → teardown; the server sees the id leave the list on its next pass. A manual worker whose agent quits keeps its shell and stays until stopped |
-| builderd restart / host reboot | `adopt_existing` before `serve`: adopt or kill each of our `ur-<id>` sessions, skip any that are not ours, tear down orphan drives (below) |
-| Server start (before serving or dispatching) | `WorkerReconcileManager::startup`: every `provisioning` row of either runtime (a launch the previous server never finished, slot still linked) becomes `stopping`; then one pass |
-| Every 15s | `WorkerReconcileManager` pass (below) |
-| `ur stop` | `ListLocalWorkers` → `StopLocalWorker` each from the host, before `compose down` and again after it; a failure aborts `ur stop` |
-| `ur start` | waits for builderd's port; reports its log paths if builderd exits (e.g. failed adoption) |
+Teardown order and every termination path (agent exit, external kill, stop, failed launch,
+builderd restart, server restart, periodic reconcile, `ur stop`) are in
+[local-workers.md](local-workers.md#teardown).
 
 **Adoption** (`LocalWorkerManager::adopt_existing`, in `main.rs` before `serve`): each
 `ur-<id>` session is re-registered from its env (`UR_WORKER_ID` must match, `UR_SERVER_ADDR`,
@@ -279,20 +269,9 @@ container: the sweep keys on labels, not rows. Known limit: a local `provisionin
 by a pre-ur-j5puq build has no slot link (that build linked at finalize), so its slot is free
 while startup's stop converges it.
 
-Known limits (ur-ezhdb):
-
-- **`--workspace` changed while containers run.** `ur.instance` is builderd's canonical workspace path, so a
-  symlink or another spelling is the same instance, but an actual path change makes the old instance's containers
-  invisible to List and Stop: they keep running until removed by hand.
-- **Upgrade strays.** If the server restarted without `ur stop` across the upgrade, a pre-change `stopped` row whose
-  unlabeled container is still alive is never found (not listed, row inactive): the container runs on a freed slot
-  until removed by hand. A pre-change `provisioning` row is moved to `stopping` at startup and stopped only through
-  its recorded legacy name, after builderd checks the container's `UR_WORKER_ID` env.
-- **builderd dies inside `docker run -d`.** The docker CLI can outlive builderd and create the (labeled) container
-  after the server's Launch RPC already failed and its Stop on the restarted builderd returned Ok, so the slot is
-  free under that container until the next reconcile pass lists it with no active row and stops it (≤ one interval).
-- **Legacy `running` rows are skipped.** A pre-change container is never listed, so the reconciler leaves its
-  `running` row alone; it runs until stopped through its row (`ur worker stop`, workflow completion).
+Known limits (ur-ezhdb): see [the plan's Upgrade section](../plans/ur-ezhdb-lifecycle.md#upgrade)
+(`--workspace` change, upgrade strays, builderd dying inside `docker run -d`, legacy `running`
+rows).
 
 The routed `WorkerDaemonService` (`crates/builderd/src/workerd_router.rs`, `WorkerdRouter`)
 reads the `ur-worker-id` header (`ur_config::WORKER_ID_HEADER`) and delegates to that

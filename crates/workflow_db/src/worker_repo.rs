@@ -164,8 +164,8 @@ impl WorkerRepo {
     }
 
     /// Refresh a claimed `provisioning` row with the launch's final details
-    /// (container name, secret, ...) and mark its launch pending
-    /// ([`Self::mark_launch_pending`]), in one statement. `false` when it is
+    /// (container name, secret, ...) and mark its launch pending (its
+    /// Launch RPC is about to be sent), in one statement. `false` when it is
     /// no longer `provisioning` (stopped mid-launch) or gone.
     pub async fn update_provisioning_worker(&self, worker: &Worker) -> Result<bool, sqlx::Error> {
         let result = sqlx::query(
@@ -191,34 +191,24 @@ impl WorkerRepo {
     }
 
     /// Move an active (`provisioning`/`running`/`stopping`) worker to
-    /// `stopping`. `false` when the row is gone or already `stopped`.
-    pub async fn begin_stopping(&self, worker_id: &str) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query(
+    /// `stopping`. Returns whether its launch was pending at that moment, or
+    /// `None` when the row is gone or already `stopped`. A stopper that saw
+    /// the launch pending must not finish the stop: its Stop may predate a
+    /// builderd restart, so its Ok does not cover a Launch delivered later.
+    pub async fn begin_stopping(&self, worker_id: &str) -> Result<Option<bool>, sqlx::Error> {
+        sqlx::query_scalar(
             "UPDATE worker SET container_status = 'stopping', updated_at = $1
-             WHERE worker_id = $2 AND container_status IN ('provisioning', 'running', 'stopping')",
+             WHERE worker_id = $2 AND container_status IN ('provisioning', 'running', 'stopping')
+             RETURNING launch_pending",
         )
         .bind(Utc::now().to_rfc3339())
         .bind(worker_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected() > 0)
+        .fetch_optional(&self.pool)
+        .await
     }
 
-    /// Mark a `provisioning` worker's launch pending: its Launch RPC is about
-    /// to be sent. `false` when the row is no longer `provisioning`.
-    pub async fn mark_launch_pending(&self, worker_id: &str) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query(
-            "UPDATE worker SET launch_pending = true
-             WHERE worker_id = $1 AND container_status = 'provisioning'",
-        )
-        .bind(worker_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    /// The launch path resolved its Launch RPC and its own stop attempt
-    /// failed: from now on any stopper's confirmed Stop covers the worker.
+    /// The worker's Launch RPC resolved without finalize: a stopper that
+    /// begins from now on covers it.
     pub async fn clear_launch_pending(&self, worker_id: &str) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE worker SET launch_pending = false WHERE worker_id = $1")
             .bind(worker_id)
@@ -238,53 +228,22 @@ impl WorkerRepo {
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
-    /// Whether the worker's own Launch RPC is still unresolved.
-    pub async fn is_launch_pending(&self, worker_id: &str) -> Result<bool, sqlx::Error> {
-        let pending =
-            sqlx::query_scalar::<_, bool>("SELECT launch_pending FROM worker WHERE worker_id = $1")
-                .bind(worker_id)
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(pending.unwrap_or(false))
-    }
-
     /// `stopping → stopped` and delete the worker's slot link, together.
-    /// Called only once the worker is confirmed gone. `false` (nothing
-    /// changed) when the row is not `stopping`, or when its launch is
-    /// pending: then only the launch path may finish it
-    /// ([`Self::finish_launch_stop`]).
+    /// Called only once the worker is confirmed gone, by a stopper that began
+    /// with the launch not pending ([`Self::begin_stopping`]). `false`
+    /// (nothing changed) when the row is not `stopping` or its launch is
+    /// pending.
     pub async fn finish_stop(&self, worker_id: &str) -> Result<bool, sqlx::Error> {
-        self.finish_stop_where(
-            worker_id,
+        let mut tx = self.pool.begin().await?;
+        let stopped = sqlx::query(
             "UPDATE worker SET container_status = 'stopped', updated_at = $1
              WHERE worker_id = $2 AND container_status = 'stopping' AND NOT launch_pending",
         )
-        .await
-    }
-
-    /// [`Self::finish_stop`] for the launch path, whose Stop came after its
-    /// own Launch resolved: finishes a pending row too and clears the marker.
-    pub async fn finish_launch_stop(&self, worker_id: &str) -> Result<bool, sqlx::Error> {
-        self.finish_stop_where(
-            worker_id,
-            "UPDATE worker SET container_status = 'stopped', updated_at = $1, launch_pending = false
-             WHERE worker_id = $2 AND container_status = 'stopping'",
-        )
-        .await
-    }
-
-    async fn finish_stop_where(
-        &self,
-        worker_id: &str,
-        update: &'static str,
-    ) -> Result<bool, sqlx::Error> {
-        let mut tx = self.pool.begin().await?;
-        let stopped = sqlx::query(update)
-            .bind(Utc::now().to_rfc3339())
-            .bind(worker_id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected()
+        .bind(Utc::now().to_rfc3339())
+        .bind(worker_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
             > 0;
         if stopped {
             sqlx::query("DELETE FROM worker_slot WHERE worker_id = $1")
@@ -299,8 +258,8 @@ impl WorkerRepo {
     /// `provisioning → running` (the only transition to `running`),
     /// recording the container or session name and clearing the launch's
     /// pending marker. `false` when the row is no longer `provisioning` (it
-    /// was stopped mid-launch): the launch path then stops the worker like a
-    /// failed launch and finishes that stop itself.
+    /// was stopped mid-launch): the launch path then clears the marker and
+    /// stops the worker like a failed launch.
     pub async fn finalize_worker_launch(
         &self,
         worker_id: &str,
@@ -916,7 +875,7 @@ mod tests {
         );
 
         assert!(
-            repo.begin_stopping("w1").await.unwrap(),
+            repo.begin_stopping("w1").await.unwrap().is_some(),
             "from provisioning"
         );
         assert!(
@@ -934,11 +893,11 @@ mod tests {
         assert!(repo.finish_stop("w1").await.unwrap());
         assert!(repo.get_worker_slot("w1").await.unwrap().is_none());
         assert!(
-            !repo.begin_stopping("w1").await.unwrap(),
+            repo.begin_stopping("w1").await.unwrap().is_none(),
             "stopped is final"
         );
         assert!(!repo.finish_stop("w1").await.unwrap());
-        assert!(!repo.begin_stopping("nope").await.unwrap());
+        assert!(repo.begin_stopping("nope").await.unwrap().is_none());
 
         slot_row(&repo, "slot-1").await;
         assert!(
@@ -949,7 +908,36 @@ mod tests {
         assert!(!repo.finish_stop("w2").await.unwrap(), "only from stopping");
         assert!(repo.get_worker_slot("w2").await.unwrap().is_some());
         assert!(repo.finalize_worker_launch("w2", "c2").await.unwrap());
-        assert!(repo.begin_stopping("w2").await.unwrap(), "from running");
+        assert_eq!(
+            repo.begin_stopping("w2").await.unwrap(),
+            Some(false),
+            "from running"
+        );
+    }
+
+    /// A stopper learns from `begin_stopping` whether the launch was pending
+    /// when it began (then it must never finish, even after the launch path
+    /// clears the marker); the launch path's own stop, begun after the
+    /// clear, may.
+    #[tokio::test]
+    async fn begin_stopping_reports_a_pending_launch() {
+        let test_db = TestDb::new().await;
+        let repo = WorkerRepo::new(test_db.workflow_pool().clone());
+        slot_row(&repo, "slot-0").await;
+        let w = provisioning("w1");
+        assert!(repo.claim_slot(&w, "slot-0").await.unwrap());
+        assert_eq!(repo.begin_stopping("w1").await.unwrap(), Some(false));
+        repo.update_worker_container_status("w1", "provisioning")
+            .await
+            .unwrap();
+        assert!(repo.update_provisioning_worker(&w).await.unwrap());
+        assert_eq!(repo.begin_stopping("w1").await.unwrap(), Some(true));
+        assert!(!repo.finish_stop("w1").await.unwrap(), "pending");
+        assert!(!repo.finalize_worker_launch("w1", "c1").await.unwrap());
+        repo.clear_launch_pending("w1").await.unwrap();
+        assert_eq!(repo.begin_stopping("w1").await.unwrap(), Some(false));
+        assert!(repo.finish_stop("w1").await.unwrap());
+        assert!(repo.get_worker_slot("w1").await.unwrap().is_none());
     }
 
     /// Migration 005's rule: links of non-active workers go; a slot linked

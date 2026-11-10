@@ -18,12 +18,11 @@ correctness comes from identity + observation.
 - A slot is unlinked only by `finish_stop` (`stopping → stopped` + unlink, one transaction), and only after builderd
   `Stop(worker_id)` returned Ok.
 - **Launch pending (migration 006, `worker.launch_pending`).** Set with the `provisioning` refresh just before the
-  Launch RPC (`record_provisioning_worker`), cleared by finalize, or by the launch path once its Launch RPC resolved
-  and its own stop was attempted. **While a worker's own Launch RPC is unresolved, only the launch path
-  (`abandon_launch` / `finish_launch`, via `finish_launch_stop`) or the server startup pass may finish its stop.**
-  Other stoppers and the reconciler still mark it `stopping` and send `Stop(worker_id)`, but `finish_stop` refuses
-  (the slot stays linked): their Stop may have reached a builderd that then restarted and lost its tombstone, so its
-  Ok does not cover a Launch not yet delivered. Startup clears every marker first (a dead server can no longer deliver
+  Launch RPC (`record_provisioning_worker`), cleared by finalize, or by the launch path (`abandon_launch`) once its
+  Launch RPC resolved, before its own stop. **`begin_stopping` returns the marker; a stopper that saw it set never
+  finishes its stop**, even after the marker clears: its Stop may have reached a builderd that then restarted and
+  lost its tombstone, so its Ok does not cover a Launch delivered later. It still marks the row `stopping` and sends
+  `Stop(worker_id)` (the slot stays linked). Startup clears every marker first (a dead server can no longer deliver
   a Launch), then its pass finishes those stops.
 
 ## 2. builderd (executor, keyed only by worker id)

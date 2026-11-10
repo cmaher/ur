@@ -41,17 +41,15 @@ ur start
 ur stop
 ├── server reachable: WorkerList → WorkerStop each running worker (parallel, warnings)
 │   server unreachable: kill worker containers by prefix
-├── builderd running: ListLocalWorkers → StopLocalWorker each, directly from the host
-│   │   (covers every live local worker whatever its row says; rows converge at the
-│   │   next server start, which sees them unlisted)
-│   └── list or stop failure → error, nothing below runs (server and builderd stay up)
-│   builderd not running: warn; surviving sessions are adopted on its next start
-├── compose.down()
+├── compose.down() (skipped if the server is not running)
 │   ├── docker compose down
 │   └── Remove ~/.ur/docker-compose.yml
 │
-├── second builderd sweep (same as the first): stops a local worker whose launch the
-│   server finished during the first sweep; failure → error, builderd stays up
+├── builderd running: ListLocalWorkers → StopLocalWorker each, directly from the host
+│   │   (covers every live local worker whatever its row says, including a launch the
+│   │   server finished while going down; rows converge at the next server start)
+│   └── list or stop failure → error, builderd stays up
+│   builderd not running: warn; surviving sessions are adopted on its next start
 │
 └── stop_builderd(config)
     ├── Read PID from ~/.ur/builderd.pid

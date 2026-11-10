@@ -73,15 +73,6 @@ impl WorkerManager {
 
         self.finish_launch(&config, session, worker_secret).await
     }
-
-    /// Tear the worker down via builderd (Stop of an unknown id still kills
-    /// its session). The caller owns the row's status.
-    pub(crate) async fn stop_local_worker(&self, worker_id: &WorkerId) -> Result<(), String> {
-        self.builder_local_worker_client
-            .stop_local_worker(&worker_id.0)
-            .await
-            .map_err(|status| format!("stop_local_worker gRPC error: {status}"))
-    }
 }
 
 /// Build builderd's launch request from the same resolution the container

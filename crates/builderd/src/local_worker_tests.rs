@@ -616,26 +616,6 @@ async fn orphan_sweep_keeps_live_workers_memory_link() {
     );
 }
 
-/// Teardown removes the memory link only while it points at this drive's
-/// recorded target.
-#[tokio::test(flavor = "multi_thread")]
-async fn teardown_keeps_a_memory_link_that_was_repointed() {
-    let f = Fixture::new("repoint", Duration::from_secs(3600));
-    let slot = f.slot("slot");
-    f.manager
-        .launch(&f.with_memory("w1", &slot), f.env())
-        .await
-        .unwrap();
-    let link = f.memory_link(&slot);
-    fs::create_dir_all(f.path("mem/user")).unwrap();
-    fs::remove_file(&link).unwrap();
-    std::os::unix::fs::symlink(f.path("mem/user"), &link).unwrap();
-
-    f.manager.stop("w1").await.unwrap();
-    f.assert_gone("w1").await;
-    assert_eq!(fs::read_link(&link).unwrap(), f.path("mem/user"));
-}
-
 #[test]
 fn session_read_errors_are_fatal_only_while_the_session_lives() {
     let e = anyhow::anyhow!("tmux show-environment failed: boom");

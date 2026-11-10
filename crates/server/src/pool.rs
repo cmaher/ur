@@ -112,7 +112,7 @@ impl RepoPoolManager {
                 Ok(host_path) => Ok((host_path, row)),
                 Err(e) => Err(self
                     .drop_claim(
-                        &row,
+                        &row.worker_id,
                         format!("recycle_slot failed for slot {}: {e}", slot.slot_name),
                     )
                     .await),
@@ -187,8 +187,8 @@ impl RepoPoolManager {
 
     /// Undo a claim nothing was launched under: delete the row (and so the
     /// link). Returns `error`, extended if the delete fails.
-    async fn drop_claim(&self, row: &workflow_db::model::Worker, error: String) -> String {
-        match self.worker_repo.delete_worker(&row.worker_id).await {
+    pub(crate) async fn drop_claim(&self, worker_id: &str, error: String) -> String {
+        match self.worker_repo.delete_worker(worker_id).await {
             Ok(_) => error,
             Err(e) => format!("{error}; failed to drop slot claim: {e}"),
         }
