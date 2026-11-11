@@ -139,7 +139,7 @@ on Linux it binds the Docker bridge IP.
   file is missing. In containers the init managers only warn about this.
 - **Agent-shared assets.** builderd `--agent-shared` (default `$UR_CONFIG/agent-shared`) is the
   host copy of the image's `.agent-shared`. `scripts/build/install-agent-assets.sh <dest>` fills
-  it the same way as `containers/worker-base/Dockerfile`: vendored superpowers skills first, then
+  it the same way as the agent Dockerfiles' `COPY --from=shared` steps: vendored superpowers skills first, then
   the repo's `potential-skills/` (which win name collisions), then `instructions/` and
   `shared-instructions/`. Each run replaces the previous copy. `make install` (`install.sh`) and
   the acceptance suite both run it.

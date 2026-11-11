@@ -11,8 +11,13 @@ Two directories in the **base** container build context supply skills:
 
 Both are merged into a single `potential-skills/` pool during the Docker build. **`potential-skills/` copies second, so project-specific versions override vendor skills with the same name.**
 
-These sources are agent-agnostic and live in the base image (`ur-worker-base:latest`), not an
-agent-specific Claude, Codex, or AGY layer. Every agent image built on the base inherits them.
+These sources are agent-agnostic and live in the `containers/worker-base/` directory, but they
+are **not** baked into `ur-worker-base` itself. Each agent Dockerfile (Claude, Codex, AGY) copies
+them in from the `shared` named build context (`scripts/build/image.sh` passes
+`--build-context shared=containers/worker-base`), after its agent CLI install/update layers and
+before the worker binaries. Skills and instructions change far more often than the agent CLI, and
+anything that changes the base image invalidates every layer of the images built `FROM` it, so
+baking them into the base re-downloaded every agent CLI on every skill edit.
 
 There is one `SKILL.md` dialect and one shared `potential-skills/` source. The destination is
 `~/{agent.customization_root()}/{agent.skill_subdir()}/`: `~/.claude/skills/`,
@@ -24,8 +29,9 @@ under `~/.gemini/antigravity-cli/` while ur-managed customizations live in
 ## Build Time (Dockerfile)
 
 ```
-COPY vendor/superpowers/skills/ /home/worker/.agent-shared/potential-skills/
-COPY potential-skills/          /home/worker/.agent-shared/potential-skills/
+# in containers/worker-<agent>/Dockerfile, after the agent CLI layers
+COPY --from=shared --chown=worker:worker vendor/superpowers/skills/ /home/worker/.agent-shared/potential-skills/
+COPY --from=shared --chown=worker:worker potential-skills/          /home/worker/.agent-shared/potential-skills/
 ```
 
 All skills land in `~/.agent-shared/potential-skills/`. The agent's own skill directory (e.g. `~/.claude/skills/` for Claude) starts empty — skills are not active until explicitly selected at runtime.
@@ -71,7 +77,7 @@ skills = ["gitea"]
 
 - **Precedence & Merge Order**: Mode/explicit skills take highest priority, followed by project-required skills, followed by global host skills. Duplicate skill names across layers are deduplicated preserving the earliest source's position.
 - **Reload Behavior**: Skills are passed as the `UR_WORKER_SKILLS` environment variable when a worker container is launched, and copied into the agent's customization directory during container initialization by `workerd init`. Updating `skills` in `ur.toml` applies to all newly launched workers.
-- **Baked Gitea Skill**: `gitea` is baked into the base container image under `.agent-shared/potential-skills/gitea/`. Setting `skills = ["gitea"]` activates it for the project's workers, providing guidance on using `git` for local operations and `tea` for PRs, review comments, CI checks, and merging.
+- **Baked Gitea Skill**: `gitea` is baked into every agent image under `.agent-shared/potential-skills/gitea/`. Setting `skills = ["gitea"]` activates it for the project's workers, providing guidance on using `git` for local operations and `tea` for PRs, review comments, CI checks, and merging.
 
 ### Default Modes (hardcoded, overridable via ur.toml)
 
@@ -183,7 +189,7 @@ A plugin is used for local workers because the user's own `~/.claude/skills` sha
 2. **Cross-skill rewrite** (`init/skill_render.rs`) — inside installed skills, references to *other installed* skills become `ur:<name>`: slash references (`/code-review` → `/ur:code-review`, at a word boundary, not followed by `/`) and backtick prose (`` the `implement` skill `` → `` the `ur:implement` skill ``). References to skills not in the installed set, built-ins like `/clear`, and paths are left alone. A name that the same file also uses as a directory (`/brain/…`) is treated as a path throughout that file, so the `/brain` mount is not rewritten while `/brain:init` is. The rewrite runs before placeholder rendering so the rendered hooks path is never rewritten, and it is idempotent.
 3. **Instructions** — `InitInstructionsManager` appends a `# Skill Precedence` fragment after the shared fragments: "When a skill exists as both `ur:<name>` and `<name>`, ALWAYS use `ur:<name>`." The fragment is embedded in `init/instructions.rs`, not in `shared-instructions/`, because shared fragments go to every (container) worker.
 
-`crates/workerd/src/init/mod.rs` holds the shared `copy_dir_recursive`/`collect_md_files` helpers used by the skills and instructions managers. No manager hardcodes a path: sources come from `WorkerPaths.agent_shared` (`potential-skills/`, `instructions/`, `shared-instructions/`; container: `~/.agent-shared`, agent-agnostic, baked by the base image) and destinations from `WorkerPaths.skills_dest` / `WorkerPaths.instructions_dest` / `WorkerPaths.skill_hooks`. `WorkerPaths::container(agent)` is the only place the container values are derived from `AgentType`.
+`crates/workerd/src/init/mod.rs` holds the shared `copy_dir_recursive`/`collect_md_files` helpers used by the skills and instructions managers. No manager hardcodes a path: sources come from `WorkerPaths.agent_shared` (`potential-skills/`, `instructions/`, `shared-instructions/`; container: `~/.agent-shared`, agent-agnostic, copied into every agent image from the `shared` build context) and destinations from `WorkerPaths.skills_dest` / `WorkerPaths.instructions_dest` / `WorkerPaths.skill_hooks`. `WorkerPaths::container(agent)` is the only place the container values are derived from `AgentType`.
 
 What to install comes from `WorkerInitInputs` (`init/inputs.rs`), passed to the managers' `run()` rather than read from the environment, so a host-side runtime can run them per worker: `InitSkillsManager::run(&inputs.skills)` and `InitInstructionsManager::run(&inputs.instructions)` (`InstructionInputs { strategy, forge, project: Option<ProjectInstruction { path, host_workspace, mode }> }`). The container binary builds them once with `WorkerInitInputs::from_env(agent)`.
 
@@ -194,8 +200,8 @@ Some capabilities (e.g., ticket management) are delivered as instruction-file co
 ### Build Time
 
 ```
-COPY instructions/        /home/worker/.agent-shared/instructions/
-COPY shared-instructions/ /home/worker/.agent-shared/shared-instructions/
+COPY --from=shared --chown=worker:worker instructions/        /home/worker/.agent-shared/instructions/
+COPY --from=shared --chown=worker:worker shared-instructions/ /home/worker/.agent-shared/shared-instructions/
 ```
 
 Local workers (`runtime = "local"`) have no image. `scripts/build/install-agent-assets.sh <dest>` (run by `make install` via `install.sh`, and by the acceptance suite) copies the same sources in the same order as the Dockerfile — vendored superpowers skills, then `potential-skills/` (wins collisions), then `instructions/` and `shared-instructions/` — into `$UR_CONFIG/agent-shared`, replacing the previous copy. builderd reads it as `WorkerPaths.agent_shared` via `--agent-shared` (default `<config_dir>/agent-shared`). A skill or strategy file missing there fails the local launch (`check_assets`, `FailedPrecondition`) instead of only warning.
@@ -296,7 +302,7 @@ Prefer `%URCONFIG%/...` paths stored under `~/.ur/` (or wherever `$UR_CONFIG` po
 
 | File | Role |
 |------|------|
-| `containers/worker-base/Dockerfile` | Bakes skill sources and instruction files into `.agent-shared/` in the base image |
+| `containers/worker-<agent>/Dockerfile` | Copies skill sources and instruction files from the `shared` build context (`containers/worker-base/`) into `.agent-shared/`, after the agent CLI layers |
 | `containers/worker-base/potential-skills/` | Project-specific skills (override vendor) |
 | `containers/worker-base/instructions/` | Per-strategy instruction files (`code.md`, `design.md`, `manual.md`) |
 | `containers/worker-base/shared-instructions/` | Instruction-file fragments shared across all strategies |

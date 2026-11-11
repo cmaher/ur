@@ -399,7 +399,7 @@ impl RunOptsBuilder {
     /// up the host skill transparently. No env vars are set by this method —
     /// `UR_WORKER_SKILLS` is set elsewhere.
     ///
-    /// `.agent-shared` is agent-agnostic content baked by the base image, so this
+    /// `.agent-shared` is agent-agnostic content baked into every agent image, so this
     /// mount target needs no `AgentType` — it stays a literal for every agent.
     ///
     /// Empty slice → no-op (no volumes added).

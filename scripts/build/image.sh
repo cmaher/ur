@@ -11,6 +11,15 @@ source "$(dirname "$0")/agent-images.sh"
 # Set UR_IMAGE_TAG to override the default tag (latest).
 
 tag="${UR_IMAGE_TAG:-latest}"
+BASE_CONTEXT=containers/worker-base
+
+# No default provenance attestation. Docker (BuildKit + the containerd image
+# store) otherwise attaches one carrying the build time, so every rebuild of
+# ur-worker-base gets a new digest even when all of its layers are cached. The
+# agent images resolve `FROM ur-worker-base` by digest, so that new digest
+# missed the cache on every agent layer, re-downloading each agent CLI on every
+# build. nerdctl ignores this variable.
+export BUILDX_NO_DEFAULT_ATTESTATIONS=1
 
 build_image() {
     local tag="$1"
@@ -27,12 +36,16 @@ build_image() {
     fi
 }
 
-build_image_arg() {
+# Agent images also get the `shared` named build context: the agent-agnostic
+# skills and instructions under containers/worker-base/, which each agent
+# Dockerfile copies in after its CLI install (see containers/worker-base/Dockerfile
+# for why they are not baked into the base image itself).
+build_agent_image() {
     local tag="$1"
     local dockerfile="$2"
     local context="$3"
     shift 3
-    local args=()
+    local args=(--build-context "shared=$BASE_CONTEXT")
     for arg in "$@"; do
         args+=(--build-arg "$arg")
     done
@@ -79,8 +92,6 @@ should_bust_agent() {
     esac
 }
 
-BASE_CONTEXT=containers/worker-base
-
 # Directory name matches image tag name exactly, so this table maps 1:1 onto
 # `containers/<dir>` -> `<tag>:<image-tag>`. Adding an agent's images (e.g.
 # codex) is a data change here, not a code change to the loop below.
@@ -90,9 +101,11 @@ BASE_CONTEXT=containers/worker-base
 # agent-CLI-update step : whether worker binaries are staged into the context. The table itself
 # lives in agent-images.sh so build, staging, deploy, and cleanup cannot drift.
 
-# `ur-worker-base` now carries only agent-agnostic assets (shell setup, skills,
-# instructions) — no agent CLI install — so UR_FORCE_REBUILD_BASE no longer
-# touches any agent CLI install at all. It still fully rebuilds this layer.
+# `ur-worker-base` carries only the OS packages and shell setup: no agent CLI
+# install and no skills/instructions (those are copied into each agent image
+# from the `shared` build context, after the CLI install, so editing them does
+# not invalidate the CLI layers). UR_FORCE_REBUILD_BASE fully rebuilds this
+# layer, and through it every agent image.
 if [ "${UR_FORCE_REBUILD_BASE:-}" = "1" ]; then
     build_image_no_cache "ur-worker-base:$tag" "$BASE_CONTEXT/Dockerfile" "$BASE_CONTEXT"
 else
@@ -115,7 +128,7 @@ for entry in "${AGENT_IMAGES[@]}"; do
     if [ "$needs_cachebust" = "true" ] && should_bust_agent "$agent_name"; then
         args+=("CACHEBUST=$(date +%s)")
     fi
-    build_image_arg "$img_tag:$tag" "$context/Dockerfile" "$context" "${args[@]}"
+    build_agent_image "$img_tag:$tag" "$context/Dockerfile" "$context" "${args[@]}"
     echo "Image built: $img_tag:$tag"
 done
 

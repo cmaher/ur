@@ -157,19 +157,20 @@ loopback). See [local-workers.md](local-workers.md).
 ```
 containers/worker-base/Dockerfile (ur-worker-base:latest)
 ├── debian:bookworm-slim + system packages
-├── useradd worker
-├── COPY .agent-shared assets (potential-skills/, instructions/, shared-instructions/)
-└── (no agent CLI installed here — agent-agnostic layer)
+├── useradd worker, shell profile, empty worker-owned ~/.agent-shared
+└── (no agent CLI and no skills/instructions here — see below)
 
 containers/worker-claude/Dockerfile (ur-worker-claude:latest)
 ├── FROM ur-worker-base:latest
 ├── USER worker → install-claude.sh (binary at /home/worker/.local/bin/claude)
 ├── USER root → cleanup
-├── COPY entrypoint.sh, worker binaries (ur-workertools, workerd)
+├── COPY entrypoint.sh
 ├── COPY claude.json → /home/worker/.claude.json (skip onboarding/login prompts)
 ├── COPY claude-settings.json → /home/worker/.claude/potential-settings.json
 │   └── permissions.defaultMode: "auto"
-├── USER worker
+├── USER worker → claude update (CACHEBUST-gated)
+├── COPY --from=shared .agent-shared assets (potential-skills/, instructions/, shared-instructions/)
+├── COPY worker binaries (ur-workertools, workerd)
 └── ENTRYPOINT ["/entrypoint.sh"]
 
 containers/worker-agy/Dockerfile (ur-worker-agy:latest)
@@ -178,10 +179,11 @@ containers/worker-agy/Dockerfile (ur-worker-agy:latest)
 ├── COPY onboarding/settings runtime files under ~/.gemini/antigravity-cli/
 ├── COPY trusted Stop hook → ~/.gemini/config/hooks.json
 ├── pre-create both trees with worker ownership
+├── COPY --from=shared .agent-shared assets, then worker binaries
 └── ENTRYPOINT ["/entrypoint.sh"]
 ```
 
-The Claude CLI install moved from the base image into the `worker-claude` layer (inverting the pre-split caching story — see `docs/codeflows/skill-loading.md` and `scripts/build/image.sh` for the `UR_FORCE_REBUILD_BASE`/`UR_UPDATE_AGENT` cache-busting behavior this implies). Image tags include `ur-worker-base:latest` and `ur-worker-claude:latest`; each directory name matches its tag.
+Layers are ordered by how often they change: base OS packages, then the agent CLI install/update, then the shared skills and instructions, then the worker binaries. The shared assets are copied into each agent image (from the `shared` build context, `containers/worker-base/`) rather than baked into the base, because any change to the base invalidates every agent layer, CLI download included. For the same reason `scripts/build/image.sh` sets `BUILDX_NO_DEFAULT_ATTESTATIONS=1`: the default provenance attestation carries the build time, which gave the base a new digest on every build even when nothing changed. See `scripts/build/image.sh` for the `UR_FORCE_REBUILD_BASE`/`UR_UPDATE_AGENT` cache-busting knobs. Image tags include `ur-worker-base:latest` and `ur-worker-claude:latest`; each directory name matches its tag.
 
 `potential-settings.json` is baked here (agent-specific config, not shared content) and copied verbatim to `~/.claude/settings.json` by `InitSettingsManager` at container startup — permissions default to auto mode via `settings.json` (`permissions.defaultMode: "auto"`) rather than a CLI flag, so no wrapper script is needed.
 
@@ -210,7 +212,7 @@ The Claude CLI install moved from the base image into the `worker-claude` layer 
 | `containers/worker-claude/claude.json` | Baked-in `.claude.json` (onboarding + project trust) |
 | `containers/worker-claude/entrypoint.sh` | Starts tmux, keeps container alive |
 | `containers/worker-claude/claude-settings.json` | Baked-in settings (auto permission mode), copied to `potential-settings.json` in the image |
-| `containers/worker-base/Dockerfile` | Agent-agnostic base image (no Claude CLI) |
+| `containers/worker-base/Dockerfile` | Agent-agnostic base image (no agent CLI, no skills/instructions) |
 | `containers/worker-claude/Dockerfile` | Claude-specific layer: CLI install, worker binaries, config |
 
 ## Manual Credential Management

@@ -2,8 +2,9 @@
 set -euo pipefail
 
 # Install the agent assets local workers read (builderd --agent-shared) into
-# DEST, replacing any previous copy. Same order and override as
-# containers/worker-base/Dockerfile: the repo's skills land after the vendored
+# DEST, replacing any previous copy. Same order and override as the
+# `COPY --from=shared` steps in containers/worker-<agent>/Dockerfile: the
+# repo's skills land after the vendored
 # ones and win a name collision. Used by install.sh and the acceptance suite.
 #
 #   scripts/build/install-agent-assets.sh <dest>

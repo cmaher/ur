@@ -43,9 +43,21 @@ ARG CACHEBUST=0
 USER worker
 RUN echo "CACHEBUST=$CACHEBUST" && claude update && claude --version
 
+# Agent-agnostic skills and instructions, from the `shared` named build context
+# (containers/worker-base/, passed by scripts/build/image.sh). They sit after
+# the agent CLI install/update so editing a skill or instruction file does not
+# re-download the agent CLI; only these layers and the binaries below rebuild.
+# Order matters: both skill COPYs land in the same directory, and the later one
+# wins a name collision. The repo's own skills go second so they override a
+# same-named vendored skill, not the other way round.
+COPY --from=shared --chown=worker:worker vendor/superpowers/skills/ /home/worker/.agent-shared/potential-skills/
+COPY --from=shared --chown=worker:worker potential-skills/ /home/worker/.agent-shared/potential-skills/
+COPY --from=shared --chown=worker:worker instructions/ /home/worker/.agent-shared/instructions/
+COPY --from=shared --chown=worker:worker shared-instructions/ /home/worker/.agent-shared/shared-instructions/
+
 # Worker binaries change on nearly every commit, so they are the last layer:
-# everything above (agent CLI install/update, config) stays cached across
-# Rust-only changes. --chmod avoids a second full copy from `RUN chmod`.
+# everything above (agent CLI install/update, config, shared assets) stays
+# cached across Rust-only changes. --chmod avoids a second full copy from `RUN chmod`.
 COPY --chmod=755 bin/ur-workertools /usr/local/bin/ur-workertools
 COPY --chmod=755 bin/workerd /usr/local/bin/workerd
 

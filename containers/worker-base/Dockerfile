@@ -38,14 +38,12 @@ COPY worker.profile /home/worker/.profile
 COPY worker.bashrc /home/worker/.bashrc
 RUN chown worker:worker /home/worker/.profile /home/worker/.bashrc
 
-# Agent-agnostic skills and instructions, shared by every agent image built
-# on top of this one (see containers/worker-claude/). Agent-specific assets
-# (CLI install, app config) live in the agent layer instead.
-# Order matters: both COPYs land in the same directory, and the later one wins
-# a name collision. The repo's own skills go second so they override a
-# same-named vendored skill, not the other way round.
-COPY vendor/superpowers/skills/ /home/worker/.agent-shared/potential-skills/
-COPY potential-skills/ /home/worker/.agent-shared/potential-skills/
-COPY instructions/ /home/worker/.agent-shared/instructions/
-COPY shared-instructions/ /home/worker/.agent-shared/shared-instructions/
-RUN chown -R worker:worker /home/worker/.agent-shared
+# The agent-agnostic skills and instructions in this directory
+# (potential-skills/, instructions/, shared-instructions/, vendored
+# superpowers skills) are NOT baked here. They change often, and anything that
+# changes this image invalidates every layer of the agent images built FROM it,
+# including the slow agent CLI download. Each agent Dockerfile copies them in
+# near the end instead, via the `shared` named build context
+# (scripts/build/image.sh passes --build-context shared=containers/worker-base).
+# Only the worker-owned directory is created here.
+RUN mkdir -p /home/worker/.agent-shared && chown worker:worker /home/worker/.agent-shared

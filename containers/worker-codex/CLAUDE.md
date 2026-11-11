@@ -85,7 +85,7 @@ the `NotifyIdle` RPC) rather than trusting `codex` to complain about a bad event
   `scripts/build/stage.sh`, then copied into the image at `/usr/local/bin/`
 - `workerd` handles initialization (skills, git hooks, hostexec shims), creates the tmux
   session, launches codex, and serves gRPC — reads agent-agnostic content from
-  `/home/worker/.agent-shared/` (baked by `worker-base`) and writes it into codex's own layout
+  `/home/worker/.agent-shared/` (copied in from the `shared` build context, `containers/worker-base/`) and writes it into codex's own layout
   under `~/.codex/`, same as for Claude
 - Workers reach the Squid forward proxy at `ur-squid:3128` via Docker DNS;
   `HTTP_PROXY`/`HTTPS_PROXY` env vars are set by the server at launch

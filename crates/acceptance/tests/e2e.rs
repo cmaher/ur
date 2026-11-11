@@ -1188,8 +1188,8 @@ fn assert_container_paths_exist(runtime: &str, container: &str, paths: &[&str]) 
     }
 }
 
-/// The base image's agent-agnostic `.agent-shared/` layout, baked into
-/// `worker-base` that every per-agent image extends.
+/// The agent-agnostic `.agent-shared/` layout every per-agent image copies in
+/// from `containers/worker-base/` (the `shared` build context).
 const AGENT_SHARED_PATHS: &[&str] = &[
     "/home/worker/.agent-shared/potential-skills",
     "/home/worker/.agent-shared/instructions/code.md",
@@ -1611,7 +1611,7 @@ fn scenario_pool_launch(env: &TestEnv) {
         assert_agent_type(env, ticket_id, "claude");
 
         // ---- Global [skills.code] skill: bind-mounted, then copied by workerd init ----
-        // ---- plus the base image's .agent-shared/ layout ----
+        // ---- plus the image's .agent-shared/ layout ----
         let mut paths = vec![
             "/home/worker/.agent-shared/potential-skills/test-skill/SKILL.md",
             "/home/worker/.claude/skills/test-skill/SKILL.md",
