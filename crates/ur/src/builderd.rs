@@ -219,12 +219,18 @@ pub async fn stop_local_workers(endpoint: Option<String>, output: &OutputManager
     let mut client = BuilderLocalWorkerServiceClient::connect(endpoint.clone())
         .await
         .with_context(|| format!("connect to builderd at {endpoint}"))?;
-    let workers = client
-        .list_local_workers(ListLocalWorkersRequest {})
-        .await
-        .map_err(|s| anyhow::anyhow!("list local workers: {}", s.message()))?
-        .into_inner()
-        .workers;
+    let workers = match client.list_local_workers(ListLocalWorkersRequest {}).await {
+        Ok(resp) => resp.into_inner().workers,
+        // A builderd built before the local worker runtime has no such
+        // service, so it cannot be hosting any local workers. Treating this
+        // as an error would wedge `ur stop`/`ur restart` on the old builderd
+        // forever after an upgrade.
+        Err(s) if s.code() == tonic::Code::Unimplemented => {
+            warn!("builderd predates the local worker service; no local workers to stop");
+            return Ok(());
+        }
+        Err(s) => anyhow::bail!("list local workers: {} ({:?})", s.message(), s.code()),
+    };
     let mut failed = Vec::new();
     for w in workers {
         match client
@@ -564,5 +570,23 @@ mod tests {
             "{err}"
         );
         assert_eq!(*stop_fails.stops.lock().unwrap(), vec!["w1", "w2"]);
+    }
+
+    /// A builderd that predates the local worker service answers
+    /// `Unimplemented`; that must not block `ur stop`/`ur restart`.
+    #[tokio::test]
+    async fn stop_local_workers_tolerates_builderd_without_service() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_routes(tonic::service::Routes::default())
+                .serve_with_incoming(incoming),
+        );
+        let output = OutputManager::from_args(None);
+        stop_local_workers(Some(format!("http://{addr}")), &output)
+            .await
+            .unwrap();
     }
 }

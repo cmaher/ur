@@ -57,11 +57,12 @@ impl Fixture {
         for dir in ["shared", "config", "workspace", "home", "out", "src/ctx"] {
             fs::create_dir_all(root.join(dir)).unwrap();
         }
-        // Records env, then cwd (renamed into place last, so a visible
-        // `.pwd` means both are complete), then stays alive as a shell.
+        // Records args and env, then cwd (renamed into place last, so a
+        // visible `.pwd` means all are complete), then stays alive as a shell.
         write_exec(
             &root.join("bin/stub-agent"),
-            "#!/bin/sh\nenv > \"$STUB_OUT/$UR_WORKER_ID.env\"\n\
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$STUB_OUT/$UR_WORKER_ID.args\"\n\
+             env > \"$STUB_OUT/$UR_WORKER_ID.env\"\n\
              pwd > \"$STUB_OUT/$UR_WORKER_ID.tmp\"\n\
              mv \"$STUB_OUT/$UR_WORKER_ID.tmp\" \"$STUB_OUT/$UR_WORKER_ID.pwd\"\nexec sh\n",
         );
@@ -292,6 +293,52 @@ async fn duplicate_launch_is_rejected_without_touching_live_worker() {
     assert!(f.session("w1").exists().await.unwrap());
     assert!(f.registry.contains("w1"));
     assert!(f.drive("w1").join("ctx").is_symlink());
+    f.manager.stop("w1").await.unwrap();
+}
+
+/// A shell still starting up reads typed input through the tty's canonical
+/// line buffer (1024 bytes on macOS), so an argv typed into the pane is
+/// truncated. The argv goes through `.ur/launch.sh`; it must arrive whole.
+#[tokio::test(flavor = "multi_thread")]
+async fn long_agent_argv_reaches_agent_intact() {
+    let f = Fixture::new("longargv", Duration::from_secs(3600));
+    let slot = f.slot("slot");
+    let mut req = f.request("w1", &slot);
+    let sources: Vec<PathBuf> = (0..40)
+        .map(|i| {
+            let src = f.path(&format!(
+                "src/a-fairly-long-mount-source-directory-name-{i:02}"
+            ));
+            fs::create_dir_all(&src).unwrap();
+            src
+        })
+        .collect();
+    req.mounts
+        .extend(sources.iter().enumerate().map(|(i, src)| LocalMount {
+            source: src.clone(),
+            dest: format!("/m{i:02}"),
+            read_only: true,
+        }));
+    f.manager.launch(&req, f.env()).await.unwrap();
+
+    let pwd = f.path("out/w1.pwd");
+    wait_for("stub agent", async || pwd.exists()).await;
+    let args = fs::read_to_string(f.path("out/w1.args")).unwrap();
+    assert!(
+        args.len() > 2048,
+        "argv should be long: {} bytes",
+        args.len()
+    );
+    let lines: Vec<&str> = args.lines().collect();
+    for src in &sources {
+        let src = src.to_string_lossy();
+        assert!(lines.contains(&src.as_ref()), "missing --add-dir {src}");
+    }
+    assert_eq!(
+        lines.get(lines.len() - 2),
+        Some(&"--effort"),
+        "argv truncated: {args}"
+    );
     f.manager.stop("w1").await.unwrap();
 }
 

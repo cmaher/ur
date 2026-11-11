@@ -162,7 +162,7 @@ InvalidArgument if the id contains '.' or ':' (tmux would rename the session) or
   → tmux -L ur new-session -d -s ur-<id> -c <slot> -e <env…>
   → background startup hooks in window :bg (new-window -c <slot>)
   → LocalWorkerRegistry insert + exit watcher   (before the agent: SessionStart calls NotifyIdle)
-  → agent argv typed into window 0
+  → agent argv written to .ur/launch.sh; its path typed into window 0
 any failure after build → teardown → error
 ```
 
