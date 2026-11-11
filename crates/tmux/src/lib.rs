@@ -1,4 +1,8 @@
-use std::{path::PathBuf, process::ExitStatus, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::ExitStatus,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
 use tracing::{debug, info, warn};
@@ -45,7 +49,8 @@ pub struct CreateOptions {
     pub name: String,
     /// tmux server socket name (`-L`). `None` uses the default server.
     pub socket: Option<String>,
-    /// Initial working directory for the session (`-c`). New windows inherit it.
+    /// Initial working directory for the session (`-c`). Windows created
+    /// later do not inherit it; pass `start_dir` to `Session::new_window`.
     pub start_dir: Option<PathBuf>,
     /// Environment variables set on the session (`-e NAME=VALUE`), in order.
     /// New windows inherit them.
@@ -361,6 +366,23 @@ impl Session {
         Ok(output.trim().to_string())
     }
 
+    /// Whether the agent pane's own process (`#{pane_pid}`, normally its
+    /// shell) has any child process, running or stopped. A shell foreground
+    /// with a child left is a suspended agent or one whose child took the
+    /// terminal, not an exited one.
+    pub async fn pane_has_child_processes(&self) -> Result<bool> {
+        let output = run_tmux_stdout(&self.agent_pane_query_args("#{pane_pid}"))
+            .await
+            .with_context(|| {
+                format!("failed to query pane_pid for tmux session '{}'", self.name)
+            })?;
+        let pid: u32 = output
+            .trim()
+            .parse()
+            .with_context(|| format!("unexpected pane_pid '{}'", output.trim()))?;
+        Ok(parent_pids().await?.contains(&pid))
+    }
+
     /// Check whether the pane's shell process is still alive.
     ///
     /// Queries only the original agent pane, so helper panes do not affect
@@ -390,11 +412,13 @@ impl Session {
 
     /// Create a detached window named `window` in this session.
     ///
-    /// The window inherits the session's working directory and environment.
-    /// Window 0 stays the current window, so session-level operations and
-    /// lifecycle checks (`<session>:0.0`) are unaffected.
-    pub async fn new_window(&self, window: &str) -> Result<()> {
-        run_tmux(&self.new_window_args(window))
+    /// The window inherits the session's environment. Its working directory
+    /// is `start_dir` (`-c`); `None` leaves it to tmux, which uses the calling
+    /// client's cwd, not the session's. Window 0 stays the current window, so
+    /// session-level operations and lifecycle checks (`<session>:0.0`) are
+    /// unaffected.
+    pub async fn new_window(&self, window: &str, start_dir: Option<&Path>) -> Result<()> {
+        run_tmux(&self.new_window_args(window, start_dir))
             .await
             .with_context(|| {
                 format!(
@@ -430,6 +454,30 @@ impl Session {
                 bail!("tmux has-session failed for '{}': {stderr}", self.name)
             }
         }
+    }
+
+    /// The session environment (`show-environment`): `NAME=VALUE` entries only;
+    /// variables marked removed (`-NAME`) are skipped.
+    pub async fn environment(&self) -> Result<Vec<(String, String)>> {
+        let stdout =
+            run_tmux_stdout(&self.argv(&["show-environment", "-t", &self.exact_target()])).await?;
+        Ok(parse_environment(&stdout))
+    }
+
+    /// The directory the session was created in (`#{session_path}`, `-c`).
+    pub async fn start_dir(&self) -> Result<PathBuf> {
+        let args = self.argv(&[
+            "display-message",
+            "-p",
+            "-t",
+            &self.session_target(),
+            "#{session_path}",
+        ]);
+        let path = run_tmux_stdout(&args).await?.trim().to_owned();
+        if path.is_empty() {
+            bail!("tmux session '{}' reported no start dir", self.name);
+        }
+        Ok(PathBuf::from(path))
     }
 
     /// Kill this session (all of its windows).
@@ -471,17 +519,22 @@ impl Session {
         argv
     }
 
-    fn new_window_args(&self, window: &str) -> Vec<String> {
+    fn new_window_args(&self, window: &str, start_dir: Option<&Path>) -> Vec<String> {
         // The session target (`=name:`) lets the new window take the next
         // free index rather than replacing the current one.
-        self.argv(&[
+        let mut args = self.argv(&[
             "new-window",
             "-d",
             "-t",
             &self.session_target(),
             "-n",
             window,
-        ])
+        ]);
+        if let Some(dir) = start_dir {
+            args.push("-c".into());
+            args.push(dir.to_string_lossy().into_owned());
+        }
+        args
     }
 
     fn capture_pane_args(&self) -> Vec<String> {
@@ -580,6 +633,16 @@ fn submit_probe(text: &str) -> String {
         .collect::<String>()
 }
 
+/// `show-environment` output → `(name, value)`, skipping removed (`-NAME`) entries.
+fn parse_environment(stdout: &str) -> Vec<(String, String)> {
+    stdout
+        .lines()
+        .filter(|line| !line.starts_with('-'))
+        .filter_map(|line| line.split_once('='))
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect()
+}
+
 /// Socket-selection arguments: `-L <socket>` for a dedicated server, nothing
 /// for the default server.
 fn socket_args(socket: Option<&str>) -> Vec<String> {
@@ -592,15 +655,22 @@ fn socket_args(socket: Option<&str>) -> Vec<String> {
 /// Whether tmux stderr indicates the server is not running: no socket, or a
 /// stale one. Other connect failures (e.g. permission denied) are real errors.
 fn is_no_server(stderr: &str) -> bool {
+    // "server exited unexpectedly": the server quit mid-request (it exits
+    // once its last session is killed), so it holds no sessions.
     stderr.contains("no server running")
+        || stderr.contains("server exited unexpectedly")
         || (stderr.contains("error connecting to")
             && (stderr.contains("No such file or directory")
                 || stderr.contains("Connection refused")))
 }
 
-/// Whether tmux stderr indicates the target session does not exist.
+/// Whether tmux stderr indicates the target session does not exist. "no
+/// current target" is what a server with no sessions left (exiting after its
+/// last session was killed) answers.
 fn is_no_session(stderr: &str) -> bool {
-    stderr.contains("can't find session") || stderr.contains("session not found")
+    stderr.contains("can't find session")
+        || stderr.contains("session not found")
+        || stderr.contains("no current target")
 }
 
 /// Outcome of a tmux invocation that spawned successfully.
@@ -609,11 +679,42 @@ enum TmuxOutput {
     Failed(String),
 }
 
+/// Per-socket replacement for the `tmux` program (test seam, see
+/// [`override_program_for_socket`]). Never set in production.
+static PROGRAM_OVERRIDES: std::sync::LazyLock<
+    std::sync::RwLock<std::collections::HashMap<String, PathBuf>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Run `program` instead of `tmux` for every invocation on `socket` (`-L`).
+/// A test seam for fault injection that leaves other sockets (and the
+/// process environment) untouched.
+#[doc(hidden)]
+pub fn override_program_for_socket(socket: &str, program: PathBuf) {
+    PROGRAM_OVERRIDES
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(socket.to_owned(), program);
+}
+
+/// The program for an invocation: the override for its `-L` socket, if any.
+fn tmux_program(args: &[&str]) -> PathBuf {
+    let socket = match args {
+        ["-L", socket, ..] => *socket,
+        _ => return PathBuf::from("tmux"),
+    };
+    PROGRAM_OVERRIDES
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(socket)
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from("tmux"))
+}
+
 /// Run a tmux command and return its stdout on success or trimmed stderr on failure.
 async fn run_tmux_output(args: &[impl AsRef<str>]) -> Result<TmuxOutput> {
     let str_args: Vec<&str> = args.iter().map(|a| a.as_ref()).collect();
 
-    let output = tokio::process::Command::new("tmux")
+    let output = tokio::process::Command::new(tmux_program(&str_args))
         .args(&str_args)
         .output()
         .await
@@ -653,6 +754,46 @@ async fn run_tmux_stdout(args: &[impl AsRef<str>]) -> Result<String> {
     }
 }
 
+/// The parent pid of every process on the host: `/proc/<pid>/stat` on Linux
+/// (worker images ship no `ps`), `ps -A -o ppid=` elsewhere (macOS).
+async fn parent_pids() -> Result<Vec<u32>> {
+    if cfg!(target_os = "linux") {
+        let mut ppids = Vec::new();
+        let mut dir = tokio::fs::read_dir("/proc").await.context("read /proc")?;
+        while let Some(entry) = dir.next_entry().await.context("read /proc")? {
+            // A process that exits mid-scan has no stat left to read.
+            if let Ok(stat) = tokio::fs::read_to_string(entry.path().join("stat")).await
+                && let Some(ppid) = stat_ppid(&stat)
+            {
+                ppids.push(ppid);
+            }
+        }
+        return Ok(ppids);
+    }
+    let output = tokio::process::Command::new("ps")
+        .args(["-A", "-o", "ppid="])
+        .output()
+        .await
+        .context("run ps")?;
+    if !output.status.success() {
+        bail!(
+            "ps failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .collect())
+}
+
+/// The ppid field of a `/proc/<pid>/stat` line: `pid (comm) state ppid ...`,
+/// where `comm` may itself contain spaces and parentheses.
+fn stat_ppid(stat: &str) -> Option<u32> {
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(1)?.parse().ok()
+}
+
 /// Run a tmux command interactively (inheriting stdin/stdout/stderr).
 /// Returns the exit status for the caller to handle.
 pub async fn exec_interactive(args: &[impl AsRef<str>]) -> Result<ExitStatus> {
@@ -671,6 +812,13 @@ pub async fn exec_interactive(args: &[impl AsRef<str>]) -> Result<ExitStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stat_ppid_skips_comm_with_spaces_and_parens() {
+        assert_eq!(stat_ppid("42 (zsh) S 7 42 42 0 -1"), Some(7));
+        assert_eq!(stat_ppid("43 (a) b (c)) T 42 43 42"), Some(42));
+        assert_eq!(stat_ppid("garbage"), None);
+    }
 
     #[test]
     fn worker_tmux_config_advertises_hyperlink_support() {
@@ -755,12 +903,27 @@ mod tests {
     #[test]
     fn test_new_window_argv() {
         assert_eq!(
-            Session::from_name("agent").new_window_args("bg"),
+            Session::from_name("agent").new_window_args("bg", None),
             vec!["new-window", "-d", "-t", "=agent:", "-n", "bg"]
         );
         assert_eq!(
-            Session::on_socket("ur", "ur-w1").new_window_args("bg"),
+            Session::on_socket("ur", "ur-w1").new_window_args("bg", None),
             vec!["-L", "ur", "new-window", "-d", "-t", "=ur-w1:", "-n", "bg"]
+        );
+        assert_eq!(
+            Session::on_socket("ur", "ur-w1").new_window_args("bg", Some(Path::new("/s"))),
+            vec![
+                "-L",
+                "ur",
+                "new-window",
+                "-d",
+                "-t",
+                "=ur-w1:",
+                "-n",
+                "bg",
+                "-c",
+                "/s"
+            ]
         );
     }
 
@@ -860,12 +1023,27 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_environment_skips_removed_and_keeps_equals_in_values() {
+        let out = "-DISPLAY\nUR_WORKER_ID=w1\nA=b=c\nEMPTY=\n";
+        assert_eq!(
+            parse_environment(out),
+            vec![
+                ("UR_WORKER_ID".to_owned(), "w1".to_owned()),
+                ("A".to_owned(), "b=c".to_owned()),
+                ("EMPTY".to_owned(), String::new()),
+            ]
+        );
+    }
+
+    #[test]
     fn test_missing_server_and_session_detection() {
         assert!(is_no_server("no server running on /tmp/tmux-501/ur"));
         assert!(is_no_server(
             "error connecting to /tmp/tmux-501/ur (No such file or directory)"
         ));
         assert!(is_no_session("can't find session: ur-w1"));
+        assert!(is_no_session("no current target"));
+        assert!(is_no_server("server exited unexpectedly"));
         assert!(is_no_server(
             "error connecting to /tmp/tmux-501/ur (Connection refused)"
         ));

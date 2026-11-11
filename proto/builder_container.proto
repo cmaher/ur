@@ -7,9 +7,14 @@ service BuilderContainerService {
   // source is missing.
   rpc LaunchWorker(LaunchWorkerRequest) returns (LaunchWorkerResponse);
 
-  // Stop and remove a container by ID. Returns NotFound when the container is
-  // already gone.
+  // Stop and remove every container this instance runs for a worker id (by
+  // label). A barrier per worker id: waits for an in-flight LaunchWorker of
+  // it and refuses any later one. Ok means nothing with this worker id runs
+  // in this builderd, now or later (no container is Ok).
   rpc StopWorker(StopWorkerRequest) returns (StopWorkerResponse);
+
+  // Every worker container this ur instance runs (by label), running or not.
+  rpc ListWorkerContainers(ListWorkerContainersRequest) returns (ListWorkerContainersResponse);
 
   // Execute a command inside a running container and return its output.
   // Used for squid reconfigure and similar one-shot exec operations.
@@ -18,10 +23,6 @@ service BuilderContainerService {
   // Inspect whether a Docker network exists.
   rpc InspectNetwork(InspectNetworkRequest) returns (InspectNetworkResponse);
 
-  // Report whether a container exists and is running. Returns running=false
-  // for an absent container; returns an error (never false) when liveness
-  // could not be determined, so callers cannot mistake "unknown" for "dead".
-  rpc InspectWorker(InspectWorkerRequest) returns (InspectWorkerResponse);
 }
 
 message Volume {
@@ -46,6 +47,8 @@ message AddHost {
 
 message LaunchWorkerRequest {
   string image = 1;
+  // Container name (Docker DNS name): the server's worker prefix plus
+  // `worker_id`. builderd identifies the container by its labels only.
   string name = 2;
   uint32 cpus = 3;
   string memory = 4;
@@ -55,14 +58,21 @@ message LaunchWorkerRequest {
   string workdir = 8;
   string network = 9;
   repeated AddHost add_hosts = 10;
+  // Required. The container is labeled `ur.worker_id=<worker_id>` and
+  // `ur.instance=<this builderd's instance>`. builderd orders LaunchWorker
+  // and StopWorker per worker id: a StopWorker for it refuses a later launch.
+  string worker_id = 11;
 }
 
-message LaunchWorkerResponse {
-  string container_id = 1;
-}
+message LaunchWorkerResponse {}
 
 message StopWorkerRequest {
-  string container_id = 1;
+  reserved 1;
+  string worker_id = 2;
+  // Upgrade only: the Docker ID of a container launched before containers
+  // were labeled (ur-ezhdb). Stopped too, but only if its UR_WORKER_ID env
+  // is `worker_id`. Empty for every container launched since.
+  string legacy_container_id = 3;
 }
 
 message StopWorkerResponse {}
@@ -88,14 +98,13 @@ message InspectNetworkResponse {
   bool exists = 1;
 }
 
-message InspectWorkerRequest {
-  string container_id = 1;
+message ListWorkerContainersRequest {}
+
+message ListWorkerContainersResponse {
+  repeated WorkerContainerStatus containers = 1;
 }
 
-message InspectWorkerResponse {
-  bool running = 1;
-  // Full container ID the request resolved to; empty when no such container.
-  // Lets callers that looked a container up by name identify which launch it
-  // actually belongs to, since names are reused across launches.
-  string container_id = 2;
+message WorkerContainerStatus {
+  string worker_id = 1;
+  bool running = 2;
 }

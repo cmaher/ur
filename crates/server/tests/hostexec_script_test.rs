@@ -69,19 +69,12 @@ impl HostExecHarness {
             config.projects.clone(),
             ur_server::hostexec::HostExecConfigManager::load(dir, &discovery).unwrap(),
         );
-        let repo_pool_manager = ur_server::RepoPoolManager::new(
-            &config,
-            worker_repo.clone(),
-            project_registry.clone(),
-            ur_server::BuilderPoolClient::new(dead_builderd.clone()),
-        );
         let worker_manager = ur_server::WorkerManager::new(
             workspace.clone(),
             dir.to_path_buf(),
             dir.to_path_buf(),
             dir.join("logs"),
             dir.join("logs"),
-            repo_pool_manager,
             network_manager,
             config.network.clone(),
             config.worker_port,
@@ -89,6 +82,9 @@ impl HostExecHarness {
             worker_repo,
             ur_config::GlobalSkillsConfig::default(),
             builder_container_client,
+            ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
+                tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+            ),
         );
         let handler = ur_server::grpc_hostexec::HostExecServiceHandler {
             script_registry: ur_server::hostexec::ScriptRegistry::from_projects(

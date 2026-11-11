@@ -4,8 +4,8 @@ use tonic::{Code, Status};
 
 use ur_rpc::proto::builder_pool::builder_pool_service_client::BuilderPoolServiceClient;
 use ur_rpc::proto::builder_pool::{
-    CheckoutBranchRequest, CleanSlotRequest, PrepareNewSlotRequest, PrepareSharedSlotRequest,
-    RecycleSlotRequest, ScanSlotsRequest,
+    CheckoutBranchRequest, PrepareNewSlotRequest, PrepareSharedSlotRequest, RecycleSlotRequest,
+    ScanSlotsRequest,
 };
 
 /// Thin clone-able wrapper around the generated `BuilderPoolServiceClient`.
@@ -124,22 +124,6 @@ impl BuilderPoolClient {
             })
             .await
             .map_err(|status| preserve_status_message(status, "checkout_branch"))?;
-        Ok(())
-    }
-
-    /// Remove a slot directory and free its resources.
-    ///
-    /// Returns `NotFound` if the slot does not exist.
-    /// Returns `Internal` on removal failure.
-    pub async fn clean_slot(&self, project_key: String, slot_name: String) -> Result<(), String> {
-        let mut client = self.inner.clone();
-        client
-            .clean_slot(CleanSlotRequest {
-                project_key,
-                slot_name,
-            })
-            .await
-            .map_err(|status| preserve_status_message(status, "clean_slot"))?;
         Ok(())
     }
 }

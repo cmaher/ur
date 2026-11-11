@@ -19,10 +19,17 @@ the host CLI (attach command generation), and host-local worker management (dedi
   invocation, including `attach_command()`. Host-local workers use `ur_config::LOCAL_TMUX_SOCKET`
   (`"ur"`) so they never share the user's own tmux server.
 - `CreateOptions` derives `Default`; `start_dir` → `-c`, `env` → repeated `-e NAME=VALUE`. Windows
-  created later inherit both.
-- `new_window(name)` creates a detached window (`new-window -d`), so window 0 stays current and
+  created later inherit the env but NOT the start dir (tmux uses the calling client's cwd).
+- `new_window(name, start_dir)` creates a detached window (`new-window -d`, `-c` when `start_dir`
+  is set), so window 0 stays current and
   lifecycle checks keep targeting `<session>:0.0`. `send_keys_to_window()` is a plain
   type-then-Enter for shell windows (no Claude input-box handling).
+- `environment()` (`show-environment -t =name`, removed `-NAME` entries skipped) and `start_dir()`
+  (`#{session_path}`) read a session back; builderd uses them to adopt sessions after a restart.
+- A server that is exiting (after its last session was killed) answers "no current target" or
+  "server exited unexpectedly"; both count as no session / no server.
+- `override_program_for_socket(socket, program)` runs `program` instead of `tmux` for every
+  invocation on that `-L` socket (test seam for fault injection; never used in production).
 - `kill()` is idempotent (missing session/server is `Ok`); `exists()` uses `has-session`;
   `Session::list_sessions(socket)` returns an empty list when the server is not running.
 - **Every** op uses an exact-match target so `ur-w1` never prefix-matches `ur-w10`:

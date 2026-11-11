@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use crate::UR_AGENT_TYPE_ENV;
 
@@ -340,6 +341,31 @@ impl AgentType {
         }
     }
 
+    /// Host-side memory directory the agent uses for a session whose cwd is
+    /// `cwd`, or `None` if the agent has no memory-dir concept.
+    ///
+    /// Claude Code keys per-project state by the cwd with every character
+    /// that is not an ASCII letter or digit replaced by `-`
+    /// (`/Users/me/p.q` → `-Users-me-p-q`), under `~/.claude/projects/`.
+    pub fn local_memory_dir(&self, home: &Path, cwd: &Path) -> Option<PathBuf> {
+        match self {
+            Self::Claude => {
+                let encoded: String = cwd
+                    .to_string_lossy()
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                    .collect();
+                Some(
+                    home.join(self.home_subdir())
+                        .join("projects")
+                        .join(encoded)
+                        .join("memory"),
+                )
+            }
+            Self::Codex | Self::Agy => None,
+        }
+    }
+
     /// Whether this agent can run with `runtime = "local"` (natively on the
     /// host in a pool slot). Claude only for now; other agents are rejected
     /// with `FailedPrecondition` at launch.
@@ -490,6 +516,35 @@ mod tests {
 
     /// Serialize tests that mutate the process-wide `UR_AGENT_TYPE` env var.
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn local_memory_dir_encodes_cwd_like_claude_code() {
+        let home = Path::new("/Users/cmaher");
+        assert_eq!(
+            AgentType::Claude.local_memory_dir(home, Path::new("/Users/cmaher/projects/paxos/pax")),
+            Some(PathBuf::from(
+                "/Users/cmaher/.claude/projects/-Users-cmaher-projects-paxos-pax/memory"
+            ))
+        );
+        assert_eq!(
+            AgentType::Claude
+                .local_memory_dir(home, Path::new("/Users/cmaher/.ur/workspace/pool/ur/0")),
+            Some(PathBuf::from(
+                "/Users/cmaher/.claude/projects/-Users-cmaher--ur-workspace-pool-ur-0/memory"
+            ))
+        );
+        assert_eq!(
+            AgentType::Claude.local_memory_dir(home, Path::new("/tmp/my_slot")),
+            Some(PathBuf::from(
+                "/Users/cmaher/.claude/projects/-tmp-my-slot/memory"
+            ))
+        );
+        assert_eq!(
+            AgentType::Codex.local_memory_dir(home, Path::new("/x")),
+            None
+        );
+        assert_eq!(AgentType::Agy.local_memory_dir(home, Path::new("/x")), None);
+    }
 
     #[test]
     fn only_claude_supports_local_runtime() {

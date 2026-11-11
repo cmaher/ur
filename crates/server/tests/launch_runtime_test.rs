@@ -2,8 +2,7 @@
 //
 // builderd is unreachable (port 1), so any launch that gets past runtime
 // validation fails at pool-slot acquisition. A local-runtime rejection must
-// therefore arrive as FailedPrecondition with its own message, and leave no
-// slot behind.
+// arrive as FailedPrecondition with its own message, and leave no slot behind.
 
 use tonic::Code;
 use ur_rpc::proto::core::WorkerLaunchRequest;
@@ -62,7 +61,6 @@ async fn harness() -> Harness {
         config.config_dir.clone(),
         config.logs_dir.clone(),
         config.logs_dir.clone(),
-        pool.clone(),
         ur_server::network_manager::NetworkManager::new(
             builder_container_client.clone(),
             config.network.worker_name.clone(),
@@ -73,6 +71,9 @@ async fn harness() -> Harness {
         worker_repo.clone(),
         config.global_skills.clone(),
         builder_container_client,
+        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
+            tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+        ),
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager,
@@ -122,24 +123,44 @@ async fn assert_rejected(h: &Harness, req: WorkerLaunchRequest, needle: &str) {
     assert!(slots.is_empty(), "local rejection must not touch the pool");
 }
 
-const UNAVAILABLE: &str = "local runtime launch is not available yet";
+/// `req` with the codex agent, which local rejects: a rejection proves the
+/// launch resolved to the local runtime.
+fn codex(mut req: WorkerLaunchRequest) -> WorkerLaunchRequest {
+    req.agent_type = ur_config::AgentType::Codex.name().into();
+    req
+}
 
+/// A valid local launch passes runtime validation and reaches pool-slot
+/// acquisition (builderd is unreachable).
 #[tokio::test]
-async fn cli_local_is_rejected_before_slot_work() {
+async fn valid_cli_local_reaches_pool() {
     let h = harness().await;
-    assert_rejected(&h, request("plain", "code", "local"), UNAVAILABLE).await;
+    let status = h
+        .launch_manager
+        .launch(request("plain", "code", "local"))
+        .await
+        .expect_err("builderd is unreachable");
+    assert!(
+        status.message().contains("pool slot acquisition failed"),
+        "{status:?}"
+    );
 }
 
 #[tokio::test]
 async fn project_runtime_local_applies_with_empty_request_runtime() {
     let h = harness().await;
-    assert_rejected(&h, request("loc", "code", ""), UNAVAILABLE).await;
+    assert_rejected(&h, codex(request("loc", "code", "")), "agent 'codex'").await;
 }
 
 #[tokio::test]
 async fn mode_runtime_local_applies() {
     let h = harness().await;
-    assert_rejected(&h, request("plain", "localmode", ""), UNAVAILABLE).await;
+    assert_rejected(
+        &h,
+        codex(request("plain", "localmode", "")),
+        "agent 'codex'",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -153,9 +174,12 @@ async fn workspace_launch_with_local_has_no_pool_slot() {
 #[tokio::test]
 async fn codex_with_local_is_unsupported() {
     let h = harness().await;
-    let mut req = request("plain", "code", "local");
-    req.agent_type = ur_config::AgentType::Codex.name().into();
-    assert_rejected(&h, req, "agent 'codex'").await;
+    assert_rejected(
+        &h,
+        codex(request("plain", "code", "local")),
+        "agent 'codex'",
+    )
+    .await;
 }
 
 /// `--runtime container` beats the project's `runtime = "local"`, so the

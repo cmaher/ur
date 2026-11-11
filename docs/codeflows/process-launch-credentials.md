@@ -143,6 +143,15 @@ ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
    └── exec sleep infinity
 ```
 
+**Local runtime (`runtime = "local"`).** Phase 2 branches to `run_and_record_local`
+(`crates/server/src/local_launch.rs`) and none of the credential or network steps above apply:
+the server skips `check_credentials_seeded`, mounts no credential file, ensures no Docker
+network and sets no `HTTP_PROXY`/`HTTPS_PROXY` (Squid is not used). The agent runs on the host
+as the user and authenticates with the host's own Claude login (OS keychain). The CLI still runs
+`ensure_credentials_for_all_agents` because it cannot know the resolved runtime; that is harmless
+for a local launch. `UR_SERVER_ADDR` is `127.0.0.1:<worker_port>` (the worker port published on
+loopback). See [local-workers.md](local-workers.md).
+
 ## Container Image Layers
 
 ```
@@ -209,5 +218,5 @@ The Claude CLI install moved from the base image into the `worker-claude` layer 
 - `ur worker reseed-credentials [--agent claude|codex|agy]` — force re-seed credentials from the host (Claude: Keychain on macOS, `~/.claude/.credentials.json` on Linux; Codex: `~/.codex/auth.json`; AGY: the `gemini`/`antigravity` OS-keyring entry or Linux token-file fallback). `--agent` defaults to the top-level `agent` key in `ur.toml` (claude when omitted).
 - `ur worker save-credentials <id> [--agent claude|codex|agy]` — copy a host-sourced agent's credential files from a running container. AGY needs no save operation because its token is already a read-write host bind mount.
 
-  **Host-sourced agents are not normally from-nothing bootstraps.** `check_credentials_seeded` rejects a Claude or Codex launch whose host credential is absent. AGY is the exception: even though it can seed from the host, the gate permits its empty cache so the pane can perform first sign-in.
+  **Host-sourced agents are not normally from-nothing bootstraps.** `check_credentials_seeded` rejects a Claude or Codex launch whose host credential is absent. AGY is the exception: even though it can seed from the host, the gate permits its empty cache so the pane can perform first sign-in. The gate applies to container launches only: a `runtime = "local"` worker uses the host agent's own credentials (OS keychain) and skips it.
 - Delete an agent's shared file under `~/.ur/<agent>/` to force host re-seeding on next launch. For AGY, leave it in place if there is no host login: it may contain the only worker-created renewable token bundle.

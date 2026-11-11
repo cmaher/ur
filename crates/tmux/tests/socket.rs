@@ -87,8 +87,22 @@ async fn create_list_window_kill_on_dedicated_socket() {
         show(&["show-environment", "-t", "ur-w1", "UR_TMUX_TEST"]),
         "UR_TMUX_TEST=hello"
     );
+    let env = session.environment().await.expect("show-environment");
+    assert!(
+        env.contains(&("UR_TMUX_TEST".into(), "hello".into())),
+        "{env:?}"
+    );
+    assert!(env.iter().all(|(k, _)| !k.starts_with('-')), "{env:?}");
+    assert_eq!(session.start_dir().await.expect("start dir"), start_dir);
+    assert!(
+        Session::on_socket(&socket, "ur-w")
+            .environment()
+            .await
+            .is_err(),
+        "a prefix name must not match ur-w1"
+    );
 
-    session.new_window("bg").await.expect("new window");
+    session.new_window("bg", None).await.expect("new window");
     assert_eq!(
         show(&["list-windows", "-t", "ur-w1", "-F", "#{window_name}"])
             .lines()
@@ -159,7 +173,9 @@ async fn targeted_ops_do_not_prefix_match_sibling_session() {
     })
     .await
     .expect("create ur-w10");
-    keep.new_window("bg").await.expect("bg window on ur-w10");
+    keep.new_window("bg", None)
+        .await
+        .expect("bg window on ur-w10");
     let missing = Session::on_socket(&socket, "ur-w1");
 
     const MARKER: &str = "PREFIX_MATCH_MARKER";
@@ -170,7 +186,7 @@ async fn targeted_ops_do_not_prefix_match_sibling_session() {
     assert!(missing.set_option("status-left", MARKER).await.is_err());
     assert!(missing.set_status_left(MARKER).await.is_err());
     assert!(missing.capture_pane().await.is_err());
-    assert!(missing.new_window("other").await.is_err());
+    assert!(missing.new_window("other", None).await.is_err());
     assert!(missing.is_pane_alive().await.is_err());
     // Older tmux errors; newer tmux prints nothing for a missing target.
     assert!(

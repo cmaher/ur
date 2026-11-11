@@ -3,8 +3,8 @@ use tonic::{Code, Status};
 use ur_rpc::proto::builder_container::builder_container_service_client::BuilderContainerServiceClient;
 use ur_rpc::proto::builder_container::{
     ExecContainerRequest, ExecContainerResponse, InspectNetworkRequest, InspectNetworkResponse,
-    InspectWorkerRequest, InspectWorkerResponse, LaunchWorkerRequest, LaunchWorkerResponse,
-    StopWorkerRequest, StopWorkerResponse,
+    LaunchWorkerRequest, LaunchWorkerResponse, ListWorkerContainersRequest, StopWorkerRequest,
+    StopWorkerResponse, WorkerContainerStatus,
 };
 
 /// Thin clone-able wrapper around the generated `BuilderContainerServiceClient`.
@@ -41,10 +41,8 @@ impl BuilderContainerClient {
         Ok(response.into_inner())
     }
 
-    /// Stop and remove a container by ID.
-    ///
-    /// Returns `NotFound` when the container is already gone.
-    /// Returns `Internal` on other docker failures.
+    /// Stop and remove every container of a worker id (builderd's Stop
+    /// barrier). Ok when none is left; `Internal` on docker failures.
     pub async fn stop_worker(
         &self,
         request: StopWorkerRequest,
@@ -89,20 +87,14 @@ impl BuilderContainerClient {
         Ok(response.into_inner())
     }
 
-    /// Report whether a worker container exists and is running.
-    ///
-    /// An absent container is reported as `running: false`. Any error means
-    /// liveness is unknown and must not be treated as "not running".
-    pub async fn inspect_worker(
-        &self,
-        request: InspectWorkerRequest,
-    ) -> Result<InspectWorkerResponse, Status> {
+    /// Every worker container this ur instance runs, by worker id.
+    pub async fn list_worker_containers(&self) -> Result<Vec<WorkerContainerStatus>, Status> {
         let mut client = self.inner.clone();
         let response = client
-            .inspect_worker(request)
+            .list_worker_containers(ListWorkerContainersRequest {})
             .await
-            .map_err(|status| preserve_status_code(status, "inspect_worker"))?;
-        Ok(response.into_inner())
+            .map_err(|status| preserve_status_code(status, "list_worker_containers"))?;
+        Ok(response.into_inner().containers)
     }
 }
 

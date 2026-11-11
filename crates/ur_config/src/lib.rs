@@ -218,7 +218,8 @@ pub const UR_AGENT_TYPE_ENV: &str = "UR_AGENT_TYPE";
 ///
 /// Set by the server at launch. workerd reads it twice: `InitInstructionsManager`
 /// picks `.agent-shared/instructions/{value}.md`, and the exit watcher treats
-/// `"design"` as "shut the container down when the agent exits".
+/// `"code"` and `"design"` as "stop the worker when the agent exits"
+/// (`workerd::watches_agent_process`).
 pub const UR_WORKER_INSTRUCTION_STRATEGY_ENV: &str = "UR_WORKER_INSTRUCTION_STRATEGY";
 
 /// Environment variable: comma-separated skill names workerd installs from
@@ -955,8 +956,17 @@ pub struct NetworkConfig {
     /// This must match the container/service name of the server on the Docker network.
     pub server_hostname: String,
     /// Container name prefix for worker containers (default: "ur-worker-").
-    /// Worker containers are named `{worker_prefix}{process_id}`.
+    /// Worker containers are named `{worker_prefix}{worker_id}`
+    /// ([`NetworkConfig::worker_container_name`]).
     pub worker_prefix: String,
+}
+
+impl NetworkConfig {
+    /// The container name (and Docker DNS name) of `worker_id`'s container.
+    /// Worker ids are unique per launch, so a name is never reused.
+    pub fn worker_container_name(&self, worker_id: &str) -> String {
+        format!("{}{worker_id}", self.worker_prefix)
+    }
 }
 
 /// Backup configuration for periodic database snapshots.

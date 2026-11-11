@@ -10,38 +10,6 @@ use workflow_db::WorkerRepo;
 use crate::ProjectRegistry;
 use crate::builder_pool_client::BuilderPoolClient;
 
-/// Set of slot IDs currently mid-acquisition, shared by every `RepoPoolManager` clone.
-type ClaimSet = std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
-
-/// RAII guard for an in-flight slot claim.
-///
-/// Registered by `RepoPoolManager::acquire_slot` the moment a slot is selected — before
-/// any `.await` — and handed back to the caller, which must keep it alive until the slot
-/// is DB-linked to a worker via `worker_slot`. Dropping it releases the claim.
-///
-/// Owning the claim from the point of selection is what makes acquisition cancel-safe:
-/// if the launch is cancelled or errors out anywhere between selection and DB linking,
-/// the guard drops and the slot returns to the pool. Registering the claim without an
-/// owning guard would strand the slot as permanently unavailable for the lifetime of
-/// the server process.
-#[derive(Debug)]
-pub struct SlotClaim {
-    slot_id: String,
-    claiming: ClaimSet,
-}
-
-impl SlotClaim {
-    pub fn slot_id(&self) -> &str {
-        &self.slot_id
-    }
-}
-
-impl Drop for SlotClaim {
-    fn drop(&mut self) {
-        self.claiming.lock().unwrap().remove(&self.slot_id);
-    }
-}
-
 /// Manages a pool of pre-cloned git repositories per project.
 ///
 /// Directory layout: `$WORKSPACE/pool/<project-key>/<slot-name>/`
@@ -49,8 +17,9 @@ impl Drop for SlotClaim {
 /// All filesystem and git operations are delegated to builderd via
 /// `BuilderPoolClient`. The server only performs DB orchestration.
 ///
-/// All slots are exclusive: acquired by one worker at a time, tracked via the slot
-/// and worker_slot tables in the database.
+/// All slots are exclusive: acquired by one worker at a time. The `worker_slot`
+/// row is the claim: it is inserted together with the worker's `provisioning`
+/// row, and `UNIQUE (slot_id)` makes that insert decide who gets a slot.
 #[derive(Clone)]
 pub struct RepoPoolManager {
     /// Prefix prepended to worker-ID branch names.
@@ -61,10 +30,6 @@ pub struct RepoPoolManager {
     project_registry: ProjectRegistry,
     /// Client for delegating all pool filesystem/git operations to builderd.
     builder_pool_client: BuilderPoolClient,
-    /// In-memory set of slot IDs currently being acquired but not yet DB-linked.
-    /// Prevents two concurrent acquire_slot calls from selecting the same slot.
-    /// Uses std::sync::Mutex (not tokio's) so the lock can be released synchronously in Drop.
-    claiming: ClaimSet,
 }
 
 impl RepoPoolManager {
@@ -79,7 +44,6 @@ impl RepoPoolManager {
             worker_repo,
             project_registry,
             builder_pool_client,
-            claiming: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         }
     }
 
@@ -106,68 +70,53 @@ impl RepoPoolManager {
         Ok((project, repo))
     }
 
-    /// Register an in-memory claim on `slot_id`, returning a guard that releases it on drop.
-    ///
-    /// Returns `None` if the slot is already claimed by a concurrent acquisition.
-    fn claim_slot(&self, slot_id: &str) -> Option<SlotClaim> {
-        let mut claiming = self.claiming.lock().unwrap();
-        if !claiming.insert(slot_id.to_owned()) {
-            return None;
-        }
-        Some(SlotClaim {
-            slot_id: slot_id.to_owned(),
-            claiming: std::sync::Arc::clone(&self.claiming),
-        })
-    }
-
-    /// Acquire a repo slot for the given project.
+    /// Acquire a repo slot for the given project, claiming it for the worker
+    /// row `owner` builds from the slot's host path.
     ///
     /// 1. Looks up the project in config.
-    /// 2. Queries DB for available slots (not linked to an active worker) and takes the
-    ///    oldest one that is not already mid-acquisition.
-    /// 3. If one is found, calls `BuilderPoolClient::recycle_slot` and returns it.
-    /// 4. If none are available, calls `BuilderPoolClient::scan_slots` to check count vs
-    ///    pool_limit, then `BuilderPoolClient::prepare_new_slot` and inserts a new slot row.
+    /// 2. Tries each available slot (not linked to an active worker), oldest
+    ///    first: `WorkerRepo::claim_slot` inserts the `provisioning` row and its
+    ///    link in one transaction; losing that race moves on to the next slot.
+    /// 3. A claimed slot is recycled (fetch + reset) under the claim.
+    /// 4. With none available, checks `scan_slots` against pool_limit, prepares
+    ///    a new slot, inserts its row and claims it.
     ///
-    /// Returns the host-side path for Docker volume mounts plus a `SlotClaim` guard. The
-    /// caller must hold the guard until the slot is linked to a worker via `worker_slot`,
-    /// and must drop it on any failure so the slot returns to the pool.
-    pub async fn acquire_slot(&self, project_key: &str) -> Result<(PathBuf, SlotClaim), String> {
+    /// Returns the host path and the claimed row. On failure no claim is left.
+    pub async fn acquire_slot<F>(
+        &self,
+        project_key: &str,
+        owner: F,
+    ) -> Result<(PathBuf, workflow_db::model::Worker), String>
+    where
+        F: Fn(&std::path::Path) -> workflow_db::model::Worker,
+    {
         let (project, repo) = self.resolve_pool_project(project_key)?;
 
-        // Query DB for available slots (not linked to an active worker), oldest first.
         let candidates = self
             .worker_repo
             .find_available_slots(project_key)
             .await
             .map_err(|e| format!("db error finding available slot: {e}"))?;
-
-        // Take the first candidate not already mid-acquisition by a concurrent launch.
-        // Every candidate is tried before falling through to preparing a new slot, so a
-        // single in-flight acquisition can never make the whole pool look exhausted.
-        let claimed = candidates
-            .into_iter()
-            .find_map(|slot| match self.claim_slot(&slot.id) {
-                Some(claim) => Some((slot, claim)),
-                None => {
-                    info!(
-                        project_key,
-                        slot_id = %slot.id,
-                        "slot being concurrently acquired, trying next"
-                    );
-                    None
-                }
-            });
-
-        if let Some((slot, claim)) = claimed {
-            let slot_name = slot.slot_name.clone();
-            info!(project_key, slot_name = %slot_name, path = %slot.host_path, "recycling existing pool slot");
-            let host_path = self
+        for slot in candidates {
+            let row = owner(std::path::Path::new(&slot.host_path));
+            if !self.claim(&row, &slot.id).await? {
+                info!(project_key, slot_id = %slot.id, "slot taken by a concurrent launch, trying next");
+                continue;
+            }
+            info!(project_key, slot_name = %slot.slot_name, path = %slot.host_path, "recycling existing pool slot");
+            let recycled = self
                 .builder_pool_client
-                .recycle_slot(project_key.to_owned(), slot_name.clone(), repo.clone())
-                .await
-                .map_err(|e| format!("recycle_slot failed for slot {slot_name}: {e}"))?;
-            return Ok((host_path, claim));
+                .recycle_slot(project_key.to_owned(), slot.slot_name.clone(), repo.clone())
+                .await;
+            return match recycled {
+                Ok(host_path) => Ok((host_path, row)),
+                Err(e) => Err(self
+                    .drop_claim(
+                        &row.worker_id,
+                        format!("recycle_slot failed for slot {}: {e}", slot.slot_name),
+                    )
+                    .await),
+            };
         }
 
         // No available slot — check pool_limit using builderd scan
@@ -219,54 +168,30 @@ impl RepoPoolManager {
             .await
             .map_err(|e| format!("db error inserting new slot: {e}"))?;
 
-        // Claim the freshly inserted slot too: it is visible to `find_available_slots` from
-        // this point on, but is not linked to a worker until the launch completes.
-        let claim = self.claim_slot(&slot_id).ok_or_else(|| {
-            format!("newly prepared slot {slot_name} was already claimed for {project_key}")
-        })?;
-
-        Ok((host_path, claim))
+        // The new row is visible to `find_available_slots` from here on.
+        let row = owner(&host_path);
+        if !self.claim(&row, &slot_id).await? {
+            return Err(format!(
+                "newly prepared slot {slot_name} was taken by a concurrent launch for {project_key}"
+            ));
+        }
+        Ok((host_path, row))
     }
 
-    /// Release a previously acquired slot by cleaning it and unlinking from the worker.
-    ///
-    /// Delegates the filesystem/git cleanup to builderd via `BuilderPoolClient::clean_slot`.
-    /// Unlinks the worker from the slot in the worker_slot join table.
-    /// `slot_path` is a host-side path used to look up the slot_name.
-    pub async fn release_slot(
-        &self,
-        worker_id: &str,
-        slot_path: &std::path::Path,
-    ) -> Result<(), String> {
-        info!(worker_id, path = %slot_path.display(), "releasing pool slot");
-
-        // Extract slot name and project key from DB using the host path
-        let slot = self
-            .worker_repo
-            .get_slot_by_host_path(&slot_path.display().to_string())
-            .await
-            .map_err(|e| format!("db error looking up slot by host path: {e}"))?;
-
-        if let Some(slot) = slot
-            && let Err(e) = self
-                .builder_pool_client
-                .clean_slot(slot.project_key.clone(), slot.slot_name.clone())
-                .await
-        {
-            // Log but don't fail — unlink anyway so the next acquire can reclone.
-            tracing::warn!(
-                path = %slot_path.display(),
-                error = %e,
-                "clean_slot failed during release, slot will be recloned on next acquire"
-            );
-        }
-
+    async fn claim(&self, row: &workflow_db::model::Worker, slot_id: &str) -> Result<bool, String> {
         self.worker_repo
-            .unlink_worker_slot(worker_id)
+            .claim_slot(row, slot_id)
             .await
-            .map_err(|e| format!("db error unlinking worker from slot: {e}"))?;
+            .map_err(|e| format!("db error claiming slot: {e}"))
+    }
 
-        Ok(())
+    /// Undo a claim nothing was launched under: delete the row (and so the
+    /// link). Returns `error`, extended if the delete fails.
+    pub(crate) async fn drop_claim(&self, worker_id: &str, error: String) -> String {
+        match self.worker_repo.delete_worker(worker_id).await {
+            Ok(_) => error,
+            Err(e) => format!("{error}; failed to drop slot claim: {e}"),
+        }
     }
 
     /// Acquire a shared read-only slot for the given project.
@@ -488,30 +413,60 @@ mod tests {
         (mgr, test_db)
     }
 
-    /// Drive `acquire` until it registers an in-memory claim on `slot_id`.
-    ///
-    /// Returns `true` once the claim is observed, or `false` if the future completed first.
-    /// Used to park an acquisition mid-flight so cancellation can be tested deterministically.
-    async fn poll_until_claimed<F>(
-        mgr: &RepoPoolManager,
-        acquire: &mut std::pin::Pin<Box<F>>,
-        slot_id: &str,
-    ) -> bool
-    where
-        F: Future<Output = Result<(PathBuf, SlotClaim), String>>,
-    {
-        for _ in 0..1000 {
-            if futures::poll!(acquire.as_mut()).is_ready() {
-                return false;
-            }
-            // `claim_slot` returning None means the in-flight acquisition holds the claim.
-            // When it returns Some the probe guard drops immediately, leaving the slot free.
-            if mgr.claim_slot(slot_id).is_none() {
-                return true;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    /// `acquire_slot` with a minimal claim row per candidate slot.
+    async fn acquire(mgr: &RepoPoolManager, project_key: &str) -> Result<PathBuf, String> {
+        mgr.acquire_slot(project_key, |path| claim_row(project_key, path))
+            .await
+            .map(|(path, _row)| path)
+    }
+
+    fn claim_row(project_key: &str, path: &std::path::Path) -> workflow_db::model::Worker {
+        let now = Utc::now().to_rfc3339();
+        workflow_db::model::Worker {
+            worker_id: Uuid::new_v4().to_string(),
+            process_id: format!("proc-{}", path.display()),
+            project_key: project_key.to_owned(),
+            container_id: String::new(),
+            worker_secret: Uuid::new_v4().to_string(),
+            strategy: "code".to_owned(),
+            agent_type: ur_config::AgentType::Claude.name().to_owned(),
+            container_status: "provisioning".to_owned(),
+            agent_status: "starting".to_owned(),
+            workspace_path: Some(path.display().to_string()),
+            created_at: now.clone(),
+            updated_at: now,
+            idle_redispatch_count: 0,
+            brain_path: None,
+            runtime: workflow_db::model::WorkerRuntime::Container,
         }
-        false
+    }
+
+    /// A failed recycle leaves no claim: the slot is available again.
+    #[tokio::test]
+    async fn acquire_slot_drops_its_claim_on_recycle_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, _test_db) = test_pool(tmp.path(), 10).await;
+        let slot0 = PathBuf::from("/fake/pool/testproj/0");
+        insert_test_slot(&mgr.worker_repo, "testproj", "0", &slot0).await;
+
+        // recycle_slot fails (no builderd).
+        assert!(acquire(&mgr, "testproj").await.is_err());
+        assert_eq!(
+            mgr.worker_repo
+                .find_available_slots("testproj")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            mgr.worker_repo
+                .list_active_workers()
+                .await
+                .unwrap()
+                .is_empty(),
+            "no provisioning row left behind"
+        );
     }
 
     /// Insert a slot row into the DB for testing. Returns the slot ID.
@@ -595,7 +550,7 @@ mod tests {
     async fn acquire_slot_unknown_project_errors() {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, _test_db) = test_pool(tmp.path(), 10).await;
-        let result = mgr.acquire_slot("nonexistent").await;
+        let result = acquire(&mgr, "nonexistent").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown project"));
     }
@@ -618,7 +573,7 @@ mod tests {
         // scan_slots will fail (no builderd), but the test verifies pool limit logic
         // is checked AFTER scan_slots returns. Since scan_slots will fail with a connection
         // error (no builderd), we just verify that we don't get an "unknown project" error.
-        let result = mgr.acquire_slot("testproj").await;
+        let result = acquire(&mgr, "testproj").await;
         assert!(result.is_err());
         assert!(
             !result.unwrap_err().contains("unknown project"),
@@ -631,7 +586,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, _test_db) = test_pool_with_repo(tmp.path(), 10, None).await;
 
-        let err = mgr.acquire_slot("testproj").await.unwrap_err();
+        let err = acquire(&mgr, "testproj").await.unwrap_err();
         assert!(err.contains("is local"), "unexpected error: {err}");
         assert!(err.contains("testproj"), "unexpected error: {err}");
         // The builderd channel in tests points at a dead port, so any RPC would
@@ -648,7 +603,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, _test_db) = test_pool_with_repo(tmp.path(), 10, None).await;
 
-        assert!(mgr.acquire_slot("testproj").await.is_err());
+        assert!(acquire(&mgr, "testproj").await.is_err());
 
         // No DB state may be created for a project that can never have a slot.
         let slots = mgr
@@ -708,7 +663,7 @@ mod tests {
             project_registry,
             BuilderPoolClient::new(channel),
         );
-        let err = mgr.acquire_slot("hotreload").await.unwrap_err();
+        let err = acquire(&mgr, "hotreload").await.unwrap_err();
         assert!(err.contains("unknown project"), "unexpected error: {err}");
 
         let report = mgr
@@ -725,7 +680,7 @@ image = "ur-worker"
             .unwrap();
         assert_eq!(report.added, vec!["hotreload".to_owned()]);
 
-        let err = mgr.acquire_slot("hotreload").await.unwrap_err();
+        let err = acquire(&mgr, "hotreload").await.unwrap_err();
         assert!(
             !err.contains("unknown project"),
             "reloaded project should be known to the pool: {err}"
@@ -740,7 +695,7 @@ image = "ur-worker"
     async fn acquire_slot_unknown_project_errors_distinct() {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, _test_db) = test_pool(tmp.path(), 1).await;
-        let result = mgr.acquire_slot("nonexistent").await;
+        let result = acquire(&mgr, "nonexistent").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown project"));
     }
@@ -859,89 +814,6 @@ image = "ur-worker"
     }
 
     #[tokio::test]
-    async fn claim_is_released_when_guard_drops() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (mgr, _test_db) = test_pool(tmp.path(), 10).await;
-
-        let claim = mgr.claim_slot("slot-a").expect("first claim succeeds");
-        assert!(
-            mgr.claim_slot("slot-a").is_none(),
-            "a claimed slot must not be claimable again"
-        );
-
-        drop(claim);
-        assert!(
-            mgr.claim_slot("slot-a").is_some(),
-            "dropping the guard must release the claim"
-        );
-    }
-
-    #[tokio::test]
-    async fn acquire_slot_skips_claimed_slot_and_tries_next() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (mgr, _test_db) = test_pool(tmp.path(), 10).await;
-
-        // Two available slots. Slot 0 is the oldest, so it is the first candidate — hold a
-        // claim on it as a concurrent launch would, then verify acquisition moves on to
-        // slot 1 instead of declaring the pool exhausted.
-        let slot0 = PathBuf::from("/fake/pool/testproj/0");
-        let slot1 = PathBuf::from("/fake/pool/testproj/1");
-        let slot0_id = insert_test_slot(&mgr.worker_repo, "testproj", "0", &slot0).await;
-        insert_test_slot(&mgr.worker_repo, "testproj", "1", &slot1).await;
-
-        let _held = mgr.claim_slot(&slot0_id).expect("claim slot 0");
-
-        // recycle_slot fails (no builderd in tests), but the error names the slot that was
-        // selected — which is what this test is asserting on.
-        let err = mgr.acquire_slot("testproj").await.unwrap_err();
-        assert!(
-            err.contains("slot 1"),
-            "expected acquisition to fall through to slot 1, got: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn acquire_slot_does_not_leak_claim_on_recycle_failure() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (mgr, _test_db) = test_pool(tmp.path(), 10).await;
-
-        let slot0 = PathBuf::from("/fake/pool/testproj/0");
-        let slot0_id = insert_test_slot(&mgr.worker_repo, "testproj", "0", &slot0).await;
-
-        // recycle_slot fails (no builderd). A leaked claim here would make the slot
-        // permanently unacquirable for the lifetime of the process.
-        assert!(mgr.acquire_slot("testproj").await.is_err());
-        assert!(
-            mgr.claim_slot(&slot0_id).is_some(),
-            "failed acquisition must not leave the slot claimed"
-        );
-    }
-
-    #[tokio::test]
-    async fn acquire_slot_does_not_leak_claim_on_cancellation() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (mgr, _test_db) = test_pool(tmp.path(), 10).await;
-
-        let slot0 = PathBuf::from("/fake/pool/testproj/0");
-        let slot0_id = insert_test_slot(&mgr.worker_repo, "testproj", "0", &slot0).await;
-
-        // Drive the acquisition until it has registered its claim and is awaiting builderd,
-        // then drop the future — this is what happens when a launch RPC is cancelled
-        // part-way through recycling a slot.
-        let mut acquire = Box::pin(mgr.acquire_slot("testproj"));
-        assert!(
-            poll_until_claimed(&mgr, &mut acquire, &slot0_id).await,
-            "acquisition finished before a claim could be observed"
-        );
-
-        drop(acquire);
-        assert!(
-            mgr.claim_slot(&slot0_id).is_some(),
-            "cancelled acquisition must not leave the slot claimed"
-        );
-    }
-
-    #[tokio::test]
     async fn acquire_slot_selects_available_slot_from_db() {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, _test_db) = test_pool(tmp.path(), 10).await;
@@ -957,7 +829,7 @@ image = "ur-worker"
 
         // Acquire should try to recycle slot 2, which will fail on builderd connection.
         // The error should reference a recycle_slot failure (not "unknown project" or "pool limit").
-        let result = mgr.acquire_slot("testproj").await;
+        let result = acquire(&mgr, "testproj").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -973,7 +845,7 @@ image = "ur-worker"
 
         // No slots exist in DB. Acquire should call scan_slots then prepare_new_slot.
         // Both will fail (no builderd running), but the error should propagate.
-        let result = mgr.acquire_slot("testproj").await;
+        let result = acquire(&mgr, "testproj").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         // Should be a builderd error (not "pool limit" or "unknown project")

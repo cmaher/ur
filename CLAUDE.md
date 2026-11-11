@@ -1,6 +1,6 @@
 # Ur
 
-Coding LLM coordination framework. Native macOS monolith managing containerized Claude Code workers via tonic gRPC over TCP.
+Coding LLM coordination framework. Native macOS monolith managing Claude Code workers (in containers, or on the host with `runtime = "local"`) via tonic gRPC over TCP.
 
 ## Structure
 
@@ -8,7 +8,10 @@ Cargo workspace:
 - `crates/ur/` - Host CLI (TUI, process management, ticket management)
 - `crates/server/` - Server (`ur-server`, orchestration, gRPC server, container management)
 - `crates/ur_rpc/` - Shared RPC contract (protobuf/tonic service definitions)
-- `crates/workercmd/` - Worker binaries for containers (`git` proxy)
+- `crates/builderd/` - Host-side builder daemon (`builderd`: host exec, pool slot git ops, worker containers, and host-local workers in tmux with their in-process worker daemons; see `docs/codeflows/local-workers.md`)
+- `crates/workerd/` - Worker daemon library + container binary (init managers, `WorkerDaemonService`, exit watcher; builderd reuses the library for local workers)
+- `crates/ur-workertools/` - `ur-workertools` binary used by agent hooks, skills and hostexec shims, in containers and on the host
+- `crates/tmux/` - Typed tmux CLI wrapper (sessions, send-keys, attach; dedicated `ur` socket for local workers)
 - `crates/ticket_db/` - Postgres ticket database (tickets, edges, activities, metadata; `ur_tickets` DB)
 - `crates/workflow_db/` - Postgres workflow database (workflow state, events, intents, comments, worker/slot lifecycle; `ur_workflow` DB)
 - `crates/db_events/` - Shared LISTEN/NOTIFY infrastructure (`PgEventPoller`, `UI_EVENTS_CHANNEL`, `UI_EVENTS_DDL`)

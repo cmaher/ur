@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use chrono::Utc;
 use rand::Rng;
 use serde::Deserialize;
-use tracing::{info, warn};
+use tracing::info;
 use uuid::Uuid;
 
 use ur_config::{GlobalSkillsConfig, NetworkConfig};
@@ -12,13 +12,10 @@ use workflow_db::WorkerRepo;
 
 use crate::network_manager::NetworkManager;
 
-use tonic::Code;
-use ur_rpc::proto::builder_container::{
-    InspectWorkerRequest, LaunchWorkerRequest, StopWorkerRequest,
-};
+use ur_rpc::proto::builder_container::{LaunchWorkerRequest, StopWorkerRequest};
 
-use crate::RepoPoolManager;
 use crate::builder_container_client::BuilderContainerClient;
+use crate::builder_local_worker_client::BuilderLocalWorkerClient;
 use crate::run_opts_builder::RunOptsBuilder;
 use crate::strategy::WorkerStrategy;
 
@@ -613,8 +610,6 @@ pub struct WorkerConfig {
     pub mounts: Vec<ur_config::MountConfig>,
     /// Port mappings from project config (host_port:container_port pairs).
     pub ports: Vec<ur_config::PortMapping>,
-    /// Slot ID if launched from a pool slot (for worker_slot linking).
-    pub slot_id: Option<String>,
     /// Context repositories to mount read-only into the container.
     /// Each entry is (project_key, host_path) from shared pool slots.
     pub context_mounts: Vec<(String, PathBuf)>,
@@ -639,6 +634,9 @@ pub struct WorkerConfig {
     pub forge: Option<ur_config::ForgeType>,
     /// Resolved runtime, persisted on the worker row.
     pub runtime: ur_config::WorkerRuntime,
+    /// Project `git.allow_no_verify`; local workers mirror it in their
+    /// generated permission denies.
+    pub allow_no_verify: bool,
 }
 
 /// Orchestrates the full lifecycle of worker processes:
@@ -648,7 +646,7 @@ pub struct WorkerManager {
     workspace: PathBuf,
     /// Host-side config directory path, used to construct volume mounts for
     /// worker containers (e.g., shared credentials file).
-    host_config_dir: PathBuf,
+    pub(crate) host_config_dir: PathBuf,
     /// Locally-accessible config directory path, used for filesystem existence
     /// checks. Equals `host_config_dir` when the server runs natively; differs
     /// when the server runs inside a container where the config dir is mounted
@@ -661,17 +659,18 @@ pub struct WorkerManager {
     /// Host-side logs directory path, used as the volume mount source for
     /// per-worker log directories (e.g., `~/.ur/logs/workers/<worker_id>/`).
     host_logs_dir: PathBuf,
-    repo_pool_manager: RepoPoolManager,
     network_manager: NetworkManager,
     network_config: NetworkConfig,
     /// TCP port the shared worker gRPC server listens on.
     /// Injected into containers as part of `UR_SERVER_ADDR`.
-    worker_port: u16,
+    pub(crate) worker_port: u16,
     worker_modes: WorkerModesConfig,
-    worker_repo: WorkerRepo,
+    pub(crate) worker_repo: WorkerRepo,
     global_skills: GlobalSkillsConfig,
     /// gRPC client for launching/stopping containers via builderd on the host.
     builder_container_client: BuilderContainerClient,
+    /// gRPC client for launching/stopping `runtime = local` workers via builderd.
+    pub(crate) builder_local_worker_client: BuilderLocalWorkerClient,
 }
 
 impl WorkerManager {
@@ -682,7 +681,6 @@ impl WorkerManager {
         local_config_dir: PathBuf,
         logs_dir: PathBuf,
         host_logs_dir: PathBuf,
-        repo_pool_manager: RepoPoolManager,
         network_manager: NetworkManager,
         network_config: NetworkConfig,
         worker_port: u16,
@@ -690,6 +688,7 @@ impl WorkerManager {
         worker_repo: WorkerRepo,
         global_skills: GlobalSkillsConfig,
         builder_container_client: BuilderContainerClient,
+        builder_local_worker_client: BuilderLocalWorkerClient,
     ) -> Self {
         Self {
             workspace,
@@ -697,7 +696,6 @@ impl WorkerManager {
             local_config_dir,
             logs_dir,
             host_logs_dir,
-            repo_pool_manager,
             network_manager,
             network_config,
             worker_port,
@@ -705,6 +703,7 @@ impl WorkerManager {
             worker_repo,
             global_skills,
             builder_container_client,
+            builder_local_worker_client,
         }
     }
 
@@ -915,10 +914,11 @@ impl WorkerManager {
             .list_workers_by_container_status("provisioning")
             .await
             .map_err(|e| format!("db error: {e}"))?;
+        // A pool launch's own claim row is already `provisioning`.
         let has_duplicate = running
             .iter()
             .chain(provisioning.iter())
-            .any(|a| a.process_id == process_id);
+            .any(|a| a.process_id == process_id && a.worker_id != worker_id.0);
         if has_duplicate {
             return Err(format!("process already running: {process_id}"));
         }
@@ -955,6 +955,9 @@ impl WorkerManager {
     /// Generates and stores a worker secret (UUID v4) for auth.
     /// Returns `(container_id, worker_secret)`.
     pub async fn run_and_record(&self, config: WorkerConfig) -> Result<(String, String), String> {
+        if config.runtime == ur_config::WorkerRuntime::Local {
+            return self.run_and_record_local(config).await;
+        }
         // Create per-worker log directory on the local filesystem so the
         // volume mount has a source directory when the container starts.
         let worker_logs_dir = self.logs_dir.join("workers").join(&config.worker_id.0);
@@ -971,22 +974,13 @@ impl WorkerManager {
         // Generate worker secret for worker auth
         let worker_secret = Uuid::new_v4().to_string();
 
-        let container_name = format!("{}{}", self.network_config.worker_prefix, config.process_id);
-
-        // Remove any stopped/orphaned container with this name before launching.
-        // A crash can leave a container in Docker that isn't tracked in the DB,
-        // which would cause docker run to fail with a name conflict.
-        tolerate_missing(
-            self.builder_container_client
-                .stop_worker(StopWorkerRequest {
-                    container_id: container_name.clone(),
-                })
-                .await,
-            &container_name,
-            "pre-launch cleanup",
-        )?;
-
-        let opts = self.build_launch_request(&config, &worker_secret, &container_name)?;
+        // Named by worker id (unique per launch); builderd also labels it
+        // with the worker id, which is how Stop and List find it.
+        let container_name = self
+            .network_config
+            .worker_container_name(&config.worker_id.0);
+        let mut opts = self.build_launch_request(&config, &worker_secret, &container_name)?;
+        opts.worker_id = config.worker_id.0.clone();
 
         // Workerd authenticates with the server during initialization, before
         // its health endpoint comes up. Persist the credential first so that
@@ -996,40 +990,18 @@ impl WorkerManager {
 
         // Launch the container via builderd on the host, which stats each volume
         // source against the host filesystem before calling docker run.
-        let launch_resp = match self.builder_container_client.launch_worker(opts).await {
-            Ok(response) => response,
-            Err(status) => {
-                let error = format!("launch_worker gRPC error: {status}");
-                return Err(self
-                    .remove_provisioning_worker(&config.worker_id, error)
-                    .await);
-            }
-        };
-        let container_id = launch_resp.container_id;
-
+        if let Err(status) = self.builder_container_client.launch_worker(opts).await {
+            let error = format!("launch_worker gRPC error: {status}");
+            return Err(self.abandon_launch(&config.worker_id, error).await);
+        }
         info!(
             process_id = config.process_id,
             worker_id = %config.worker_id,
-            container_id,
+            container_name,
             "process launched"
         );
-
-        if let Err(error) = self.finalize_worker_launch(&config, &container_id).await {
-            let stop_error = self
-                .builder_container_client
-                .stop_worker(StopWorkerRequest {
-                    container_id: container_id.clone(),
-                })
-                .await
-                .err()
-                .map(|status| format!("; failed to clean up container: {status}"))
-                .unwrap_or_default();
-            return Err(self
-                .remove_provisioning_worker(&config.worker_id, format!("{error}{stop_error}"))
-                .await);
-        }
-
-        Ok((container_id, worker_secret))
+        self.finish_launch(&config, container_name, worker_secret)
+            .await
     }
 
     /// Resolve all host paths and configuration needed by builderd to launch
@@ -1108,7 +1080,7 @@ impl WorkerManager {
 
     /// Persist the worker credential before container launch so workerd can
     /// authenticate while builderd waits for its health endpoint.
-    async fn record_provisioning_worker(
+    pub(crate) async fn record_provisioning_worker(
         &self,
         config: &WorkerConfig,
         container_name: &str,
@@ -1135,44 +1107,88 @@ impl WorkerManager {
             brain_path: brain_host_path(config, &self.host_config_dir),
             runtime: config.runtime,
         };
-        self.worker_repo
-            .insert_worker(&worker)
+        let db = |e: sqlx::Error| format!("failed to record worker: {e}");
+        // A pool launch claimed its slot with this row already; refresh it.
+        if self
+            .worker_repo
+            .update_provisioning_worker(&worker)
             .await
-            .map_err(|e| format!("failed to record worker: {e}"))?;
-
-        Ok(())
+            .map_err(db)?
+        {
+            return Ok(());
+        }
+        // No claim: a slotless (`-w`) launch, which needs no launch marker
+        // (the marker only keeps a slot linked).
+        match self.worker_repo.insert_worker(&worker).await {
+            // The claim row exists but is no longer `provisioning`.
+            Err(sqlx::Error::Database(e)) if e.code().is_some_and(|c| c == "23505") => {
+                Err(stopped_during_launch(&config.worker_id))
+            }
+            result => result.map_err(db),
+        }
     }
 
-    /// Store Docker's immutable container ID, mark the worker running, and
-    /// link it to its pool slot after startup succeeds.
-    async fn finalize_worker_launch(
+    /// Finalize (`provisioning → running`, CAS) after builderd's Launch was
+    /// Ok. If finalize changes no row (the worker was stopped mid-launch) or
+    /// fails, the worker is stopped like any failed launch
+    /// ([`Self::abandon_launch`]). Returns `(recorded, worker_secret)`;
+    /// `recorded` is the container or session name.
+    pub(crate) async fn finish_launch(
         &self,
         config: &WorkerConfig,
-        container_id: &str,
-    ) -> Result<(), String> {
-        self.worker_repo
-            .finalize_worker_launch(&config.worker_id.0, container_id)
+        recorded: String,
+        worker_secret: String,
+    ) -> Result<(String, String), String> {
+        let finalized = self
+            .worker_repo
+            .finalize_worker_launch(&config.worker_id.0, &recorded)
             .await
-            .map_err(|e| format!("failed to finalize worker launch: {e}"))?;
-
-        // Link worker to slot if launched from a pool slot
-        if let Some(ref slot_id) = config.slot_id {
-            self.worker_repo
-                .link_worker_slot(&config.worker_id.0, slot_id)
-                .await
-                .map_err(|e| format!("failed to link worker to slot: {e}"))?;
-        }
-        Ok(())
-    }
-
-    async fn remove_provisioning_worker(&self, worker_id: &WorkerId, error: String) -> String {
-        match self.worker_repo.delete_worker(&worker_id.0).await {
-            Ok(_) => error,
-            Err(cleanup) => format!("{error}; failed to remove provisional worker: {cleanup}"),
+            .map_err(|e| format!("failed to finalize worker launch: {e}"));
+        match finalized {
+            Ok(true) => Ok((recorded, worker_secret)),
+            Ok(false) => Err(self
+                .abandon_launch(&config.worker_id, stopped_during_launch(&config.worker_id))
+                .await),
+            Err(error) => Err(self.abandon_launch(&config.worker_id, error).await),
         }
     }
 
-    /// Stop a running worker process by worker ID. Stops + removes the container.
+    /// Whether `worker` runs a container launched before containers were
+    /// labeled by worker id ([`legacy_container_id`]); such a container is
+    /// never listed by builderd.
+    pub fn is_legacy_container(&self, worker: &workflow_db::model::Worker) -> bool {
+        legacy_container_id(&self.network_config.worker_prefix, worker).is_some()
+    }
+
+    /// Clean up after a failed launch: stop it like any other worker, since
+    /// a failed launch may still have left a live worker. Its Launch RPC has
+    /// resolved, so the launch marker is cleared first and this stop (or a
+    /// later one) can finish: the slot is released (row `stopped`) only once
+    /// builderd's Stop is Ok; otherwise the row stays `stopping`, still
+    /// holding the slot. Returns the launch error.
+    pub(crate) async fn abandon_launch(&self, worker_id: &WorkerId, error: String) -> String {
+        let cleared = match self.worker_repo.clear_launch_pending(&worker_id.0).await {
+            Ok(()) => String::new(),
+            Err(db) => format!("; failed to clear its launch marker (until restart): {db}"),
+        };
+        match self.stop_by_worker_id(worker_id).await {
+            Ok(()) => format!("{error}{cleared}"),
+            Err(e) => format!("{error}; failed to clean up, left stopping: {e}{cleared}"),
+        }
+    }
+
+    /// Stop a worker by worker ID: `stopping` (if active), builderd's Stop,
+    /// then `finish_stop` (`stopped` + unlink) only on Ok. builderd's Stop is
+    /// a barrier per worker id: it waits for an in-flight launch (or refuses
+    /// a later one), so Ok means the worker is not running and never will
+    /// be. A stopped row is still stopped in builderd (a drifted row may own
+    /// a live container); nothing to release.
+    ///
+    /// If the worker's own Launch RPC was unresolved when this stop began
+    /// (launch pending), the stop is not finished here, even after the
+    /// launch resolves: this Stop may have reached a builderd that then
+    /// restarted. The launch path, the reconciler or the startup pass
+    /// finishes it with a Stop that began after.
     pub async fn stop_by_worker_id(&self, worker_id: &WorkerId) -> Result<(), String> {
         let worker = self
             .worker_repo
@@ -1187,52 +1203,47 @@ impl WorkerManager {
             container_id = worker.container_id,
             "stopping container"
         );
-
-        // 1. Stop + remove container via builderd.
-        // Tolerate already-missing containers: external forces (docker restart,
-        // manual `docker rm`, machine reboot) can delete the container out from
-        // under us, but the DB still shows it running. Bailing on "No such
-        // container" here would leave the worker row stuck as running forever,
-        // blocking every future `ur worker kill`.
-        tolerate_missing(
-            self.builder_container_client
-                .stop_worker(StopWorkerRequest {
-                    container_id: worker.container_id.clone(),
-                })
-                .await,
-            &worker.container_id,
-            "stop_worker",
-        )?;
-
-        // 2. Release pool slot if this was a project-based launch
-        let strategy = WorkerStrategy::from_name(&worker.strategy)
-            .map_err(|e| format!("invalid strategy in db: {e}"))?;
-        if !worker.project_key.is_empty()
-            && let Some(ref workspace_path) = worker.workspace_path
-        {
-            let slot_path = PathBuf::from(workspace_path);
-            info!(
-                process_id = worker.process_id,
-                project_key = worker.project_key,
-                slot_path = %slot_path.display(),
-                strategy = strategy.name(),
-                "releasing pool slot"
-            );
-            strategy
-                .release_slot(&self.repo_pool_manager, &worker_id.0, &slot_path)
-                .await?;
-        }
-
-        // 3. Update status to stopped in database
-        self.worker_repo
-            .update_worker_container_status(&worker_id.0, "stopped")
+        let launch_pending = self
+            .worker_repo
+            .begin_stopping(&worker_id.0)
             .await
-            .map_err(|e| format!("failed to update worker status: {e}"))?;
+            .map_err(|e| format!("failed to update worker status: {e}"))?
+            == Some(true);
+        match worker.runtime {
+            ur_config::WorkerRuntime::Container => self
+                .builder_container_client
+                .stop_worker(StopWorkerRequest {
+                    worker_id: worker_id.0.clone(),
+                    legacy_container_id: legacy_container_id(
+                        &self.network_config.worker_prefix,
+                        &worker,
+                    )
+                    .unwrap_or_default()
+                    .to_owned(),
+                })
+                .await
+                .map(|_| ())
+                .map_err(|status| format!("stop_worker gRPC error: {status}"))?,
+            // Stop of an unknown id still kills its session.
+            ur_config::WorkerRuntime::Local => self
+                .builder_local_worker_client
+                .stop_local_worker(&worker_id.0)
+                .await
+                .map_err(|status| format!("stop_local_worker gRPC error: {status}"))?,
+        }
+        let finished = !launch_pending
+            && self
+                .worker_repo
+                .finish_stop(&worker_id.0)
+                .await
+                .map_err(|e| format!("failed to mark worker stopped: {e}"))?;
 
         info!(
             process_id = worker.process_id,
             %worker_id,
-            "process stopped"
+            finished,
+            launch_pending,
+            "process stopped (unfinished: already stopped, or its launch was pending)"
         );
 
         Ok(())
@@ -1264,18 +1275,21 @@ impl WorkerManager {
         result
     }
 
-    /// Look up the workspace/slot directory for a running process by its process ID.
-    pub async fn get_workspace_dir(&self, process_id: &str) -> Result<Option<PathBuf>, String> {
-        let workers = self
+    /// Find the active (provisioning/running/stopping) worker an id names:
+    /// the row with that full worker id, else the newest row for that
+    /// process id (see [`Self::stop`] for why newest).
+    pub async fn find_active_worker(&self, id: &str) -> Result<workflow_db::model::Worker, String> {
+        let mut workers = self
             .worker_repo
-            .list_workers_by_container_status("running")
+            .list_active_workers()
             .await
             .map_err(|e| format!("db error: {e}"))?;
-        let worker = workers
+        let index = workers
             .iter()
-            .find(|w| w.process_id == process_id)
-            .ok_or_else(|| format!("unknown worker: {process_id}"))?;
-        Ok(worker.workspace_path.as_ref().map(PathBuf::from))
+            .position(|w| w.worker_id == id)
+            .or_else(|| newest_for_process(&workers, id))
+            .ok_or_else(|| format!("unknown worker: {id}"))?;
+        Ok(workers.swap_remove(index))
     }
 
     /// Stop a running worker process by process_id (searches all entries).
@@ -1289,106 +1303,40 @@ impl WorkerManager {
             .list_workers_by_container_status("running")
             .await
             .map_err(|e| format!("db error: {e}"))?;
-        // list_workers_by_container_status orders oldest-first; take the last
-        // match so a re-used slot stops its current worker, not a stale row.
-        if let Some(worker) = workers.iter().rev().find(|w| w.process_id == process_id) {
-            let worker_id = WorkerId::parse(&worker.worker_id)?;
+        if let Some(index) = newest_for_process(&workers, process_id) {
+            let worker_id = WorkerId::parse(&workers[index].worker_id)?;
             return self.stop_by_worker_id(&worker_id).await;
         }
-
-        self.stop_unrecorded_by_name(process_id).await
-    }
-
-    /// Stop the container occupying a slot's container name when no running
-    /// worker row claims it.
-    ///
-    /// The container name is derived from the process_id, which names a slot —
-    /// so the name outlives any single worker and is re-used by the next one.
-    /// Killing it blind would take down whichever worker holds the slot now,
-    /// which is why the container is resolved to an ID first: if a worker row
-    /// owns it, that row has merely drifted out of `running` and gets a proper
-    /// graceful stop (releasing its slot). Only a container no row claims is
-    /// treated as an orphan and removed by name.
-    async fn stop_unrecorded_by_name(&self, process_id: &str) -> Result<(), String> {
-        let container_name = format!("{}{}", self.network_config.worker_prefix, process_id);
-        warn!(
-            process_id,
-            container_name, "no running worker row for process; resolving container by name"
-        );
-
-        let state = self
-            .builder_container_client
-            .inspect_worker(InspectWorkerRequest {
-                container_id: container_name.clone(),
-            })
-            .await
-            .map_err(|status| {
-                format!("cannot determine what occupies container {container_name}: {status}")
-            })?;
-
-        if state.container_id.is_empty() {
-            return Err(format!("unknown worker: {process_id}"));
-        }
-
-        let owner = self
-            .worker_repo
-            .get_worker_by_container_id(&state.container_id)
-            .await
-            .map_err(|e| format!("db error: {e}"))?;
-
-        if let Some(owner) = owner {
-            warn!(
-                process_id,
-                container_name,
-                worker_id = %owner.worker_id,
-                container_status = %owner.container_status,
-                "container belongs to a worker whose row drifted; stopping it by worker id"
-            );
-            let worker_id = WorkerId::parse(&owner.worker_id)?;
-            return self.stop_by_worker_id(&worker_id).await;
-        }
-
-        warn!(
-            process_id,
-            container_name,
-            container_id = %state.container_id,
-            "no worker row owns container; removing as an orphan"
-        );
-        match self
-            .builder_container_client
-            .stop_worker(StopWorkerRequest {
-                container_id: state.container_id,
-            })
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(status) if status.code() == Code::NotFound => {
-                Err(format!("unknown worker: {process_id}"))
-            }
-            Err(status) => Err(status.to_string()),
-        }
+        Err(format!("unknown worker: {process_id}"))
     }
 }
 
-/// Swallow `NotFound` responses from a builderd `stop_worker` call, logging a
-/// warning instead. All other errors bubble up as-is.
-///
-/// "Is missing acceptable here?" is server-side policy — builderd returns
-/// `Code::NotFound` for any already-absent container, and the caller decides
-/// whether to treat that as benign.
-fn tolerate_missing(
-    res: Result<impl Sized, tonic::Status>,
-    container_id: &str,
-    op: &str,
-) -> Result<(), String> {
-    match res {
-        Ok(_) => Ok(()),
-        Err(status) if status.code() == Code::NotFound => {
-            warn!(%container_id, op, "container already gone, skipping");
-            Ok(())
-        }
-        Err(status) => Err(status.to_string()),
-    }
+/// Index of the newest of `workers` (ordered oldest-first, as the repo lists
+/// them) for `process_id`, so a re-used slot resolves to its current worker,
+/// not a stale row.
+fn newest_for_process(workers: &[workflow_db::model::Worker], process_id: &str) -> Option<usize> {
+    workers.iter().rposition(|w| w.process_id == process_id)
+}
+
+fn stopped_during_launch(worker_id: &WorkerId) -> String {
+    format!("worker {worker_id} was stopped during launch")
+}
+
+/// The Docker ID (or name) of a container launched before containers were
+/// labeled by worker id (ur-ezhdb), or `None`. Such a row recorded something
+/// other than its worker-id name; builderd's Stop then also stops that
+/// container, but only after checking its env names this worker. Upgrade
+/// only: such containers are not listed, and the reconciler leaves their
+/// `running` rows alone.
+pub fn legacy_container_id<'a>(
+    worker_prefix: &str,
+    worker: &'a workflow_db::model::Worker,
+) -> Option<&'a str> {
+    let named = format!("{worker_prefix}{}", worker.worker_id);
+    let legacy = worker.runtime == ur_config::WorkerRuntime::Container
+        && !worker.container_id.is_empty()
+        && worker.container_id != named;
+    legacy.then_some(worker.container_id.as_str())
 }
 
 /// Build the environment variables for a worker container launch.
@@ -1419,10 +1367,7 @@ fn build_worker_env_vars(
     env_vars.extend(proxy_env_vars(&config.proxy_hostname));
 
     // Inject resolved skills as comma-separated list
-    let mut skills = config.skills.clone();
-    if config.forge == Some(ur_config::ForgeType::Gitea) && !skills.iter().any(|s| s == "gitea") {
-        skills.push("gitea".to_string());
-    }
+    let skills = worker_skills(config);
     if !skills.is_empty() {
         env_vars.push((ur_config::UR_WORKER_SKILLS_ENV.into(), skills.join(",")));
     }
@@ -1473,6 +1418,15 @@ fn build_worker_env_vars(
     }
 
     env_vars
+}
+
+/// The worker's skill names: `config.skills`, plus `gitea` for a Gitea forge.
+pub(crate) fn worker_skills(config: &WorkerConfig) -> Vec<String> {
+    let mut skills = config.skills.clone();
+    if config.forge == Some(ur_config::ForgeType::Gitea) && !skills.iter().any(|s| s == "gitea") {
+        skills.push("gitea".to_string());
+    }
+    skills
 }
 
 /// Map a host convention path to the path the server can actually touch.
@@ -1531,7 +1485,7 @@ fn remap_to_container_config(
 /// When `instruction_md` is None and a non-empty `project_key` is provided,
 /// checks `<host_config_dir>/projects/<project_key>/{agent.instruction_filename()}`
 /// — if it exists, returns the absolute path as a host path string.
-fn resolve_project_instruction(
+pub(crate) fn resolve_project_instruction(
     instruction_md: &Option<String>,
     project_key: &str,
     host_config_dir: &std::path::Path,
@@ -1560,7 +1514,7 @@ fn resolve_project_instruction(
 /// When `memory_dir` is None and a non-empty `project_key` is provided, checks
 /// `<host_config_dir>/projects/<project_key>/memory/` — if it exists, returns
 /// the absolute path as a host path string.
-fn resolve_memory_dir(
+pub(crate) fn resolve_memory_dir(
     memory_dir: &Option<String>,
     project_key: &str,
     host_config_dir: &std::path::Path,
@@ -1592,7 +1546,7 @@ fn resolve_memory_dir(
 ///    explicitly so an upgrade never starts mounting a brain nobody asked for.
 /// 3. `<host_config_dir>/projects/<project_key>/brain/` if it exists on disk.
 /// 4. None — no brain mount.
-fn resolve_brain_dir(
+pub(crate) fn resolve_brain_dir(
     brain_dir: &Option<String>,
     workspace_brain_dir: &Option<String>,
     project_key: &str,
@@ -1635,7 +1589,9 @@ fn brain_host_path(config: &WorkerConfig, host_config_dir: &std::path::Path) -> 
 ///
 /// Each context repo is mounted read-only at `/context/<project_key>` inside
 /// the container. The host path is an absolute path to the shared pool slot.
-fn context_mount_configs(context_mounts: &[(String, PathBuf)]) -> Vec<ur_config::MountConfig> {
+pub(crate) fn context_mount_configs(
+    context_mounts: &[(String, PathBuf)],
+) -> Vec<ur_config::MountConfig> {
     context_mounts
         .iter()
         .map(|(project_key, host_path)| ur_config::MountConfig {
@@ -1687,81 +1643,6 @@ fn proxy_env_vars(proxy_hostname: &str) -> Vec<(String, String)> {
 mod tests {
     use super::*;
 
-    fn test_config(workspace_path: &std::path::Path) -> ur_config::Config {
-        ur_config::Config {
-            agent: ur_config::AgentType::Claude,
-            runtime: ur_config::WorkerRuntime::Container,
-            config_dir: workspace_path.to_path_buf(),
-            logs_dir: workspace_path.join("logs"),
-            workspace: workspace_path.to_path_buf(),
-            server_port: ur_config::DEFAULT_SERVER_PORT,
-            builderd_port: ur_config::DEFAULT_SERVER_PORT + 2,
-            compose_file: workspace_path.join("docker-compose.yml"),
-            proxy: ur_config::ProxyConfig {
-                hostname: ur_config::DEFAULT_PROXY_HOSTNAME.into(),
-                allowlist: vec![],
-            },
-            network: NetworkConfig {
-                name: ur_config::DEFAULT_NETWORK_NAME.into(),
-                worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
-                server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
-                worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
-            },
-            db: ur_config::DatabaseConfig {
-                host: ur_config::DEFAULT_DB_HOST.to_string(),
-                port: ur_config::DEFAULT_DB_PORT,
-                user: ur_config::DEFAULT_DB_USER.to_string(),
-                password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
-                name: ur_config::DEFAULT_DB_NAME.to_string(),
-                bind_address: None,
-            },
-            ticket_db: ur_config::TicketDbConfig {
-                host: ur_config::DEFAULT_DB_HOST.to_string(),
-                port: ur_config::DEFAULT_DB_PORT,
-                user: ur_config::DEFAULT_DB_USER.to_string(),
-                password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
-                name: ur_config::DEFAULT_TICKET_DB_NAME.to_string(),
-                bind_address: None,
-                backup: ur_config::BackupConfig {
-                    path: None,
-                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                    enabled: true,
-                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-                },
-            },
-            workflow_db: ur_config::WorkflowDbConfig {
-                host: ur_config::DEFAULT_DB_HOST.to_string(),
-                port: ur_config::DEFAULT_DB_PORT,
-                user: ur_config::DEFAULT_DB_USER.to_string(),
-                password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
-                name: ur_config::DEFAULT_WORKFLOW_DB_NAME.to_string(),
-                bind_address: None,
-                backup: ur_config::BackupConfig {
-                    path: None,
-                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                    enabled: true,
-                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-                },
-            },
-            worker_port: ur_config::DEFAULT_SERVER_PORT + 1,
-            git_branch_prefix: String::new(),
-            server: ur_config::ServerConfig {
-                container_command: "docker".into(),
-                stale_worker_ttl_days: 7,
-                max_implement_cycles: Some(6u32),
-                poll_interval_ms: 500,
-                github_scan_interval_secs: 30,
-                builderd_retry_count: ur_config::DEFAULT_BUILDERD_RETRY_COUNT,
-                builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
-                ui_event_fallback_interval_ms: ur_config::DEFAULT_UI_EVENT_FALLBACK_INTERVAL_MS,
-            },
-            projects: std::collections::HashMap::new(),
-            tui: ur_config::TuiConfig::default(),
-            global_skills: GlobalSkillsConfig::default(),
-            workspace_brain_dir: None,
-        }
-    }
-
     async fn test_worker_repo() -> (WorkerRepo, ur_db_test::TestDb) {
         let test_db = ur_db_test::TestDb::new().await;
         let repo = WorkerRepo::new(test_db.workflow_pool().clone());
@@ -1770,24 +1651,12 @@ mod tests {
 
     async fn test_manager() -> (WorkerManager, tempfile::TempDir, ur_db_test::TestDb) {
         let workspace = tempfile::tempdir().unwrap();
-        let config = test_config(workspace.path());
         let (worker_repo, test_db) = test_worker_repo().await;
         // Keep unit tests isolated from a builderd that may be running on its
         // normal development port. The lazy channel only connects in tests
         // that deliberately exercise an unreachable runtime.
         let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
         let builder_container_client = BuilderContainerClient::new(channel.clone());
-        let builder_pool_client = crate::BuilderPoolClient::new(channel);
-        let project_registry = crate::ProjectRegistry::new(
-            config.projects.clone(),
-            crate::hostexec::HostExecConfigManager::empty(),
-        );
-        let repo_pool_manager = RepoPoolManager::new(
-            &config,
-            worker_repo.clone(),
-            project_registry,
-            builder_pool_client,
-        );
         let network_manager = NetworkManager::new(
             builder_container_client.clone(),
             ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
@@ -1804,7 +1673,6 @@ mod tests {
             workspace.path().join("logs"),
             workspace.path().join("logs"),
             workspace.path().join("logs"),
-            repo_pool_manager,
             network_manager,
             network_config,
             ur_config::DEFAULT_SERVER_PORT + 1,
@@ -1812,6 +1680,9 @@ mod tests {
             worker_repo,
             GlobalSkillsConfig::default(),
             builder_container_client,
+            crate::builder_local_worker_client::BuilderLocalWorkerClient::new(
+                tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+            ),
         );
         (mgr, workspace, test_db)
     }
@@ -1894,24 +1765,17 @@ mod tests {
         assert!(result.unwrap_err().contains("process already running"));
     }
 
-    /// With no worker row and no reachable container runtime, a stop must fail
-    /// loudly about the unanswerable probe. It must not fall through to
-    /// removing the slot's container by name: that name is shared by every
-    /// worker that has used the slot, so a blind kill takes down whichever
-    /// worker holds it now.
+    /// A stop by process id with no running row is an unknown worker: it
+    /// never falls back to a container name (or any builderd call); a
+    /// container no row wants is the reconciler's List sweep's.
     #[tokio::test]
-    async fn stop_unknown_process_errors_when_runtime_unreachable() {
+    async fn stop_unknown_process_is_an_unknown_worker() {
         let (mut mgr, _workspace, _test_db) = test_manager().await;
         let unreachable =
             tonic::transport::Channel::from_static("http://127.0.0.1:0").connect_lazy();
         mgr.builder_container_client = BuilderContainerClient::new(unreachable);
-        let result = mgr.stop("nonexistent").await;
-        let err = result.unwrap_err();
-        assert!(
-            err.contains("cannot determine what occupies container"),
-            "expected an unresolved-container error, got: {err}"
-        );
-        assert!(err.contains("ur-worker-nonexistent"), "got: {err}");
+        let err = mgr.stop("nonexistent").await.unwrap_err();
+        assert_eq!(err, "unknown worker: nonexistent");
     }
 
     #[test]
@@ -2019,7 +1883,6 @@ mod tests {
             instruction_md: None,
             mounts: Vec::new(),
             ports: Vec::new(),
-            slot_id: None,
             context_mounts: Vec::new(),
             hostexec_scripts: Vec::new(),
             extra_skill_mounts: Vec::new(),
@@ -2028,6 +1891,7 @@ mod tests {
             workspace_brain_dir: None,
             forge: None,
             runtime: ur_config::WorkerRuntime::Container,
+            allow_no_verify: false,
         }
     }
 
@@ -3374,30 +3238,6 @@ agent = "claude"
         assert!(result.unwrap_err().contains("unknown worker"));
     }
 
-    #[test]
-    fn tolerate_missing_swallows_not_found() {
-        // A fake builderd NotFound response is treated as success (container already gone).
-        let not_found: Result<(), tonic::Status> =
-            Err(tonic::Status::not_found("container not found: abc123"));
-        tolerate_missing(not_found, "abc123", "stop_worker").expect("NotFound should be tolerated");
-    }
-
-    #[test]
-    fn tolerate_missing_propagates_other_errors() {
-        // Internal errors from builderd must not be swallowed.
-        let internal: Result<(), tonic::Status> =
-            Err(tonic::Status::internal("docker stop failed"));
-        let err = tolerate_missing(internal, "abc123", "stop_worker")
-            .expect_err("Internal error should propagate");
-        assert!(err.contains("docker stop failed"));
-    }
-
-    #[test]
-    fn tolerate_missing_ok_passes_through() {
-        let ok: Result<(), tonic::Status> = Ok(());
-        tolerate_missing(ok, "abc123", "stop_worker").expect("Ok result should pass through");
-    }
-
     // ---- merge_global_skills tests ----
     //
     // merge_global_skills is a pure function on self.global_skills — no DB
@@ -3408,22 +3248,10 @@ agent = "claude"
         globals: GlobalSkillsConfig,
     ) -> (WorkerManager, tempfile::TempDir, ur_db_test::TestDb) {
         let workspace = tempfile::tempdir().unwrap();
-        let config = test_config(workspace.path());
         let (worker_repo, test_db) = test_worker_repo().await;
         let channel =
             tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
         let builder_container_client = BuilderContainerClient::new(channel.clone());
-        let builder_pool_client = crate::BuilderPoolClient::new(channel);
-        let project_registry = crate::ProjectRegistry::new(
-            config.projects.clone(),
-            crate::hostexec::HostExecConfigManager::empty(),
-        );
-        let repo_pool_manager = RepoPoolManager::new(
-            &config,
-            worker_repo.clone(),
-            project_registry,
-            builder_pool_client,
-        );
         let network_manager = NetworkManager::new(
             builder_container_client.clone(),
             ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
@@ -3440,7 +3268,6 @@ agent = "claude"
             workspace.path().join("logs"),
             workspace.path().join("logs"),
             workspace.path().join("logs"),
-            repo_pool_manager,
             network_manager,
             network_config,
             ur_config::DEFAULT_SERVER_PORT + 1,
@@ -3448,6 +3275,9 @@ agent = "claude"
             worker_repo,
             globals,
             builder_container_client,
+            crate::builder_local_worker_client::BuilderLocalWorkerClient::new(
+                tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+            ),
         );
         (mgr, workspace, test_db)
     }

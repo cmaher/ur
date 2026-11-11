@@ -204,6 +204,35 @@ Source: `Config::workspace_brain_dir` in `crates/ur_config/src/lib.rs`, `LaunchM
 
 Source: `parse_mount_entry()` in `crates/ur_config/src/lib.rs`
 
+## Local Workers (Drive Symlinks)
+
+A `runtime = "local"` worker has no container, so nothing is volume-mounted. The server resolves
+the same fields to **host paths** (templates against the host config dir, `%PROJECT%`
+`instruction_md` against the slot) and builderd maps them onto the worker's drive
+`<workspace>/drive/<worker_id>/` (`LocalWorkspaceManager`, `crates/builderd/src/local_workspace.rs`):
+
+| Config field | Local mapping |
+|---|---|
+| `container.mounts` `src:/dest[:ro]` (and context repos at `/context/<key>`) | symlink `drive/<id>/<dest without leading />` → `src`, passed to the agent with `--add-dir <src>` |
+| `brain_dir` / `workspace_brain_dir` | symlink `drive/<id>/brain` → brain dir (`--add-dir`); `UR_BRAIN` is not set, so brain skills use `ur project list`'s `brain` field |
+| `memory_dir` | symlink `~/.claude/projects/<encoded slot>/memory` → `memory_dir` (Claude's per-cwd memory path; every non-alphanumeric char of the slot path becomes `-`) |
+| `instruction_md` | inlined into `drive/<id>/.ur/instructions.md` (`--append-system-prompt-file` does not expand `@`) |
+| git / skill / startup hook overlays | read straight from `<slot>/ur-hooks/` and `<config_dir>/projects/<key>/hooks/`; git hooks are copied into `<slot>/.git/hooks/`, skill hooks into `drive/<id>/.ur/skill-hooks/` |
+
+- **`:ro` is advisory.** A symlink cannot be read-only; the drive map appended to
+  `instructions.md` marks the link "read-only: advisory — do not write".
+- A missing mount source, or a mount dest nested inside another linked mount, fails the launch
+  with `FailedPrecondition`. Memory and brain dirs are created (not chowned; the agent runs as the
+  host user).
+- **Memory link ownership.** The memory dir is created if missing. A real non-empty directory at
+  the link path fails the launch (`FailedPrecondition`); an empty one or a symlink elsewhere is
+  replaced. The drive's `.ur/owner` records agent and slot; teardown removes the link (a
+  symlink only), and an orphan drive whose slot a live worker
+  now uses leaves the link alone. Teardown never removes a link target (`remove_dir_all` does not
+  follow symlinks).
+
+See [local-workers.md](local-workers.md#drive-layout).
+
 ## Full Flow
 
 ```
@@ -348,7 +377,7 @@ Drop a project-specific CLAUDE.md at:
 
 Workers on that project will read your local CLAUDE.md instead of the repo's version, with no `ur.toml` change required and no risk of accidentally committing the override.
 
-**Reverting:** Removing the file from `local/` reverts the slot's working copy to repo HEAD on the next recycle. `reset_slot()` clears all `skip-worktree` bits and discards `.git/ur-overlay/` before resetting, so `git reset --hard` and `git clean -fdx` operate normally and a slot cleaned by `CleanSlot` gets no overlays back.
+**Reverting:** Removing the file from `local/` reverts the slot's working copy to repo HEAD on the next recycle. `reset_slot()` clears all `skip-worktree` bits and discards `.git/ur-overlay/` before resetting, so `git reset --hard` and `git clean -fdx` operate normally before the current overlays are re-applied.
 
 **Pool mode only.** This mechanism is exclusive to pool slots. Workers launched with `-w` (workspace mode) mount the caller's working directory directly and do not use the `local/` overlay.
 
@@ -365,7 +394,7 @@ The copy runs **after** clone/reset and **before** container launch:
 3. Worker branch checkout (`git checkout -b <worker_id>`)
 4. Container launched with the slot as `/workspace`
 
-On slot release, `reset_slot()` first clears all `skip-worktree` bits (`git update-index --no-skip-worktree`) and discards `.git/ur-overlay/` so that `git reset --hard origin/master` and `git clean -fdx` can restore every file to repo HEAD. Local files are re-copied on the next acquire.
+Release does not touch the slot. On the next acquire (`RecycleSlot`), `reset_slot()` first clears all `skip-worktree` bits (`git update-index --no-skip-worktree`) and discards `.git/ur-overlay/` so that `git reset --hard origin/master` and `git clean -fdx` can restore every file to repo HEAD. Local files are re-copied on the next acquire.
 
 ### Error Behavior
 

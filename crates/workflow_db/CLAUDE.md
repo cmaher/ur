@@ -7,7 +7,7 @@ Postgres-backed workflow database crate. Owns the workflow lifecycle schema: wor
 - Migrations for the workflow domain (`workflow`, `workflow_event`, `workflow_intent`, `workflow_comments`, `workflow_events`, `worker`, `slot`, `worker_slot`, `ui_events` tables and their triggers).
 - `DatabaseManager` — opens a `PgPool` for `ur_workflow`, runs migrations on startup.
 - `WorkflowRepo` — CRUD operations for workflow state, events, intents, and comments.
-- `WorkerRepo` — worker and slot management, including `worker.agent_type` (which agent — e.g. Claude — is running that worker; orthogonal to `strategy`, which describes what kind of work).
+- `WorkerRepo` — slot ownership and worker lifecycle are compare-and-set operations here (ur-j5puq): `claim_slot` inserts a `provisioning` worker plus its `worker_slot` link in one transaction, and `worker_slot` is `UNIQUE (slot_id)` (migration 005, which first dropped non-active links and, for a slot linked twice, kept a `running` worker over others, then the newest, moving each loser to `stopping`), so the insert decides who owns a slot; `finalize_worker_launch` (`provisioning → running`), `begin_stopping` (active → `stopping`), `finish_stop` (`stopping → stopped` + delete the link) only change rows in the expected state and report whether they did. Also worker and slot management, including `worker.agent_type` (which agent — e.g. Claude — is running that worker; orthogonal to `strategy`, which describes what kind of work).
 
 ## What Does NOT Live Here
 
@@ -37,3 +37,4 @@ The `ui_events` table DDL used in this crate's migrations must stay identical to
 - Managers implement `Clone` and accept dependencies via constructor (dependency injection).
 - Never modify existing migration files — always add new ones for schema changes.
 - Migration files are embedded at compile time via `sqlx::migrate!()`.
+- `worker.launch_pending` (migration 006, ur-ezhdb): set by `update_provisioning_worker` just before a pool launch's Launch RPC (a slotless launch has none), cleared by `finalize_worker_launch`, `clear_launch_pending` or (startup) `clear_all_launch_pending`. `begin_stopping` returns it: a stopper that saw it set must not call `finish_stop` (which also refuses while it is set). Migration 005 is final; schema changes go in new migrations.

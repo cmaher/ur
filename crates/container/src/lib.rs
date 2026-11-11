@@ -41,6 +41,17 @@ pub struct RunOpts {
     pub network: Option<String>,
     /// Extra host entries (`--add-host=host:ip`).
     pub add_hosts: Vec<(String, String)>,
+    /// Container labels (`--label key=value`).
+    pub labels: Vec<(String, String)>,
+}
+
+/// A container found by [`DockerRuntime::list_by_labels`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabeledContainer {
+    pub id: ContainerId,
+    /// The value of the label the listing reported.
+    pub label: String,
+    pub running: bool,
 }
 
 #[derive(Debug, Clone)]

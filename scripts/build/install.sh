@@ -33,4 +33,9 @@ cp "$TARGET_DIR/urui" "$INSTALL_DIR/urui"
 cp "$TARGET_DIR/builderd" "$INSTALL_DIR/builderd"
 cp "$TARGET_DIR/ur-workertools" "$INSTALL_DIR/ur-workertools"
 echo "Installed ur, urui, builderd, ur-workertools to $INSTALL_DIR/"
+
+# Agent assets for local workers (builderd --agent-shared).
+AGENT_SHARED="${UR_CONFIG:-$HOME/.ur}/agent-shared"
+scripts/build/install-agent-assets.sh "$AGENT_SHARED"
+echo "Installed agent assets to $AGENT_SHARED/"
 echo "Run 'ur server start' to launch the server"

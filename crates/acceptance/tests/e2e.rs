@@ -156,13 +156,63 @@ fn force_remove_by_prefix(runtime: &str, prefix: &str) {
     }
 }
 
-/// Force-remove a container if it exists (cleanup from prior failed runs).
-fn force_remove_container(runtime: &str, name: &str) {
-    let _ = Command::new(runtime)
-        .args(["rm", "-f", name])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+/// A worker's container, found by its `<worker_prefix><process_id>-` name
+/// prefix: the newest such container, resolved (waiting up to 30s) the first
+/// time its name is used.
+struct WorkerContainer {
+    runtime: String,
+    prefix: String,
+    name: std::sync::OnceLock<String>,
+}
+
+impl WorkerContainer {
+    fn find(&self) -> Option<String> {
+        let output = Command::new(&self.runtime)
+            .args(["ps", "-a", "--format", "{{.Names}}"])
+            .output()
+            .expect("failed to list containers");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .find(|name| name.starts_with(&self.prefix))
+            .map(str::to_owned)
+    }
+
+    fn wait_for(&self) -> String {
+        for _ in 0..60 {
+            if let Some(name) = self.find() {
+                return name;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        panic!("no container named {}*", self.prefix)
+    }
+
+    fn as_str(&self) -> &str {
+        self.name.get_or_init(|| self.wait_for())
+    }
+
+    /// Whether any container of this process exists (no waiting).
+    fn exists(&self) -> bool {
+        self.find().is_some()
+    }
+
+    /// Force-remove every container of this process (cleanup).
+    fn remove(&self) {
+        force_remove_by_prefix(&self.runtime, &self.prefix);
+    }
+}
+
+impl std::ops::Deref for WorkerContainer {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for WorkerContainer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Wait for a container to become healthy (Docker HEALTHCHECK passing).
@@ -492,6 +542,8 @@ struct TestEnv {
     project_bare_repo: PathBuf,
     /// Host directories bind-mounted into the `mountproj` worker.
     mount_dirs: MountDirs,
+    /// Mount source and memory dir of the `localrtproj` local-runtime worker.
+    local_runtime_dirs: LocalRuntimeDirs,
     /// Host directory configured as the top-level `workspace_brain_dir`, mounted at
     /// `/brain` for `-w` workers that have no project.
     workspace_brain_dir: PathBuf,
@@ -505,9 +557,17 @@ impl TestEnv {
         vec![("UR_CONFIG", self.config_path.to_str().unwrap())]
     }
 
-    /// Build a container name from the shared worker prefix and a ticket ID.
-    fn container_name(&self, ticket_id: &str) -> String {
-        format!("{}{ticket_id}", self.names.worker_prefix)
+    /// The container of the worker launched for `process_id` (a ticket ID
+    /// or a manual worker's generated id). Containers are named
+    /// `<worker_prefix><worker_id>`, and the worker id (`<process_id>-<suffix>`)
+    /// is known only once the worker launched, so the name resolves on first
+    /// use.
+    fn container_name(&self, process_id: &str) -> WorkerContainer {
+        WorkerContainer {
+            runtime: self.runtime.clone(),
+            prefix: format!("{}{process_id}-", self.names.worker_prefix),
+            name: std::sync::OnceLock::new(),
+        }
     }
 }
 
@@ -606,6 +666,74 @@ fn setup_mount_projects(config_path: &Path) -> (MountDirs, Vec<ProjectEntry>) {
         },
         vec![mountproj, badmountproj],
     )
+}
+
+/// Project key of the pool project `scenario_local_runtime` launches with
+/// `--runtime local`.
+const LOCAL_RUNTIME_PROJECT_KEY: &str = "localrtproj";
+
+/// Where `localrtproj`'s `mounts` entry lands, relative to the worker's drive.
+const LOCAL_RUNTIME_MOUNT_DEST: &str = "/mnt/localrt";
+
+/// Host fixtures for `localrtproj`. Both live under a system temp dir, so the
+/// scenario can assert that teardown removed only links and left these (and
+/// their contents) alone.
+struct LocalRuntimeDirs {
+    /// Parent TempDir keeping every directory below alive for the whole run.
+    _parent: tempfile::TempDir,
+    /// `mounts` source, linked into the drive at `LOCAL_RUNTIME_MOUNT_DEST`;
+    /// holds `hello.txt`.
+    mount_source: PathBuf,
+    /// Project `memory_dir`, seeded with `seed.md`.
+    memory: PathBuf,
+}
+
+/// Set up the `localrtproj` project entry: its own bare repo, one host mount
+/// and a `memory_dir`.
+fn setup_local_runtime_project(config_path: &Path) -> (LocalRuntimeDirs, ProjectEntry) {
+    let parent = tempfile::tempdir().expect("failed to create local runtime dirs parent");
+    let mount_source = parent.path().join("mount-source");
+    let memory = parent.path().join("memory");
+    for dir in [&mount_source, &memory] {
+        std::fs::create_dir_all(dir).expect("failed to create local runtime dir");
+    }
+    std::fs::write(mount_source.join("hello.txt"), "local-mount-content\n")
+        .expect("failed to write local mount fixture");
+    std::fs::write(memory.join("seed.md"), "local-memory-seed\n")
+        .expect("failed to seed local memory dir");
+
+    let bare_repo = create_bare_repo(&config_path.join("local-runtime-repos"), &[]);
+    let entry = ProjectEntry {
+        mounts: vec![format!(
+            "{}:{LOCAL_RUNTIME_MOUNT_DEST}:ro",
+            mount_source.display()
+        )],
+        memory_dir: Some(memory.to_string_lossy().into_owned()),
+        ..ProjectEntry::pool(LOCAL_RUNTIME_PROJECT_KEY, &bare_repo)
+    };
+    (
+        LocalRuntimeDirs {
+            _parent: parent,
+            mount_source,
+            memory,
+        },
+        entry,
+    )
+}
+
+/// Fill `$UR_CONFIG/agent-shared` (builderd's default `--agent-shared`) with
+/// the same script `install.sh` uses, so local workers find their skills and
+/// instructions in the temp config.
+fn install_agent_assets(config_path: &Path) {
+    let script = workspace_root().join("scripts/build/install-agent-assets.sh");
+    let dest = config_path.join("agent-shared");
+    let output = run_cmd(&script, &[dest.to_str().unwrap()], &[]);
+    assert!(
+        output.status.success(),
+        "install-agent-assets.sh failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 /// Kill any process listening on the given TCP port. Used to clean up orphaned
@@ -728,6 +856,7 @@ struct ProjectFixtures {
     project_bare_repo: PathBuf,
     skills_extra_toml: String,
     mount_dirs: MountDirs,
+    local_runtime_dirs: LocalRuntimeDirs,
     /// Host dir wired up as the top-level `workspace_brain_dir`.
     workspace_brain_dir: BrainDirInfo,
 }
@@ -777,6 +906,7 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
     );
 
     let (mount_dirs, mount_projects) = setup_mount_projects(config_path);
+    let (local_runtime_dirs, local_runtime_project) = setup_local_runtime_project(config_path);
 
     let mut projects = vec![
         ProjectEntry::pool(project_key, &project_bare_repo),
@@ -801,12 +931,14 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
         },
     ];
     projects.extend(mount_projects);
+    projects.push(local_runtime_project);
 
     ProjectFixtures {
         projects,
         project_bare_repo,
         skills_extra_toml,
         mount_dirs,
+        local_runtime_dirs,
         workspace_brain_dir: setup_workspace_brain(),
     }
 }
@@ -848,6 +980,7 @@ fn e2e_all() {
         &fixtures.skills_extra_toml,
     );
     write_git_hostexec_override(&config_path);
+    install_agent_assets(&config_path);
 
     let ur = bin("ur");
     assert!(ur.exists(), "ur binary not found at {}", ur.display());
@@ -861,14 +994,18 @@ fn e2e_all() {
         project_key,
         project_bare_repo: fixtures.project_bare_repo,
         mount_dirs: fixtures.mount_dirs,
+        local_runtime_dirs: fixtures.local_runtime_dirs,
         workspace_brain_dir: fixtures.workspace_brain_dir.path,
         _workspace_brain_dir_parent: fixtures.workspace_brain_dir.parent,
     };
 
     // ---- (2) ur start, run scenarios, always tear down (with timeout) ----
     // The entire test body runs in a spawned thread with a 10-minute join
-    // deadline. If the deadline expires, we panic — which triggers the
-    // existing catch_unwind cleanup logic in each scenario.
+    // deadline. If the deadline expires, this thread panics and the test
+    // process exits with the scenario thread abandoned mid-run: no scenario's
+    // catch_unwind cleanup and no stack teardown run. Leftover containers are
+    // swept by `force_remove_by_prefix` at the next run's start, leftover
+    // local sessions by `sweep_stale_local_rt_sessions`.
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -942,6 +1079,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_missing_mount_source(&env);
         scenario_codex_manual_worker(&env);
         scenario_agy_manual_worker(&env);
+        scenario_local_runtime(&env);
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
@@ -974,21 +1112,17 @@ fn teardown_worker_containers(env: &TestEnv) {
         "mount-test",
         "agy-manual-worker-test",
     ] {
-        force_remove_container(&env.runtime, &env.container_name(ticket));
+        env.container_name(ticket).remove();
     }
     // Manual workers use generated process_ids, not ticket IDs:
     // - workspace mount: "{workspace basename}-man-0"
     // - pool manual worker: "{project_key}-man-0"
     // - local project (-p and -w): "{key}-man-{key}"
-    force_remove_container(&env.runtime, &env.container_name("workspace-man-0"));
-    force_remove_container(
-        &env.runtime,
-        &env.container_name(&format!("{}-man-0", env.project_key)),
-    );
-    force_remove_container(
-        &env.runtime,
-        &env.container_name(&local_manual_process_id(LOCAL_PROJECT_KEY)),
-    );
+    env.container_name("workspace-man-0").remove();
+    env.container_name(&format!("{}-man-0", env.project_key))
+        .remove();
+    env.container_name(&local_manual_process_id(LOCAL_PROJECT_KEY))
+        .remove();
     force_remove_by_prefix(&env.runtime, &env.names.worker_prefix);
 }
 
@@ -1449,7 +1583,7 @@ fn scenario_workspace_mount(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -1465,7 +1599,7 @@ fn scenario_pool_launch(env: &TestEnv) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let launch_stdout = launch_worker(env, &["-p", env.project_key, ticket_id]);
         assert!(
-            launch_stdout.contains(&container_name),
+            launch_stdout.contains(container_name.as_str()),
             "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
         );
 
@@ -1514,7 +1648,7 @@ fn scenario_pool_launch(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -1533,7 +1667,7 @@ fn scenario_custom_design_mode(env: &TestEnv) {
             &["-p", env.project_key, "-m", "custommodel", ticket_id],
         );
         assert!(
-            launch_stdout.contains(&container_name),
+            launch_stdout.contains(container_name.as_str()),
             "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
         );
 
@@ -1546,7 +1680,7 @@ fn scenario_custom_design_mode(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -1591,7 +1725,8 @@ fn launch_and_verify_local_worker(
     env: &TestEnv,
     key: &str,
     project_dir: &Path,
-    container_name: &str,
+    // Resolved only after the launch below: the name carries the worker id.
+    container_name: &WorkerContainer,
 ) {
     // `--output json` so the generated process_id can be asserted from
     // `data.worker_id`. The human-readable "Launching worker ..." line is built from
@@ -1690,7 +1825,7 @@ fn scenario_local_project(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -1808,7 +1943,7 @@ fn scenario_dispatch_creates_workflow(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -1875,7 +2010,7 @@ fn scenario_project_gitea_auto_detection(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -1925,12 +2060,8 @@ fn scenario_failing_startup_hook(env: &TestEnv) {
         "{combined}"
     );
 
-    let inspect = Command::new(&env.runtime)
-        .args(["inspect", &container_name])
-        .output()
-        .expect("failed to inspect failed startup container");
     assert!(
-        !inspect.status.success(),
+        !container_name.exists(),
         "failed startup container was not removed"
     );
 }
@@ -2363,7 +2494,7 @@ fn scenario_manual_worker(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -2455,7 +2586,7 @@ fn scenario_mounts(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -2708,7 +2839,7 @@ fn scenario_codex_manual_worker(env: &TestEnv) {
     }));
 
     if let Err(e) = result {
-        force_remove_container(&env.runtime, &container_name);
+        container_name.remove();
         std::panic::resume_unwind(e);
     }
 }
@@ -2801,7 +2932,394 @@ fn scenario_agy_manual_worker(env: &TestEnv) {
         stop_agy_worker(env, ticket_id);
     }));
     if let Err(error) = result {
-        force_remove_container(&env.runtime, &container);
+        container.remove();
         std::panic::resume_unwind(error);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Local runtime (`--runtime local`)
+// ---------------------------------------------------------------------------
+
+/// How long an external `kill-session` may take to show up as a stopped worker
+/// with no drive: builderd's exit watcher polls the session every 5s
+/// (`LOCAL_EXIT_POLL`) before tearing the drive down, and the server's
+/// reconcile pass (every 15s) then stops the row — about 20s worst case.
+const LOCAL_EXIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A local worker this scenario launched, as far as it is known. Cleanup acts
+/// only on these: the `ur` tmux socket is shared with the developer's real
+/// local agents.
+#[derive(Default)]
+struct LocalLaunches {
+    /// Process ids passed to `ur worker launch` (recorded before the launch).
+    process_ids: Vec<String>,
+    /// `(worker_id_full, slot)` of every launch that reached `ur worker list`.
+    workers: Vec<(String, PathBuf)>,
+}
+
+/// Run `tmux -L ur <args>` (the host socket builderd's local workers use).
+fn local_tmux(args: &[&str]) -> std::process::Output {
+    Command::new("tmux")
+        .args(["-L", ur_config::LOCAL_TMUX_SOCKET])
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run tmux {}: {e}", args.join(" ")))
+}
+
+/// Exact-match tmux target for a local worker's session `ur-<worker_id_full>`.
+fn local_session_target(worker_id_full: &str) -> String {
+    format!("=ur-{worker_id_full}")
+}
+
+fn local_session_alive(worker_id_full: &str) -> bool {
+    local_tmux(&["has-session", "-t", &local_session_target(worker_id_full)])
+        .status
+        .success()
+}
+
+/// `drive/<worker_id_full>` under the shared stack's workspace.
+fn local_drive(env: &TestEnv, worker_id_full: &str) -> PathBuf {
+    env.config_path
+        .join("workspace")
+        .join("drive")
+        .join(worker_id_full)
+}
+
+/// Claude's memory dir for `slot` under the real `$HOME` (builderd runs as the
+/// developer, so that is where it links the project `memory_dir`).
+fn local_memory_link(slot: &Path) -> PathBuf {
+    let home = PathBuf::from(std::env::var("HOME").expect("HOME env var"));
+    ur_config::AgentType::Claude
+        .local_memory_dir(&home, slot)
+        .expect("claude has a local memory dir")
+}
+
+/// Whether `path` exists without following a final symlink.
+fn path_present(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+fn worker_listed(env: &TestEnv, process_id: &str) -> bool {
+    let output = run_cmd(&env.ur, &["--output", "json", "worker", "list"], &env.env());
+    assert!(
+        output.status.success(),
+        "ur worker list failed.\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("worker list output should be valid JSON");
+    json["data"].as_array().is_some_and(|workers| {
+        workers
+            .iter()
+            .any(|w| w["worker_id"].as_str() == Some(process_id))
+    })
+}
+
+/// `ur worker launch <ticket> --runtime local -p localrtproj`, then assert the
+/// listed runtime and the live session. Records the launch in `launches`.
+fn launch_local_worker(
+    env: &TestEnv,
+    ticket: &str,
+    launches: &mut LocalLaunches,
+) -> (String, PathBuf) {
+    launches.process_ids.push(ticket.to_owned());
+    launch_worker(
+        env,
+        &[
+            ticket,
+            "-p",
+            LOCAL_RUNTIME_PROJECT_KEY,
+            "--runtime",
+            "local",
+        ],
+    );
+    let worker = worker_list_entry(env, ticket);
+    let full = worker["worker_id_full"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| panic!("worker '{ticket}' should list a worker_id_full: {worker}"))
+        .to_owned();
+    let slot = PathBuf::from(worker["directory"].as_str().unwrap_or_default());
+    launches.workers.push((full.clone(), slot.clone()));
+    assert_eq!(
+        worker["runtime"].as_str(),
+        Some("local"),
+        "worker '{ticket}' should run locally: {worker}"
+    );
+    assert!(
+        slot.is_absolute(),
+        "worker '{ticket}' should list its slot directory: {worker}"
+    );
+    assert!(
+        local_session_alive(&full),
+        "tmux -L ur session ur-{full} should exist after launch"
+    );
+    (full, slot)
+}
+
+/// The drive links the project mount and holds the generated `.ur/` files, and
+/// the slot's Claude memory dir links the project `memory_dir`.
+fn assert_local_drive_built(env: &TestEnv, full: &str, slot: &Path) {
+    let drive = local_drive(env, full);
+    let dirs = &env.local_runtime_dirs;
+    let mount_link = drive.join(LOCAL_RUNTIME_MOUNT_DEST.trim_start_matches('/'));
+    assert_eq!(
+        std::fs::read_link(&mount_link)
+            .unwrap_or_else(|e| panic!("{} should be a link: {e}", mount_link.display())),
+        dirs.mount_source,
+        "drive mount link should point at the mount source"
+    );
+    assert_host_file(&mount_link.join("hello.txt"), "local-mount-content");
+    for rel in [".ur/settings.json", ".ur/instructions.md", ".ur/plugin"] {
+        assert!(
+            drive.join(rel).exists(),
+            "{} should exist in the local drive",
+            drive.join(rel).display()
+        );
+    }
+    let memory_link = local_memory_link(slot);
+    let target = std::fs::read_link(&memory_link)
+        .unwrap_or_else(|e| panic!("{} should be a link: {e}", memory_link.display()));
+    assert_eq!(
+        std::fs::canonicalize(&target).expect("memory link target should resolve"),
+        std::fs::canonicalize(&dirs.memory).expect("memory fixture should resolve"),
+        "slot memory link should point at the project memory_dir"
+    );
+}
+
+/// After a stop: session, drive and memory link gone; the link targets (and
+/// their contents) intact; the worker no longer listed as running.
+fn assert_local_torn_down(env: &TestEnv, process_id: &str, full: &str, slot: &Path) {
+    assert!(
+        !local_session_alive(full),
+        "session ur-{full} should be gone"
+    );
+    let drive = local_drive(env, full);
+    assert!(
+        !path_present(&drive),
+        "drive {} should be removed",
+        drive.display()
+    );
+    let memory_link = local_memory_link(slot);
+    assert!(
+        !path_present(&memory_link),
+        "memory link {} should be removed",
+        memory_link.display()
+    );
+    let dirs = &env.local_runtime_dirs;
+    assert_host_file(&dirs.memory.join("seed.md"), "local-memory-seed");
+    assert_host_file(&dirs.mount_source.join("hello.txt"), "local-mount-content");
+    assert!(
+        !worker_listed(env, process_id),
+        "worker '{process_id}' should no longer be listed as running"
+    );
+}
+
+/// Poll until an externally killed worker is stopped and its drive removed.
+fn wait_for_local_exit_teardown(env: &TestEnv, process_id: &str, full: &str) {
+    let deadline = std::time::Instant::now() + LOCAL_EXIT_TIMEOUT;
+    loop {
+        let drive_gone = !path_present(&local_drive(env, full));
+        let stopped = !worker_listed(env, process_id);
+        if drive_gone && stopped {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "after kill-session, worker '{process_id}' should be stopped (stopped: {stopped}) \
+             with its drive removed (removed: {drive_gone}) within {}s",
+            LOCAL_EXIT_TIMEOUT.as_secs()
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Remove `~/.claude/projects/<encoded slot>` (the memory link's parent, and
+/// where the host agent keeps its transcripts) — only for a slot inside this
+/// run's temp config, so the encoded name is unique to the run.
+fn remove_local_agent_project_dir(env: &TestEnv, slot: &Path) {
+    let config = std::fs::canonicalize(&env.config_path).unwrap_or(env.config_path.clone());
+    if !(slot.starts_with(&env.config_path) || slot.starts_with(&config)) {
+        return;
+    }
+    if let Some(dir) = local_memory_link(slot).parent() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// Ticket-id prefix of every `scenario_local_runtime` launch, so its sessions
+/// are `ur-local-rt-…` and a stale one can be recognized by a later run.
+const LOCAL_RT_TICKET_PREFIX: &str = "local-rt-";
+
+/// `std::env::temp_dir()` as given and canonicalized (on macOS `/var/…` is a
+/// link to `/private/var/…`), so either spelling of a temp path matches.
+fn system_temp_roots() -> Vec<PathBuf> {
+    let temp = std::env::temp_dir();
+    let mut roots = vec![temp.clone()];
+    if let Ok(canonical) = std::fs::canonicalize(&temp)
+        && canonical != temp
+    {
+        roots.push(canonical);
+    }
+    roots
+}
+
+/// Whether `path` lies strictly inside one of `roots`.
+fn strictly_under_any(path: &Path, roots: &[PathBuf]) -> bool {
+    roots
+        .iter()
+        .any(|root| path != root.as_path() && path.starts_with(root))
+}
+
+/// Selection predicate of the stale-session sweep: a session left by an
+/// abandoned run of this scenario (timeout, interrupted push). All three must
+/// hold — the name is ours (`ur-local-rt-…`), its `UR_DRIVE` is inside the
+/// system temp dir (an acceptance temp config), and that drive no longer
+/// exists (its run's temp dir is gone, so no builderd will ever reap it). A
+/// live run's sessions, and anything a person made, fail one of them.
+fn is_stale_local_rt_session(
+    name: &str,
+    drive: Option<&Path>,
+    drive_exists: bool,
+    temp_roots: &[PathBuf],
+) -> bool {
+    name.starts_with(&format!("ur-{LOCAL_RT_TICKET_PREFIX}"))
+        && drive.is_some_and(|d| strictly_under_any(d, temp_roots))
+        && !drive_exists
+}
+
+/// `UR_DRIVE` from a session's tmux environment, if set.
+fn local_session_drive(name: &str) -> Option<PathBuf> {
+    let output = local_tmux(&["show-environment", "-t", &format!("={name}"), "UR_DRIVE"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .trim()
+        .strip_prefix("UR_DRIVE=")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Kill sessions an abandoned earlier run of this scenario left on the shared
+/// `ur` socket (see `is_stale_local_rt_session`), and remove their
+/// `~/.claude/projects/<encoded slot>` dir when the slot was a temp path.
+/// Every other session is left alone.
+fn sweep_stale_local_rt_sessions() {
+    let list = local_tmux(&["list-sessions", "-F", "#{session_name}\t#{session_path}"]);
+    if !list.status.success() {
+        return; // no tmux server on the socket: nothing to sweep
+    }
+    let roots = system_temp_roots();
+    for line in String::from_utf8_lossy(&list.stdout).lines() {
+        let Some((name, slot)) = line.split_once('\t') else {
+            continue;
+        };
+        let drive = local_session_drive(name);
+        let drive_exists = drive.as_deref().is_some_and(path_present);
+        if !is_stale_local_rt_session(name, drive.as_deref(), drive_exists, &roots) {
+            continue;
+        }
+        eprintln!("killing stale local acceptance session {name} (drive gone)");
+        let _ = local_tmux(&["kill-session", "-t", &format!("={name}")]);
+        let slot = Path::new(slot);
+        if strictly_under_any(slot, &roots)
+            && let Some(dir) = local_memory_link(slot).parent()
+        {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+#[test]
+fn stale_local_rt_session_selection() {
+    let roots = vec![PathBuf::from("/tmp/T")];
+    let gone = Some(Path::new("/tmp/T/.tmpX/workspace/drive/local-rt-kill-ab12"));
+    let stale = |name: &str, drive: Option<&Path>, exists: bool| {
+        is_stale_local_rt_session(name, drive, exists, &roots)
+    };
+    assert!(stale("ur-local-rt-kill-ab12", gone, false));
+    // Each condition alone spares the session.
+    assert!(
+        !stale("ur-local-rt-kill-ab12", gone, true),
+        "live run's drive"
+    );
+    assert!(
+        !stale("ur-poolproj-man-0-ab12", gone, false),
+        "not this scenario's"
+    );
+    assert!(!stale("ur-scratch", None, false), "hand-made, no UR_DRIVE");
+    assert!(!stale("ur-local-rt-kill-ab12", None, false), "no UR_DRIVE");
+    assert!(
+        !stale(
+            "ur-local-rt-kill-ab12",
+            Some(Path::new(
+                "/Users/me/.ur/workspace/drive/local-rt-kill-ab12"
+            )),
+            false
+        ),
+        "real ur instance's drive"
+    );
+    assert!(
+        !stale("ur-local-rt-kill-ab12", Some(Path::new("/tmp/T")), false),
+        "the temp root itself"
+    );
+    assert!(
+        !stale(
+            "ur-local-rt-kill-ab12",
+            Some(Path::new("/tmp/Tx/drive/a")),
+            false
+        ),
+        "a sibling that only shares a string prefix"
+    );
+}
+
+/// Failure cleanup: stop every worker this scenario launched, then kill only
+/// their own `ur-<id>` sessions and remove their drives.
+fn cleanup_local_launches(env: &TestEnv, launches: &LocalLaunches) {
+    for process_id in &launches.process_ids {
+        let _ = run_cmd(&env.ur, &["worker", "stop", process_id], &env.env());
+    }
+    for (full, _) in &launches.workers {
+        let _ = local_tmux(&["kill-session", "-t", &local_session_target(full)]);
+        let _ = std::fs::remove_dir_all(local_drive(env, full));
+    }
+}
+
+/// Local runtime anchor (`--runtime local`, a pool project with a mount and a
+/// `memory_dir`): the agent runs on the host in tmux session `ur-<id>` on the
+/// `ur` socket, with no container. No model turn is driven.
+///
+/// 1. launch → listed with `runtime: "local"`, session alive, drive holds the
+///    mount link and `.ur/{settings.json,instructions.md,plugin}`, the slot's
+///    memory link points at the fixture `memory_dir`;
+/// 2. `ur worker stop` → session, drive and memory link gone; fixture dirs and
+///    their contents intact; no longer listed;
+/// 3. a second launch, then an external `kill-session` → within
+///    `LOCAL_EXIT_TIMEOUT` the worker is stopped and its drive removed.
+fn scenario_local_runtime(env: &TestEnv) {
+    sweep_stale_local_rt_sessions();
+    let mut launches = LocalLaunches::default();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let first = &format!("{LOCAL_RT_TICKET_PREFIX}stop");
+        let (full, slot) = launch_local_worker(env, first, &mut launches);
+        assert_local_drive_built(env, &full, &slot);
+        stop_worker(env, first);
+        assert_local_torn_down(env, first, &full, &slot);
+
+        let second = &format!("{LOCAL_RT_TICKET_PREFIX}kill");
+        let (full, slot) = launch_local_worker(env, second, &mut launches);
+        let kill = local_tmux(&["kill-session", "-t", &local_session_target(&full)]);
+        assert_exec_success(&kill, "external tmux kill-session");
+        wait_for_local_exit_teardown(env, second, &full);
+        assert_local_torn_down(env, second, &full, &slot);
+    }));
+    if result.is_err() {
+        cleanup_local_launches(env, &launches);
+    }
+    for (_, slot) in &launches.workers {
+        remove_local_agent_project_dir(env, slot);
+    }
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
     }
 }

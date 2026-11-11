@@ -56,15 +56,21 @@ impl StartupHooksManager {
 
     /// Run synchronous hooks in order, then detach each background hook.
     pub async fn run(&self) -> Result<Vec<SpawnedHook>> {
-        for hook in self.resolve(HookKind::Sync)? {
-            self.run_sync_hook(&hook).await?;
-        }
+        self.run_sync().await?;
 
         let mut spawned = Vec::new();
         for hook in self.resolve(HookKind::Background)? {
             spawned.push(self.spawn_background_hook(&hook)?);
         }
         Ok(spawned)
+    }
+
+    /// Run only the synchronous hooks, in order, stopping at the first failure.
+    pub async fn run_sync(&self) -> Result<()> {
+        for hook in self.resolve(HookKind::Sync)? {
+            self.run_sync_hook(&hook).await?;
+        }
+        Ok(())
     }
 
     fn collect_layer(&self, directory: &Path, hooks: &mut BTreeMap<String, PathBuf>) -> Result<()> {

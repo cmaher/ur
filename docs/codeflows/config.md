@@ -22,7 +22,7 @@ Loaded by `Config::load()` / `Config::load_from()` in `crates/ur_config/src/lib.
 
 ## `[skills]` Section
 
-Host-side skills injected into worker containers at runtime. Skills are bind-mounted read-only into the agent-neutral `/home/worker/.agent-shared/potential-skills/<name>/` pool alongside skills baked into the container image.
+Host-side skills injected into workers at runtime. For containers, skills are bind-mounted read-only into the agent-neutral `/home/worker/.agent-shared/potential-skills/<name>/` pool alongside skills baked into the container image. For local workers the merged map is sent as `LaunchLocalWorkerRequest.host_skills` and builderd installs each from its host path, shadowing a same-named skill from `$UR_CONFIG/agent-shared` (see [local-workers.md](local-workers.md#skills-settings-and-instructions)).
 
 Three sub-tables are supported:
 
@@ -234,13 +234,14 @@ Validation (`crates/server/src/launch_runtime.rs`) runs right after mode resolut
 slot acquisition, filesystem, or container work. A resolved `local` is rejected with
 `FailedPrecondition` when the agent's `supports_local_runtime()` is false (Claude only), the
 project is `local = true`, or the launch has no pool slot (`-w` workspace launch or no project).
-A launch that passes those checks is still rejected (`local runtime launch is not available
-yet`) until the local launch path exists — it never falls back to a container.
+A launch that passes runs through `WorkerManager::run_and_record_local` and never falls back to a
+container; a container launch's credential gate (`check_credentials_seeded`) is skipped for
+`local`. See [local-workers.md](local-workers.md).
 
 The resolved runtime is stored on the `workflow_db` `worker.runtime` column (default
 `container`) and returned as `runtime` on `WorkerSummary` / `WorkerInfoResponse`.
 `WorkerdAddressResolver` (`crates/server/src/workerd_address.rs`) reads it to reach a worker's
-daemon: container → `http://<worker_prefix><process_id>:WORKERD_GRPC_PORT`; local → builderd's
+daemon: container → `http://<worker_prefix><worker_id>:WORKERD_GRPC_PORT`; local → builderd's
 address with `ur-worker-id: <worker_id>` metadata on every call.
 
 ## `[worker_models]` Section

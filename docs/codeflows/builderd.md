@@ -76,11 +76,10 @@ cloning, resetting, and cleaning on the host filesystem.
 | `RecycleSlot` | Fetch + reset an existing slot (reclone on failure) | `crates/builderd/src/pool_handler.rs` |
 | `PrepareSharedSlot` | Clone or refresh the shared (read-only) slot | `crates/builderd/src/pool_handler.rs` |
 | `CheckoutBranch` | Create a worker-specific branch in a slot | `crates/builderd/src/pool_handler.rs` |
-| `CleanSlot` | Fetch + reset a slot (without local overlay) before reuse | `crates/builderd/src/pool_handler.rs` |
 
 `PrepareNewSlot` and `RecycleSlot` both apply local overlay files from
 `<config_dir>/projects/<project>/local/` after each git operation.
-`CleanSlot` does not apply local overlays — it only resets to clean state.
+Releasing a slot is DB-only (unlink); the next acquire's `RecycleSlot` resets it.
 
 Pool slots live at `<workspace>/pool/<project-key>/<slot-name>/`.
 The `shared` slot is a special non-numeric slot for read-only multi-worker mounts.
@@ -103,14 +102,32 @@ access to the Docker socket — the server container does not.
 
 | RPC | When Used | Handler |
 |---|---|---|
-| `LaunchWorker` | `WorkerManager::run_and_record()` — launch a new worker container | `crates/builderd/src/container_handler.rs` |
-| `StopWorker` | `WorkerManager::stop()` — stop and remove a container by ID | `crates/builderd/src/container_handler.rs` |
+| `LaunchWorker` | `WorkerManager::run_and_record()` — launch a new worker container (requires `worker_id`) | `crates/builderd/src/container_handler.rs` |
+| `StopWorker` | `WorkerManager::stop_by_worker_id()`, the reconciler — stop and remove every container labeled with a worker id (the Stop barrier) | `crates/builderd/src/container_handler.rs` |
+| `ListWorkerContainers` | `WorkerReconcileManager` — every container of this instance, by worker id, with whether it runs | `crates/builderd/src/container_handler.rs` |
 | `ExecContainer` | `SquidManager::signal_reconfigure()` — one-shot exec (`squid -k reconfigure`) | `crates/builderd/src/container_handler.rs` |
 | `InspectNetwork` | `NetworkManager::ensure()` — check whether a Docker network exists before creating it | `crates/builderd/src/container_handler.rs` |
 
 `LaunchWorker` stats every volume host path before calling `docker run` and returns
 `FailedPrecondition` if any source is missing. This resolves the namespace-mismatch
 problem: the server container cannot reliably validate host paths, but builderd can.
+
+**Identity (ur-ezhdb).** A worker container is named `<worker_prefix><worker_id>` (the server
+derives the name: `NetworkConfig::worker_container_name`; it is also the container's Docker DNS
+name) and labeled `ur.worker_id=<worker_id>` and `ur.instance=<builderd's workspace path>`.
+Worker ids are unique per launch, so a name is never reused. builderd finds containers only by
+these labels: `StopWorker(worker_id)` removes every container labeled with the id in this
+instance, and `ListWorkerContainers` reports this instance's labeled containers. Another ur
+instance's containers (a different `ur.instance`) are never listed or stopped. Callers never
+pass a container name or Docker ID, except the upgrade-only `legacy_container_id` below.
+
+**Upgrade.** A container launched before ur-ezhdb has a process-id name and no labels. It is
+never listed. Its row recorded a Docker ID (or, before finalize, the process-id name) instead of
+the worker-id name, which marks it as legacy (`ur_server::worker::legacy_container_id`). Its stop
+passes that recorded value as `StopWorkerRequest.legacy_container_id`, and builderd stops it only
+if the container's `UR_WORKER_ID` env names the stopped worker. The reconciler leaves a legacy
+`running` row alone (it cannot be observed), so such a container runs until it is stopped
+through its row.
 
 ### Client in the Server
 
@@ -119,6 +136,152 @@ clone-able wrapper used by the server. It connects to builderd via the same
 `UR_BUILDERD_ADDR` used by `BuilderdClient`.
 
 Proto: `proto/builder_container.proto` (`ur.builder_container` package).
+
+## BuilderLocalWorkerService and the routed WorkerDaemonService
+
+Builderd also hosts host-local workers (`runtime = "local"`): the agent runs natively in a
+pool slot inside a tmux session `ur-<id>` on builderd's dedicated socket
+(`tmux -L ur`, `ur_config::LOCAL_TMUX_SOCKET`), and builderd serves each worker's
+`WorkerDaemonServiceImpl` (workerd lib) in-process.
+
+| RPC | Purpose | Handler |
+|---|---|---|
+| `LaunchLocalWorker` | Build the drive, run startup hooks, start the session and agent | `crates/builderd/src/local_worker_handler.rs` |
+| `StopLocalWorker` | Teardown; unknown/already-stopped ids succeed | `crates/builderd/src/local_worker_handler.rs` |
+| `ListLocalWorkers` | Registered ids with tmux session liveness | `crates/builderd/src/local_worker_handler.rs` |
+
+`LocalWorkerManager::launch` (`crates/builderd/src/local_worker.rs`):
+
+```
+InvalidArgument if the id contains '.' or ':' (tmux would rename the session) or the
+    request env lacks UR_SERVER_ADDR / UR_WORKER_SECRET
+  → AlreadyExists if the id is registered or its session exists (live worker untouched)
+  → LocalWorkspaceManager.build: agent check (supports_local_runtime, else FailedPrecondition
+    before any fs work), then drive, memory link, .ur/ customization; self-cleans
+  → sync startup hooks in the slot (failure → FailedPrecondition with hook stderr)
+  → tmux -L ur new-session -d -s ur-<id> -c <slot> -e <env…>
+  → background startup hooks in window :bg (new-window -c <slot>)
+  → LocalWorkerRegistry insert + exit watcher   (before the agent: SessionStart calls NotifyIdle)
+  → agent argv typed into window 0
+any failure after build → teardown → error
+```
+
+Session env: the request env (the server supplies `UR_WORKER_SECRET`,
+`UR_SERVER_ADDR=127.0.0.1:<worker_port>`, `UR_PROJECT`, `UR_WORKER_FORGE`) followed by
+builderd's own `UR_WORKER_ID`, `UR_WORKERD_ADDR`, `UR_AGENT_TYPE`, `UR_DRIVE`,
+`UR_RUNTIME=local` and (when set) `UR_WORKER_INSTRUCTION_STRATEGY`, which the request cannot
+override. Adoption reads them back. The drive's `.ur/owner` records the agent and slot path;
+teardown removes the slot memory symlink, and an orphan drive whose slot a registered worker
+uses keeps the link. builderd derives `UR_WORKERD_ADDR`
+from its own listen address (an unspecified bind maps to `127.0.0.1`), because on Linux it
+binds the Docker bridge IP, which the server cannot know.
+
+Skills: each requested skill is installed from its `host_skills` entry (the server's host
+`[skills]` paths) when present, else `<agent_shared>/potential-skills/<name>` — host shadows
+baked, as in containers. The drive's `.ur/skill-sources/potential-skills/` holds one link per
+skill to its resolved source, and `check_assets` checks the same resolution.
+
+### Server side
+
+`WorkerManager::run_and_record` branches on `WorkerConfig.runtime`; the local path lives in
+`crates/server/src/local_launch.rs` (`build_local_launch_request`). A pool launch's
+`provisioning` row and slot link were inserted when the slot was claimed (see
+`pool-git-builder-flow.md#slot-claim-ur-j5puq`); `record_provisioning_worker` fills in the
+session name `ur-<id>` (container: the container name `<worker_prefix><worker_id>`) and the
+secret → Launch (never retried automatically: `ur_rpc::retry::NEVER_RETRIED`) → finalize
+(`WorkerManager::finish_launch`: `provisioning → running`, compare-and-set). If Launch fails,
+or finalize changes no row (a stop landed mid-launch), the worker is stopped like any other
+(`WorkerManager::abandon_launch` → `stop_by_worker_id`; both runtimes), leaving a `stopped`
+row, or `stopping` (still holding the slot) if builderd's Stop fails; the launch returns the
+error ("stopped during launch" for the second case). A stop before the launch recorded its row
+also returns "stopped during launch". No Docker network, Squid env, image or credential gate.
+Mounts, memory/brain dirs, instruction file and host skills are host paths (templates resolve
+against the host config dir).
+
+Stop (`stop_by_worker_id`, both runtimes): `begin_stopping` (active → `stopping`), builderd
+Stop (`StopLocalWorker`; container: `StopWorker` with the worker id), then `finish_stop`
+(`stopping → stopped` + delete this worker's own link; a no-op for an already `stopped` row)
+only on Ok. On failure the row stays `stopping`. Release never touches slot contents; the next
+owner's `RecycleSlot` resets them. Client: `BuilderLocalWorkerClient`
+(`crates/server/src/builder_local_worker_client.rs`).
+
+### Stop is a barrier (ur-j5puq)
+
+builderd orders Launch and Stop per worker id (`barrier.rs`, `WorkerBarrier`), in both
+`LocalWorkerManager` and the container service (`LaunchWorker`/`StopWorker` carry `worker_id`).
+Stop first records an in-memory tombstone for the id, then takes the id's lock, waiting for any
+in-flight launch, then tears down (local: including a drive an unregistered id left; container:
+every container labeled with the id, so a failed launch that left its container running is
+still found). A launch takes the lock and is refused
+with `FailedPrecondition` if the id is tombstoned. Launches run on their own task, so a cancelled
+RPC cannot abandon one halfway. Contract: Stop(id) returning Ok means the id is not running in
+this builderd and never will be. Tombstones expire after an hour (`TOMBSTONE_TTL`) and do not
+survive a builderd restart. Launch RPCs are never resent, but a Launch first sent after its
+worker's Stop reached the previous builderd process still runs in the new one. The server
+converges it: that launch's finalize changes no row, so it Stops the worker. The slot is never
+free meanwhile: a stop that began while the worker's own Launch RPC was unresolved
+(`worker.launch_pending`, migration 006, returned by `begin_stopping`) marks it `stopping` and
+sends Stop but never finishes; the slot stays linked. Once the Launch resolves the launch path
+clears the marker and stops the worker; if that Stop fails, the reconciler finishes with a later
+one. `StopWorker` requires `worker_id`.
+
+### Termination paths and reconciliation (ur-j5puq)
+
+Invariant (builderd): after startup, for sessions whose `UR_DRIVE` is under this builderd's
+workspace (`<workspace>/drive/`), a `ur-<id>` session exists only while `<id>` is registered,
+so `ListLocalWorkers` never omits one of its live sessions. Every ur instance on the host
+shares the `ur` socket; a session is ours only if its `UR_DRIVE` is set and under our drive
+root (`owns_session`). Any other `ur-*` session (another instance's, or one made by hand with
+no `UR_DRIVE`) is never adopted, killed or listed. Wrongly releasing a live worker's slot would
+let the next worker reset it and destroy uncommitted work, so the server releases a local slot only after
+`StopLocalWorker` succeeded (also when builderd no longer lists the id).
+
+Teardown order and every termination path (agent exit, external kill, stop, failed launch,
+builderd restart, server restart, periodic reconcile, `ur stop`) are in
+[local-workers.md](local-workers.md#teardown).
+
+**Adoption** (`LocalWorkerManager::adopt_existing`, in `main.rs` before `serve`): each
+`ur-<id>` session is re-registered from its env (`UR_WORKER_ID` must match, `UR_SERVER_ADDR`,
+`UR_WORKER_SECRET`, a local-capable `UR_AGENT_TYPE`, `UR_DRIVE` = `drive/<id>`) and start dir
+(`#{session_path}` = slot), with a new exit watcher. A session whose `UR_DRIVE` is missing or
+outside this builderd's drive root is not ours and is skipped. One of ours with unusable env is
+killed (a failed kill aborts startup); a tmux error reading a live session aborts startup (a
+session that ended meanwhile is skipped). Then every `drive/<id>` without a registered worker
+gets `teardown_orphan` (links only). Listing failure aborts startup; no tmux installed means no
+sessions. Orphan drive failures are logged only (known limit: drives hold only links; the next
+startup retries).
+
+**Reconcile pass** (`crates/server/src/worker_reconcile.rs`): read the active rows, then one
+list per runtime (`ListLocalWorkers`, `ListWorkerContainers`). One table for both runtimes:
+
+| DB row | builderd list | Action |
+|---|---|---|
+| `running` | listed alive | none |
+| `running` | absent or dead | stop path (`stop_by_worker_id`) |
+| `stopping` | any | stop path (retry) |
+| `provisioning` | any | periodic: none · startup: → `stopping` |
+| no active row (none / `stopped`) | listed | builderd Stop(worker_id) (row re-read first) |
+| — | list failed | no change for that runtime this pass |
+
+A legacy container `running` row (pre-ur-ezhdb, never listed) is left alone. Stale-row cleanup
+(`cleanup_stale_workers`, after startup) can delete a `stopped` row, but never hides a live
+container: the sweep keys on labels, not rows. Known limit: a local `provisioning` row written
+by a pre-ur-j5puq build has no slot link (that build linked at finalize), so its slot is free
+while startup's stop converges it.
+
+Known limits (ur-ezhdb): see [the plan's Upgrade section](../plans/ur-ezhdb-lifecycle.md#upgrade)
+(`--workspace` change, upgrade strays, builderd dying inside `docker run -d`, legacy `running`
+rows).
+
+The routed `WorkerDaemonService` (`crates/builderd/src/workerd_router.rs`, `WorkerdRouter`)
+reads the `ur-worker-id` header (`ur_config::WORKER_ID_HEADER`) and delegates to that
+worker's daemon: missing header → `InvalidArgument`, unknown id → `NotFound`. It adds no auth;
+builderd is unauthenticated and already exposes `Exec`.
+
+Agent assets come from `--agent-shared` (default `$UR_CONFIG/agent-shared`), which
+`scripts/build/install.sh` fills in the same order as `containers/worker-base/Dockerfile`.
+
+Proto: `proto/builder_local_worker.proto` (`ur.builder_local_worker` package).
 
 ## Client Paths
 
@@ -133,14 +296,14 @@ Builderd has three clients in the server, serving different use cases:
 
 ### 2. BuilderPoolClient (server-internal → builderd)
 
-- **Purpose**: Pool slot lifecycle (clone, fetch/reset, clean, branch checkout)
-- **Client**: Shared `BuilderPoolClient` wrapper with six typed async methods, one per RPC
+- **Purpose**: Pool slot lifecycle (clone, fetch/reset, branch checkout)
+- **Client**: Shared `BuilderPoolClient` wrapper with five typed async methods, one per RPC
 - **Used by**: `RepoPoolManager` in `crates/server/src/pool.rs`
 - **File**: `crates/server/src/builder_pool_client.rs`
 
 ### 3. BuilderContainerClient (server-internal → builderd)
 
-- **Purpose**: Worker container lifecycle (launch, stop, exec, network inspect)
+- **Purpose**: Worker container lifecycle (launch, stop, list, exec, network inspect)
 - **Client**: Shared `BuilderContainerClient` wrapper, one method per RPC
 - **File**: `crates/server/src/builder_container_client.rs`
 
@@ -174,7 +337,8 @@ message BuilderExecRequest {
 ```protobuf
 service BuilderContainerService {
   rpc LaunchWorker(LaunchWorkerRequest) returns (LaunchWorkerResponse);
-  rpc StopWorker(StopWorkerRequest) returns (StopWorkerResponse);
+  rpc StopWorker(StopWorkerRequest) returns (StopWorkerResponse);       // by worker_id
+  rpc ListWorkerContainers(ListWorkerContainersRequest) returns (ListWorkerContainersResponse);
   rpc ExecContainer(ExecContainerRequest) returns (ExecContainerResponse);
   rpc InspectNetwork(InspectNetworkRequest) returns (InspectNetworkResponse);
 }
@@ -189,7 +353,16 @@ service BuilderPoolService {
   rpc RecycleSlot(RecycleSlotRequest) returns (RecycleSlotResponse);
   rpc PrepareSharedSlot(PrepareSharedSlotRequest) returns (PrepareSharedSlotResponse);
   rpc CheckoutBranch(CheckoutBranchRequest) returns (CheckoutBranchResponse);
-  rpc CleanSlot(CleanSlotRequest) returns (CleanSlotResponse);
+}
+```
+
+### BuilderLocalWorkerService (`proto/builder_local_worker.proto`, package `ur.builder_local_worker`)
+
+```protobuf
+service BuilderLocalWorkerService {
+  rpc LaunchLocalWorker(LaunchLocalWorkerRequest) returns (LaunchLocalWorkerResponse);
+  rpc StopLocalWorker(StopLocalWorkerRequest) returns (StopLocalWorkerResponse);
+  rpc ListLocalWorkers(ListLocalWorkersRequest) returns (ListLocalWorkersResponse);
 }
 ```
 
@@ -204,10 +377,13 @@ ur-server container
 
 ## Key Files
 
-- `crates/builderd/src/main.rs` — CLI, gRPC server setup (all three services)
+- `crates/builderd/src/main.rs` — CLI, gRPC server setup (all five services)
 - `crates/builderd/src/handler.rs` — BuilderDaemonHandler, %WORKSPACE% resolution
-- `crates/builderd/src/container_handler.rs` — BuilderContainerHandler (launch/stop/exec/network)
+- `crates/builderd/src/container_handler.rs` — BuilderContainerHandler (launch/stop/list/exec/network; labels)
 - `crates/builderd/src/pool_handler.rs` — BuilderPoolHandler (clone/reset/clean/checkout slots)
+- `crates/builderd/src/local_worker.rs` — LocalWorkerManager, LocalWorkerRegistry (local worker lifecycle)
+- `crates/builderd/src/local_worker_handler.rs` — BuilderLocalWorkerHandler
+- `crates/builderd/src/workerd_router.rs` — WorkerdRouter (routed WorkerDaemonService)
 - `crates/server/src/builderd_client.rs` — Shared BuilderdClient (worker hostexec helper)
 - `crates/server/src/builder_container_client.rs` — Shared BuilderContainerClient (container ops)
 - `crates/server/src/builder_pool_client.rs` — Shared BuilderPoolClient (pool slot ops)
@@ -216,4 +392,5 @@ ur-server container
 - `proto/builder.proto` — BuilderDaemonService proto
 - `proto/builder_container.proto` — BuilderContainerService proto
 - `proto/builder_pool.proto` — BuilderPoolService proto
+- `proto/builder_local_worker.proto` — BuilderLocalWorkerService proto
 - `crates/ur/src/builderd.rs` — Host lifecycle (start/stop)

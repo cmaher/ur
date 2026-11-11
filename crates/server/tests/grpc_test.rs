@@ -143,7 +143,6 @@ async fn make_grpc_handler(
         workspace.join("logs"),
         workspace.join("logs"),
         workspace.join("logs"),
-        repo_pool_manager.clone(),
         network_manager,
         network_config.clone(),
         ur_config::DEFAULT_SERVER_PORT + 1,
@@ -151,6 +150,9 @@ async fn make_grpc_handler(
         worker_repo.clone(),
         ur_config::GlobalSkillsConfig::default(),
         builder_container_client,
+        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
+            tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+        ),
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager: worker_manager.clone(),
@@ -279,7 +281,6 @@ async fn make_worker_handler() -> (
         workspace.join("logs"),
         workspace.join("logs"),
         workspace.join("logs"),
-        repo_pool_manager.clone(),
         network_manager,
         network_config.clone(),
         ur_config::DEFAULT_SERVER_PORT + 1,
@@ -287,6 +288,9 @@ async fn make_worker_handler() -> (
         worker_repo.clone(),
         ur_config::GlobalSkillsConfig::default(),
         builder_container_client,
+        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
+            tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+        ),
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager,
@@ -445,35 +449,69 @@ async fn link_comment_ticket_missing_gh_repo_returns_not_found() {
     assert!(err.message().contains("gh_repo"));
 }
 
-/// A Local worker row comes back as `runtime: "local"` from both the list and
-/// info RPCs.
+/// A worker row for `process_id`, created at `created_at`.
+fn worker_row(
+    worker_id: &str,
+    process_id: &str,
+    created_at: &str,
+    agent_status: &str,
+    runtime: workflow_db::model::WorkerRuntime,
+) -> workflow_db::model::Worker {
+    workflow_db::model::Worker {
+        worker_id: worker_id.into(),
+        process_id: process_id.into(),
+        project_key: String::new(),
+        container_id: "cid".into(),
+        worker_secret: "secret".into(),
+        strategy: "code".into(),
+        agent_type: ur_rpc::agent::CLAUDE.into(),
+        container_status: "running".into(),
+        agent_status: agent_status.into(),
+        workspace_path: Some(format!("/ws/{worker_id}")),
+        created_at: created_at.into(),
+        updated_at: created_at.into(),
+        idle_redispatch_count: 0,
+        brain_path: None,
+        runtime,
+    }
+}
+
+async fn worker_info_for(
+    handler: &ur_server::grpc::CoreServiceHandler,
+    id: &str,
+) -> ur_rpc::proto::core::WorkerInfoResponse {
+    use ur_rpc::proto::core::core_service_server::CoreService;
+    handler
+        .worker_info(tonic::Request::new(
+            ur_rpc::proto::core::WorkerInfoRequest {
+                worker_id: id.into(),
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+}
+
+/// A Local worker row comes back as `runtime: "local"` from the list RPC and
+/// from the info RPC, whether it is asked by process id (as the CLI does) or
+/// by full worker id.
 #[tokio::test]
 async fn worker_list_and_info_return_local_runtime() {
+    use ur_rpc::proto::core::WorkerListRequest;
     use ur_rpc::proto::core::core_service_server::CoreService;
-    use ur_rpc::proto::core::{WorkerInfoRequest, WorkerListRequest};
 
     let dir = tempfile::tempdir().unwrap();
     let (handler, _test_db) = make_grpc_handler(dir.path()).await;
     let now = chrono::Utc::now().to_rfc3339();
     handler
         .worker_repo
-        .insert_worker(&workflow_db::model::Worker {
-            worker_id: "local-w1".into(),
-            process_id: "local-w1".into(),
-            project_key: String::new(),
-            container_id: "cid".into(),
-            worker_secret: "secret".into(),
-            strategy: "code".into(),
-            agent_type: ur_rpc::agent::CLAUDE.into(),
-            container_status: "running".into(),
-            agent_status: "idle".into(),
-            workspace_path: None,
-            created_at: now.clone(),
-            updated_at: now,
-            idle_redispatch_count: 0,
-            brain_path: None,
-            runtime: workflow_db::model::WorkerRuntime::Local,
-        })
+        .insert_worker(&worker_row(
+            "local-w1-abcd",
+            "local-w1",
+            &now,
+            "idle",
+            workflow_db::model::WorkerRuntime::Local,
+        ))
         .await
         .unwrap();
 
@@ -489,12 +527,44 @@ async fn worker_list_and_info_return_local_runtime() {
         .expect("worker listed");
     assert_eq!(summary.runtime, ur_rpc::runtime::LOCAL);
 
-    let info = handler
-        .worker_info(tonic::Request::new(WorkerInfoRequest {
-            worker_id: "local-w1".into(),
-        }))
-        .await
-        .unwrap()
-        .into_inner();
+    for id in ["local-w1", "local-w1-abcd"] {
+        let info = worker_info_for(&handler, id).await;
+        assert_eq!(info.runtime, ur_rpc::runtime::LOCAL, "by {id}");
+        assert_eq!(info.agent_status, "idle", "by {id}");
+        assert_eq!(info.workspace_dir, "/ws/local-w1-abcd", "by {id}");
+    }
+}
+
+/// A process id names a slot every worker that occupied it shares, so the
+/// info RPC answers for the newest active row, not a stale older one.
+#[tokio::test]
+async fn worker_info_by_process_id_prefers_newest_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let (handler, _test_db) = make_grpc_handler(dir.path()).await;
+    let older = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let newer = chrono::Utc::now().to_rfc3339();
+    // Insert the newer row first so insertion order cannot stand in for age.
+    for row in [
+        worker_row(
+            "w1-neww",
+            "w1",
+            &newer,
+            "working",
+            workflow_db::model::WorkerRuntime::Local,
+        ),
+        worker_row(
+            "w1-oldd",
+            "w1",
+            &older,
+            "idle",
+            workflow_db::model::WorkerRuntime::Container,
+        ),
+    ] {
+        handler.worker_repo.insert_worker(&row).await.unwrap();
+    }
+
+    let info = worker_info_for(&handler, "w1").await;
+    assert_eq!(info.agent_status, "working");
     assert_eq!(info.runtime, ur_rpc::runtime::LOCAL);
+    assert_eq!(info.workspace_dir, "/ws/w1-neww");
 }

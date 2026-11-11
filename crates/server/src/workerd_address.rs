@@ -9,7 +9,8 @@ use crate::WorkerdClient;
 /// Resolves a worker row to the address (and routing metadata) of its daemon.
 ///
 /// - `container`: the worker container's own `workerd`, via Docker DNS —
-///   `http://<worker_prefix><process_id>:WORKERD_GRPC_PORT`.
+///   `http://<worker_prefix><worker_id>:WORKERD_GRPC_PORT` (a container from
+///   before ur-ezhdb keeps its `<worker_prefix><process_id>` name).
 /// - `local`: builderd hosts every local worker's daemon on its own port, so
 ///   the client dials `builderd_addr` and sends `ur-worker-id` on every call.
 ///
@@ -31,12 +32,14 @@ impl WorkerdAddressResolver {
     /// The gRPC address of `worker`'s daemon.
     pub fn address_for(&self, worker: &Worker) -> String {
         match worker.runtime {
-            WorkerRuntime::Container => format!(
-                "http://{}{}:{}",
-                self.worker_prefix,
-                worker.process_id,
-                ur_config::WORKERD_GRPC_PORT
-            ),
+            WorkerRuntime::Container => {
+                // Pre-ur-ezhdb containers kept their process-id name.
+                let name = match crate::worker::legacy_container_id(&self.worker_prefix, worker) {
+                    Some(_) => format!("{}{}", self.worker_prefix, worker.process_id),
+                    None => format!("{}{}", self.worker_prefix, worker.worker_id),
+                };
+                format!("http://{name}:{}", ur_config::WORKERD_GRPC_PORT)
+            }
             WorkerRuntime::Local => self.builderd_addr.clone(),
         }
     }
@@ -73,7 +76,7 @@ mod tests {
             worker_id: "ur-abc12-x1y2".into(),
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
-            container_id: "cid".into(),
+            container_id: format!("{}ur-abc12-x1y2", ur_config::DEFAULT_WORKER_PREFIX),
             worker_secret: "secret".into(),
             strategy: "code".into(),
             agent_type: "claude".into(),
@@ -95,11 +98,26 @@ mod tests {
         )
     }
 
+    /// The container's Docker DNS name derives from the worker id; a
+    /// container from before ur-ezhdb (its row recorded a Docker ID) keeps
+    /// its process-id name.
     #[tokio::test]
     async fn container_worker_dials_its_container_without_routing_header() {
         let w = worker(WorkerRuntime::Container);
         assert_eq!(
             resolver().address_for(&w),
+            format!(
+                "http://{}ur-abc12-x1y2:{}",
+                ur_config::DEFAULT_WORKER_PREFIX,
+                ur_config::WORKERD_GRPC_PORT
+            )
+        );
+        let legacy = Worker {
+            container_id: "0123abcd".into(),
+            ..worker(WorkerRuntime::Container)
+        };
+        assert_eq!(
+            resolver().address_for(&legacy),
             format!(
                 "http://{}ur-abc12:{}",
                 ur_config::DEFAULT_WORKER_PREFIX,

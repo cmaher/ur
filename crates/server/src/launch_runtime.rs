@@ -49,10 +49,7 @@ pub fn local_runtime_rejection_reason(
 }
 
 /// Decide whether a launch with the resolved `runtime` may proceed.
-///
-/// Container launches always pass. A valid local launch is still refused by
-/// [`reject_local_runtime_launch_until_available`], because launching a local
-/// worker does not exist yet.
+/// Container launches always pass.
 pub fn validate_launch_runtime(
     runtime: WorkerRuntime,
     agent: AgentType,
@@ -62,21 +59,12 @@ pub fn validate_launch_runtime(
     match runtime {
         WorkerRuntime::Container => Ok(()),
         WorkerRuntime::Local => {
-            if let Some(reason) =
-                local_runtime_rejection_reason(agent, project_is_local, has_pool_slot)
-            {
-                return Err(CoreError::LocalRuntimeUnsupported { reason });
+            match local_runtime_rejection_reason(agent, project_is_local, has_pool_slot) {
+                Some(reason) => Err(CoreError::LocalRuntimeUnsupported { reason }),
+                None => Ok(()),
             }
-            reject_local_runtime_launch_until_available()
         }
     }
-}
-
-/// The single gate that keeps a valid `runtime = local` launch from falling
-/// through to the container path. Replaced when local launch is implemented
-/// (ur-y1f6n).
-fn reject_local_runtime_launch_until_available() -> Result<(), CoreError> {
-    Err(CoreError::LocalRuntimeLaunchUnavailable)
 }
 
 #[cfg(test)]
@@ -147,17 +135,9 @@ mod tests {
     }
 
     #[test]
-    fn valid_local_launch_is_not_available_yet() {
-        let (code, msg) = code_of(validate_launch_runtime(
-            WorkerRuntime::Local,
-            AgentType::Claude,
-            false,
-            true,
-        ));
-        assert_eq!(code, Code::FailedPrecondition);
+    fn valid_local_launch_passes() {
         assert!(
-            msg.contains("local runtime launch is not available yet"),
-            "{msg}"
+            validate_launch_runtime(WorkerRuntime::Local, AgentType::Claude, false, true).is_ok()
         );
     }
 }

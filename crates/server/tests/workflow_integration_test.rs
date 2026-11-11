@@ -240,18 +240,7 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
     let channel = tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
     let builder_container_client =
         ur_server::builder_container_client::BuilderContainerClient::new(channel.clone());
-    let builder_pool_client = ur_server::BuilderPoolClient::new(channel);
     let config = dummy_config();
-    let project_registry = ur_server::ProjectRegistry::new(
-        config.projects.clone(),
-        ur_server::hostexec::HostExecConfigManager::empty(),
-    );
-    let pool = ur_server::RepoPoolManager::new(
-        &config,
-        worker_repo.clone(),
-        project_registry,
-        builder_pool_client,
-    );
     let network_manager = ur_server::network_manager::NetworkManager::new(
         builder_container_client.clone(),
         "ur-workers".into(),
@@ -262,7 +251,6 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
         std::path::PathBuf::from("/tmp/test/logs"),
         std::path::PathBuf::from("/tmp/test/logs"),
         std::path::PathBuf::from("/tmp/test/logs"),
-        pool,
         network_manager,
         config.network.clone(),
         config.worker_port,
@@ -270,6 +258,9 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
         worker_repo,
         Default::default(),
         builder_container_client,
+        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
+            tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+        ),
     )
 }
 
@@ -387,7 +378,6 @@ fn dummy_launch_manager(
         std::path::PathBuf::from("/tmp/test/logs"),
         std::path::PathBuf::from("/tmp/test/logs"),
         std::path::PathBuf::from("/tmp/test/logs"),
-        pool.clone(),
         network_manager,
         config.network.clone(),
         config.worker_port,
@@ -395,6 +385,9 @@ fn dummy_launch_manager(
         worker_repo.clone(),
         Default::default(),
         builder_container_client,
+        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
+            tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+        ),
     );
     ur_server::grpc::LaunchManager {
         worker_manager,

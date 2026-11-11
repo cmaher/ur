@@ -17,6 +17,9 @@ ur start
 │   ├── Spawn: builderd --port <builderd_port> --workspace <workspace>
 │   ├── Detach into own process group (no Ctrl-C propagation)
 │   ├── Write PID file
+│   ├── Wait (≤30s) for the builderd port to accept TCP. builderd adopts surviving
+│   │   local workers before it listens and exits if it cannot; on exit or timeout
+│   │   the PID file is removed and the error names builderd.log* / builderd.err
 │   └── Release lock (drop)
 │
 └── compose.up()
@@ -36,9 +39,17 @@ ur start
 
 ```
 ur stop
-├── compose.down()
+├── server reachable: WorkerList → WorkerStop each running worker (parallel, warnings)
+│   server unreachable: kill worker containers by prefix
+├── compose.down() (skipped if the server is not running)
 │   ├── docker compose down
 │   └── Remove ~/.ur/docker-compose.yml
+│
+├── builderd running: ListLocalWorkers → StopLocalWorker each, directly from the host
+│   │   (covers every live local worker whatever its row says, including a launch the
+│   │   server finished while going down; rows converge at the next server start)
+│   └── list or stop failure → error, builderd stays up
+│   builderd not running: warn; surviving sessions are adopted on its next start
 │
 └── stop_builderd(config)
     ├── Read PID from ~/.ur/builderd.pid
@@ -51,7 +62,7 @@ ur stop
 | Service | Default Port | Config Field | Derivation |
 |---------|-------------|-------------|------------|
 | ur-server (gRPC) | 12321 | `server_port` | Explicit or default |
-| Worker gRPC | 12322 | `worker_port` | `server_port + 1` |
+| Worker gRPC | 12322 | `worker_port` | `server_port + 1` (published on host `127.0.0.1` for local workers) |
 | builderd (gRPC) | 12323 | `builderd_port` | `server_port + 2` |
 
 All ports derive from `server_port` when not explicitly set, ensuring test isolation

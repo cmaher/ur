@@ -1,0 +1,71 @@
+syntax = "proto3";
+package ur.builder_local_worker;
+
+// Host-local worker lifecycle: the agent runs natively in a pool slot inside a
+// tmux session on builderd's dedicated socket, and builderd hosts its
+// WorkerDaemonService (routed by the `ur-worker-id` header).
+service BuilderLocalWorkerService {
+  // Build the drive, run startup hooks, start the tmux session and the agent.
+  // Any failure tears everything down and returns the error.
+  rpc LaunchLocalWorker(LaunchLocalWorkerRequest) returns (LaunchLocalWorkerResponse);
+  // Tear a worker down. Unknown or already-stopped ids succeed.
+  rpc StopLocalWorker(StopLocalWorkerRequest) returns (StopLocalWorkerResponse);
+  rpc ListLocalWorkers(ListLocalWorkersRequest) returns (ListLocalWorkersResponse);
+}
+
+message EnvVar {
+  string key = 1;
+  string value = 2;
+}
+
+// A host `[skills]` entry: installed from `source` instead of the baked
+// `<agent_shared>/potential-skills/<name>`, which it shadows.
+message HostSkill {
+  string name = 1;
+  string source = 2;
+}
+
+message LocalMount {
+  string source = 1;
+  string dest = 2;
+  bool read_only = 3;
+}
+
+message LaunchLocalWorkerRequest {
+  string worker_id = 1;
+  string slot_path = 2;
+  string agent_type = 3;
+  string model = 4;
+  string effort = 5;
+  // Exported into the tmux session (UR_WORKER_SECRET, UR_SERVER_ADDR, ...).
+  // builderd sets UR_WORKERD_ADDR itself from its listen address.
+  repeated EnvVar env = 6;
+  repeated LocalMount mounts = 7;
+  string memory_dir = 8;
+  string brain_dir = 9;
+  repeated string skills = 10;
+  string instruction_strategy = 11;
+  string project_key = 12;
+  string project_instruction_path = 13;
+  bool allow_no_verify = 14;
+  repeated HostSkill host_skills = 15;
+}
+
+message LaunchLocalWorkerResponse {}
+
+message StopLocalWorkerRequest {
+  string worker_id = 1;
+}
+
+message StopLocalWorkerResponse {}
+
+message ListLocalWorkersRequest {}
+
+message ListLocalWorkersResponse {
+  repeated LocalWorkerStatus workers = 1;
+}
+
+message LocalWorkerStatus {
+  string worker_id = 1;
+  bool session_alive = 2;
+}

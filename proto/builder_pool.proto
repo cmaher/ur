@@ -16,9 +16,6 @@ service BuilderPoolService {
 
   // Checkout a branch in the given slot from the shared slot base.
   rpc CheckoutBranch(CheckoutBranchRequest) returns (CheckoutBranchResponse);
-
-  // Remove a slot directory and free its resources.
-  rpc CleanSlot(CleanSlotRequest) returns (CleanSlotResponse);
 }
 
 message ScanSlotsRequest {
@@ -66,10 +63,3 @@ message CheckoutBranchRequest {
 }
 
 message CheckoutBranchResponse {}
-
-message CleanSlotRequest {
-  string project_key = 1;
-  string slot_name = 2;
-}
-
-message CleanSlotResponse {}
