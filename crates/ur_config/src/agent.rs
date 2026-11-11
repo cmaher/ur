@@ -341,6 +341,18 @@ impl AgentType {
         }
     }
 
+    /// Transcript-dir path relative to `home_subdir()` for a session whose cwd is
+    /// `/workspace`, or `None` if the agent keeps no per-session transcript files.
+    ///
+    /// Claude Code writes `<session>.jsonl` here; [`Self::memory_subdir`] is its
+    /// `memory/` child, so a transcripts mount must come before the memory mount.
+    pub fn transcripts_subdir(&self) -> Option<&'static str> {
+        match self {
+            Self::Claude => Some("projects/-workspace"),
+            Self::Codex | Self::Agy => None,
+        }
+    }
+
     /// Host-side memory directory the agent uses for a session whose cwd is
     /// `cwd`, or `None` if the agent has no memory-dir concept.
     ///
@@ -795,6 +807,12 @@ mod tests {
         assert_eq!(AgentType::Codex.memory_subdir(), None);
         assert_eq!(AgentType::Agy.settings_filename(), Some("settings.json"));
         assert_eq!(AgentType::Agy.memory_subdir(), None);
+
+        let transcripts = AgentType::Claude.transcripts_subdir().unwrap();
+        let memory = AgentType::Claude.memory_subdir().unwrap();
+        assert_eq!(memory, format!("{transcripts}/memory"));
+        assert_eq!(AgentType::Codex.transcripts_subdir(), None);
+        assert_eq!(AgentType::Agy.transcripts_subdir(), None);
     }
 
     #[test]

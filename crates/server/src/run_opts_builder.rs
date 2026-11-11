@@ -169,6 +169,41 @@ impl RunOptsBuilder {
         Ok(self)
     }
 
+    /// Add the project transcripts directory mount, so the agent's session
+    /// transcripts outlive the container (`ur dream harvest` reads them on the host).
+    ///
+    /// - No-op when `transcripts_dir` is `None` or the agent has no
+    ///   [`AgentType::transcripts_subdir`].
+    /// - Like [`Self::add_memory_dir`], the host dir is created and chowned to
+    ///   [`ur_config::WORKER_UID`] through [`prepare_host_dir`].
+    /// - Mounts host path → `~/{agent.home_subdir()}/{agent.transcripts_subdir()}`
+    ///   (`/home/worker/.claude/projects/-workspace` for Claude). The memory dir is a
+    ///   child of that path, so call this before [`Self::add_memory_dir`]: the parent
+    ///   mount must come first.
+    pub fn add_transcripts_dir(
+        mut self,
+        transcripts_dir: &Option<String>,
+        host_config_dir: &Path,
+        agent: AgentType,
+    ) -> Result<Self, String> {
+        let (Some(template), Some(subdir)) =
+            (transcripts_dir.as_deref(), agent.transcripts_subdir())
+        else {
+            return Ok(self);
+        };
+        let host_path = prepare_host_dir(
+            template,
+            host_config_dir,
+            "transcripts_dir",
+            Some(ur_config::WORKER_UID),
+        )?;
+        let container_path = PathBuf::from(ur_config::WORKER_HOME)
+            .join(agent.home_subdir())
+            .join(subdir);
+        self.volumes.push((host_path, container_path));
+        Ok(self)
+    }
+
     /// Add project memory directory mount.
     ///
     /// - If `memory_dir` is `None`, or `agent.memory_subdir()` is `None` (the agent has
@@ -1214,6 +1249,56 @@ mod tests {
             "/home/worker/.agent-shared/potential-skills/gamma:ro"
         );
         assert!(req.env_vars.is_empty());
+    }
+
+    #[test]
+    fn add_transcripts_dir_none_or_agent_without_transcripts_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Some(tmp.path().join("t").display().to_string());
+        for (d, agent) in [(&None, AgentType::Claude), (&dir, AgentType::Codex)] {
+            let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+                .add_transcripts_dir(d, tmp.path(), agent)
+                .unwrap()
+                .build();
+            assert!(req.volumes.is_empty());
+        }
+        assert!(!tmp.path().join("t").exists());
+    }
+
+    /// Restricted to Linux for the same chown reason as the memory-dir test below.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn add_transcripts_dir_mounts_parent_before_memory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let transcripts = tmp.path().join("transcripts");
+        let memory = tmp.path().join("memory");
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_transcripts_dir(
+                &Some(transcripts.display().to_string()),
+                tmp.path(),
+                AgentType::Claude,
+            )
+            .unwrap()
+            .add_memory_dir(
+                &Some(memory.display().to_string()),
+                tmp.path(),
+                AgentType::Claude,
+            )
+            .unwrap()
+            .build();
+        assert!(transcripts.exists());
+        let dests: Vec<_> = req
+            .volumes
+            .iter()
+            .map(|v| v.container_path.as_str())
+            .collect();
+        assert_eq!(
+            dests,
+            vec![
+                "/home/worker/.claude/projects/-workspace",
+                "/home/worker/.claude/projects/-workspace/memory"
+            ]
+        );
     }
 
     #[test]

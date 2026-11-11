@@ -43,11 +43,21 @@ in a worker it is pinned). Run git from inside `<brain>` (`cd <brain>` first), n
      `—`, and commit-message search is not a discovery source for that repo.
    - Generated or vendored files in the brain (headers like "generated", "do not edit", dump
      files) → draft `off_limits`.
+   - Harvest sources (see "Harvest" in the schema). On the host, list `~/.claude/projects/` and
+     keep the directories whose name is the `-`-encoded path of a repo's local clone or of this
+     project's ur pool slots (`-…--ur-workspace-pool-<project>-*`); add
+     `<ur config>/projects/<project>/transcripts` (container workers) and the project's memory dir
+     (`memory_dir` in `ur.toml`, else `<ur config>/projects/<project>/memory`). Draft `since` as 30
+     days before today so the first runs don't digest months of history.
 3. **Ask the user**, one topic at a time, with your draft as the default:
    - For each ref kind: the patterns, the canonical `id`, the read-only check command (as argv),
      how to read the state from its output, and which states mean done and not done. Anything else
      is `unknown`.
    - Is discovery allowed, from which sources, and with what call budget?
+   - Should dream read agent transcripts and memory (`[harvest]`), from which directories, since
+     when? Say that dream writes what it learns from them into the brain. For container workers,
+     transcripts reach the host only once `<ur config>/projects/<project>/transcripts` exists:
+     offer to create it.
    - Quiet days, and how many durable docs to review per run (default 1, intervals 30 days to
      start, between 7 and 180).
    - Anything that must never be edited.
@@ -64,7 +74,7 @@ in a worker it is pinned). Run git from inside `<brain>` (`cd <brain>` first), n
    `git commit -m "brain:dream-init: configure dream"`. Use the user's normal git config; never
    push.
 8. **Report** what you wrote and suggest running `brain:dream` to see a first report. Don't fix
-   brain content or backfill frontmatter on existing streams here — `brain:dream` proposes both.
+   brain content or backfill frontmatter on existing streams here — `brain:dream` does both.
    Mention problems you noticed so the user knows to expect them.
 
 ## Red flags

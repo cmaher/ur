@@ -1,8 +1,8 @@
 //! `ur dream status`: where the last dream run stopped.
 //!
-//! Reads the newest report, looks for its apply commit (`brain:dream: apply <date>` on HEAD's
-//! history) and lists uncommitted paths. "No reports yet" is `report: null`, not an error; git
-//! failures and unreadable reports are errors.
+//! Reads the newest report, looks for its run commit (`brain:dream: <date>` on HEAD's history)
+//! and lists uncommitted paths. "No reports yet" is `report: null`, not an error; git failures
+//! and unreadable reports are errors.
 
 use std::path::Path;
 
@@ -20,14 +20,12 @@ pub struct ReportStatus {
     /// Brain-relative path of the newest report.
     pub path: String,
     pub date: String,
-    /// The report has an `Applied` section (apply mode reached step 3).
-    pub applied_section: bool,
-    /// Subject the apply commit has (or will have).
-    pub apply_subject: String,
+    /// Subject the run commit has (or will have).
+    pub run_subject: String,
     /// Hash of the newest commit on HEAD with exactly that subject; `None` if not committed.
-    pub apply_commit: Option<String>,
-    /// Items under `Not proposed (needs a human)`; empty when the section is missing or empty.
-    pub not_proposed: Vec<String>,
+    pub run_commit: Option<String>,
+    /// Items under `Needs a human`; empty when the section is missing or empty.
+    pub needs_human: Vec<String>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Serialize)]
@@ -59,15 +57,14 @@ pub fn status(brain: &Path) -> Result<StatusReport> {
 }
 
 fn report_status(brain: &Path, r: &Report) -> Result<ReportStatus> {
-    let subject = r.apply_subject();
+    let subject = r.run_subject();
     Ok(ReportStatus {
         path: r.path.clone(),
         date: r.date.format("%Y-%m-%d").to_string(),
-        applied_section: r.section(report::APPLIED).is_some(),
-        apply_commit: commit_with_subject(brain, &subject)?,
-        apply_subject: subject,
-        not_proposed: r
-            .section(report::NOT_PROPOSED)
+        run_commit: commit_with_subject(brain, &subject)?,
+        run_subject: subject,
+        needs_human: r
+            .section(report::NEEDS_HUMAN)
             .map(|s| report::items(&s))
             .unwrap_or_default(),
     })
@@ -158,8 +155,8 @@ mod tests {
         std::fs::write(p, text).unwrap();
     }
 
-    const REPORT: &str = "# Dream report 2026-01-15\nSummary: 1 findings, 1 proposed edits.\n\
-                          ## Not proposed (needs a human)\n- reference/a.md: no source\n\
+    const REPORT: &str = "# Dream report 2026-01-15\nSummary: 1 findings, 1 changes.\n\
+                          ## Needs a human\n- reference/a.md: no source\n\
                           - decide x\n";
 
     #[test]
@@ -175,53 +172,33 @@ mod tests {
     }
 
     #[test]
-    fn proposed_then_applied_and_committed() {
+    fn interrupted_then_committed_run() {
         let tmp = tempfile::tempdir().unwrap();
         let b = tmp.path();
         git(b, &["init", "-q"]);
         write(b, "a.md", "a");
         git(b, &["add", "."]);
         git(b, &["commit", "-qm", "brain: init"]);
-        write(b, ".dream/reports/2026-01-15.md", REPORT);
-        git(b, &["add", ".dream"]);
-        git(b, &["commit", "-qm", "brain:dream: report 2026-01-15"]);
 
+        // Interrupted run: report and an edit written, nothing committed.
+        write(b, ".dream/reports/2026-01-15.md", REPORT);
+        write(b, ".dream/state.json", "{}");
+        write(b, "a.md", "b");
         let s = status(b).unwrap();
         let r = s.report.unwrap();
         assert_eq!(r.path, ".dream/reports/2026-01-15.md");
-        assert!(!r.applied_section);
-        assert_eq!(r.apply_commit, None);
-        assert_eq!(
-            r.not_proposed,
-            vec!["reference/a.md: no source", "decide x"]
-        );
-        assert_eq!(s.uncommitted, Uncommitted::default());
-
-        // Interrupted apply: edit made, Applied appended, not committed.
-        write(b, "a.md", "b");
-        write(
-            b,
-            ".dream/reports/2026-01-15.md",
-            &format!("{REPORT}\n## Applied\n- E1 applied\n"),
-        );
-        write(b, ".dream/state.json", "{}");
-        let s = status(b).unwrap();
-        let r = s.report.unwrap();
-        assert!(r.applied_section);
-        assert_eq!(r.apply_commit, None);
+        assert_eq!(r.run_commit, None);
+        assert_eq!(r.needs_human, vec!["reference/a.md: no source", "decide x"]);
         assert_eq!(
             s.uncommitted.dream,
             vec![".dream/reports/2026-01-15.md", ".dream/state.json"]
         );
         assert_eq!(s.uncommitted.other, vec!["a.md"]);
 
-        // A subject that only contains the apply subject does not count.
-        git(b, &["add", "a.md", ".dream/reports"]);
-        git(
-            b,
-            &["commit", "-qm", "revert brain:dream: apply 2026-01-15"],
-        );
-        assert_eq!(status(b).unwrap().report.unwrap().apply_commit, None);
+        // A subject that only contains the run subject does not count.
+        git(b, &["add", "."]);
+        git(b, &["commit", "-qm", "revert brain:dream: 2026-01-15"]);
+        assert_eq!(status(b).unwrap().report.unwrap().run_commit, None);
         git(
             b,
             &[
@@ -229,11 +206,13 @@ mod tests {
                 "-q",
                 "--allow-empty",
                 "-m",
-                "brain:dream: apply 2026-01-15",
+                "brain:dream: 2026-01-15",
             ],
         );
         let hash = files::git(b, &["rev-parse", "HEAD"]).unwrap();
-        assert_eq!(status(b).unwrap().report.unwrap().apply_commit, Some(hash));
+        let s = status(b).unwrap();
+        assert_eq!(s.report.unwrap().run_commit, Some(hash));
+        assert_eq!(s.uncommitted, Uncommitted::default());
     }
 
     #[test]

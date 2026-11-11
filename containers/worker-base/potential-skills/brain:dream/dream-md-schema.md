@@ -17,7 +17,7 @@ and prints it. Run it after every edit.
 ## Config
 
 ```toml
-off_limits = ["reference/generated/**"]      # globs; dream never proposes edits here
+off_limits = ["reference/generated/**"]      # globs; dream never edits here
 
 [[folders]]
 path = "reference"
@@ -80,6 +80,18 @@ max_days = 180
 name = "example-repo"
 path = "~/src/example-repo"   # host path of a clone: absolute, ~/, or relative to the brain
 branch = "origin/master"      # default; changes are listed up to it, never fetched
+
+[harvest]             # optional; no entries = no harvesting
+transcripts = [       # globs of host dirs holding Claude Code <session>.jsonl transcripts
+  "~/.claude/projects/-Users-me-src-example-repo",
+  "~/.claude/projects/-Users-me--ur-workspace-pool-example-*",
+  "~/.ur/projects/example/transcripts",
+]
+memory = ["~/.ur/projects/example/memory"]   # globs of agent memory dirs
+since = "2026-01-01"  # ignore sessions and memory files last changed before this date
+max_sessions = 10     # sessions digested per run (default 10)
+idle_minutes = 60     # sessions changed more recently are still live (default 60)
+max_message_chars = 2000   # longer messages and memory files are cut (default 2000)
 ```
 
 ## Repos
@@ -96,6 +108,25 @@ else fails `ur dream config`.
 
 Text scan, and commit-message search in repos with a local path.
 ````
+
+## Harvest
+
+`ur dream harvest` runs on the host (from a worker, through hostexec), so `[harvest]` paths are
+host paths. Claude Code keys a session's directory by its working directory with every character
+that is not an ASCII letter or digit replaced by `-` (`/Users/me/src/r` →
+`-Users-me-src-r`), under `~/.claude/projects/`. Useful globs:
+
+- each local clone of a `[[repos]]` entry, for sessions run there by hand;
+- ur pool slots (`~/.ur/workspace/pool/<project>/<n>` → `-Users-me--ur-workspace-pool-<project>-*`),
+  for local-runtime workers;
+- `<ur config>/projects/<project>/transcripts`, for container workers. ur mounts it into every
+  container worker of the project once the directory exists; create it to opt in.
+
+Only `<session>.jsonl` files directly in a matched directory are read; subagent transcripts in
+`<session>/` subdirectories are not. A session is read once it has been idle for `idle_minutes`;
+`state.json` `harvest.sessions` records how many lines of each were returned, so a resumed session
+returns only its new lines. Memory files are listed (with their text) when they changed after the
+previous harvest.
 
 ## Ref kinds
 
@@ -172,13 +203,16 @@ checkpoint.
 
 ```
 <brain>/.dream/
-  state.json              written by `ur dream check --write` and `ur dream reviewed`:
+  state.json              written by `ur dream check`, `ur dream harvest` and `ur dream reviewed`:
                             refs:    { "<kind>:<id>": { state, done, checked_at } }
                             reviews: { "<path>": { last_reviewed, interval_days,
                                                    history: [{ date, outcome, note,
                                                               at: { <repo>: <sha> } }] } }
+                            harvest: { sessions: { "<transcript path>": { lines, harvested_at } },
+                                       memory_as_of }
                             last_run
-  reports/YYYY-MM-DD.md   proposed change sets, plus an "Applied" section once applied
+  reports/YYYY-MM-DD.md   each run's changelog, committed with the run's edits as
+                            `brain:dream: YYYY-MM-DD`
 ```
 
 `reviews` is the durable-doc review log. An `unchanged` review doubles the doc's interval and a

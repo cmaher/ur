@@ -1031,6 +1031,7 @@ impl WorkerManager {
             &config.project_key,
             &self.host_config_dir,
         );
+        let transcripts_dir = resolve_transcripts_dir(&config.project_key, &self.host_config_dir);
         let brain_dir = resolve_brain_dir(
             &config.brain_dir,
             &config.workspace_brain_dir,
@@ -1060,6 +1061,7 @@ impl WorkerManager {
         )
         .add_extra_skills(&config.extra_skill_mounts)
         .add_project_instruction(&project_instruction, &self.host_config_dir, agent)?
+        .add_transcripts_dir(&transcripts_dir, &self.host_config_dir, agent)?
         .add_memory_dir(&memory_dir, &self.host_config_dir, agent)?
         .add_brain_dir(&brain_dir, &self.host_config_dir)?
         .add_mounts(&config.mounts, &self.host_config_dir)?
@@ -1534,6 +1536,27 @@ pub(crate) fn resolve_memory_dir(
     } else {
         None
     }
+}
+
+/// Resolve the project transcripts directory: the convention path
+/// `<host_config_dir>/projects/<project_key>/transcripts/` when it exists. Creating
+/// that directory is the opt-in: every container worker of the project then writes
+/// its session transcripts there, where `ur dream harvest` can read them. Local
+/// workers already write transcripts on the host, so they never use it.
+pub(crate) fn resolve_transcripts_dir(
+    project_key: &str,
+    host_config_dir: &std::path::Path,
+) -> Option<String> {
+    if project_key.is_empty() {
+        return None;
+    }
+    let convention_path = host_config_dir
+        .join("projects")
+        .join(project_key)
+        .join("transcripts");
+    convention_check_path(&convention_path, host_config_dir)
+        .exists()
+        .then(|| convention_path.to_string_lossy().into_owned())
 }
 
 /// Resolve the brain directory path to mount at `/brain`.
@@ -3091,6 +3114,20 @@ agent = "claude"
         let result = resolve_memory_dir(&None, "myproj", tmp.path());
         let expected = memory_dir.to_string_lossy().into_owned();
         assert_eq!(result.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn resolve_transcripts_dir_only_when_convention_dir_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(resolve_transcripts_dir("myproj", tmp.path()), None);
+        let dir = tmp.path().join("projects/myproj/transcripts");
+        std::fs::create_dir_all(&dir).unwrap();
+        let expected = dir.to_string_lossy().into_owned();
+        assert_eq!(
+            resolve_transcripts_dir("myproj", tmp.path()).as_deref(),
+            Some(expected.as_str())
+        );
+        assert_eq!(resolve_transcripts_dir("", tmp.path()), None);
     }
 
     #[test]

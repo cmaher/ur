@@ -2,14 +2,26 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::LazyLock;
 
+use regex::Regex;
 use serde::Serialize;
 
-use super::config::Config;
+use super::config::{Config, Role};
 use super::files::{self, join, parent};
 
 const LONG_ENTRY_WORDS: usize = 25;
 const INDEX: &str = "CLAUDE.md";
+const LINE_REF_EXAMPLES: usize = 5;
+
+/// `path/to/file.ext:123` or `file.ext:12-34` for a source file: line numbers go stale with the
+/// next edit to that file.
+static LINE_REF_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"\b[\w./-]*\w\.(?:rs|go|py|ts|tsx|js|jsx|java|kt|rb|sol|sql|proto|lua|sh|ya?ml|tf):\d+(?:-\d+)?\b",
+    )
+    .unwrap()
+});
 
 #[derive(Debug, Serialize)]
 pub struct LintReport {
@@ -19,6 +31,23 @@ pub struct LintReport {
     pub long_index_entries: Vec<LongEntry>,
     pub empty_folders: Vec<String>,
     pub unlisted_folders: Vec<String>,
+    /// Kept docs (durable, orientation, procedure) citing source lines as `file:line`.
+    pub line_refs: Vec<LineRefs>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LineRefs {
+    pub file: String,
+    pub count: usize,
+    /// The first few, as `(line, ref)`.
+    pub examples: Vec<LineRef>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LineRef {
+    pub line: usize,
+    #[serde(rename = "ref")]
+    pub text: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,7 +106,49 @@ pub fn lint(brain: &Path, cfg: &Config) -> LintReport {
         long_index_entries: long_entries(brain, &all),
         empty_folders: empty_folders(brain),
         unlisted_folders: unlisted_folders(cfg, &all),
+        line_refs: line_refs(brain, cfg, &all),
     }
+}
+
+/// `file:line` citations in kept docs, outside fenced code blocks.
+fn line_refs(brain: &Path, cfg: &Config, all: &[String]) -> Vec<LineRefs> {
+    let kept: Vec<String> = [Role::Durable, Role::Orientation, Role::Procedure]
+        .into_iter()
+        .flat_map(|r| cfg.folders(r))
+        .collect();
+    let mut out = Vec::new();
+    for rel in all {
+        let in_kept = kept.iter().any(|f| rel.starts_with(&format!("{f}/")));
+        if !in_kept || !files::is_text(rel) || cfg.is_off_limits(rel) {
+            continue;
+        }
+        let mut refs = Vec::new();
+        let mut fenced = false;
+        for (i, line) in files::read(brain, rel).lines().enumerate() {
+            let t = line.trim_start();
+            if t.starts_with("```") || t.starts_with("~~~") {
+                fenced = !fenced;
+                continue;
+            }
+            if fenced {
+                continue;
+            }
+            refs.extend(LINE_REF_RE.find_iter(line).map(|m| LineRef {
+                line: i + 1,
+                text: m.as_str().to_string(),
+            }));
+        }
+        if !refs.is_empty() {
+            let count = refs.len();
+            refs.truncate(LINE_REF_EXAMPLES);
+            out.push(LineRefs {
+                file: rel.clone(),
+                count,
+                examples: refs,
+            });
+        }
+    }
+    out
 }
 
 /// The nearest `CLAUDE.md` above `rel`, excluding the root orientation file.
@@ -217,13 +288,18 @@ mod tests {
             "reference/CLAUDE.md",
             &format!("{long}- [Gone](gone.md) — x\n"),
         );
-        write(b, "reference/indexed.md", "links [unindexed](unindexed.md)");
+        write(
+            b,
+            "reference/indexed.md",
+            "links [unindexed](unindexed.md), see `pkg/a/b.go:33` and x.rs:1-9\n\
+             ```\nfenced.go:1\n```\nversion 1.2:3 and https://e.example/p.go:4x",
+        );
         write(b, "reference/unindexed.md", "x");
         write(b, "reference/orphan.md", "x");
         write(b, "reference/generated/dump.md", "x");
         write(b, "working/CLAUDE.md", "- [Stream](stream/README.md) — s\n");
         write(b, "working/stream/README.md", "[d](design.md)");
-        write(b, "working/stream/design.md", "x");
+        write(b, "working/stream/design.md", "scratch.go:12");
         write(b, "extra/note.md", "x");
         std::fs::create_dir_all(b.join("reference/empty")).unwrap();
 
@@ -243,5 +319,11 @@ mod tests {
         assert_eq!(r.long_index_entries.len(), 1);
         assert_eq!(r.empty_folders, vec!["reference/empty"]);
         assert_eq!(r.unlisted_folders, vec!["extra"]);
+        assert_eq!(r.line_refs.len(), 1, "{:?}", r.line_refs);
+        let lr = &r.line_refs[0];
+        assert_eq!(lr.file, "reference/indexed.md");
+        let got: Vec<_> = lr.examples.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(got, vec!["pkg/a/b.go:33", "x.rs:1-9"]);
+        assert_eq!(lr.count, 2);
     }
 }

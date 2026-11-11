@@ -2964,7 +2964,7 @@ mod tests {
             branch: String::new(),
             allow_no_verify: false,
         };
-        let args: Vec<String> = vec!["dream".into(), "check".into(), "--write".into()];
+        let args: Vec<String> = vec!["dream".into(), "harvest".into()];
         let result = mgr
             .run_transform(script, "ur", &args, "/workspace", Some(&ctx))
             .unwrap();

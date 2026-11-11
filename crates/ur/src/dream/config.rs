@@ -37,6 +37,65 @@ pub struct RawConfig {
     pub review: Review,
     #[serde(default)]
     pub repos: Vec<Repo>,
+    #[serde(default)]
+    pub harvest: Harvest,
+}
+
+/// Where `ur dream harvest` finds knowledge produced outside the brain: agent transcripts and
+/// agent memory directories. Empty `transcripts` and `memory` turn harvesting off.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Harvest {
+    /// Globs of directories holding `<session>.jsonl` transcripts (absolute, `~/`, or relative
+    /// to the brain).
+    #[serde(default)]
+    pub transcripts: Vec<String>,
+    /// Globs of memory directories whose files are listed when they change.
+    #[serde(default)]
+    pub memory: Vec<String>,
+    /// `YYYY-MM-DD`: ignore sessions and memory files last changed before this date.
+    #[serde(default)]
+    pub since: Option<String>,
+    /// Sessions digested per run.
+    #[serde(default = "default_max_sessions")]
+    pub max_sessions: usize,
+    /// A session changed within this many minutes is still live and is left for a later run.
+    #[serde(default = "default_idle_minutes")]
+    pub idle_minutes: i64,
+    /// Longer messages are cut to this many characters.
+    #[serde(default = "default_max_message_chars")]
+    pub max_message_chars: usize,
+}
+
+impl Default for Harvest {
+    fn default() -> Self {
+        Self {
+            transcripts: Vec::new(),
+            memory: Vec::new(),
+            since: None,
+            max_sessions: default_max_sessions(),
+            idle_minutes: default_idle_minutes(),
+            max_message_chars: default_max_message_chars(),
+        }
+    }
+}
+
+fn default_max_sessions() -> usize {
+    10
+}
+fn default_idle_minutes() -> i64 {
+    60
+}
+fn default_max_message_chars() -> usize {
+    2000
+}
+
+/// Expand a config path: `~/` to the home directory, a relative path under `brain`.
+pub fn expand(brain: &Path, path: &str) -> PathBuf {
+    match path.strip_prefix("~/").zip(dirs::home_dir()) {
+        Some((rest, home)) => home.join(rest),
+        None => brain.join(path),
+    }
 }
 
 /// A source repo a durable doc can be reviewed against (`ur dream reviewed --at <name>=<sha>`).
@@ -247,6 +306,17 @@ impl Config {
                 bail!("repos: {} has an empty path", repo.name);
             }
         }
+        let h = &raw.harvest;
+        for g in h.transcripts.iter().chain(&h.memory) {
+            glob::Pattern::new(g).with_context(|| format!("harvest: bad glob {g:?}"))?;
+        }
+        if let Some(s) = &h.since {
+            chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                .with_context(|| format!("harvest.since: {s:?} is not YYYY-MM-DD"))?;
+        }
+        if h.max_sessions == 0 || h.max_message_chars == 0 || h.idle_minutes < 0 {
+            bail!("harvest: need max_sessions > 0, max_message_chars > 0, idle_minutes >= 0");
+        }
         let kinds = raw
             .ref_kinds
             .iter()
@@ -307,10 +377,7 @@ impl Repo {
     /// The clone's directory: `~/` expands to the home directory, a relative path is under
     /// `brain`.
     pub fn dir(&self, brain: &Path) -> PathBuf {
-        match self.path.strip_prefix("~/").zip(dirs::home_dir()) {
-            Some((rest, home)) => home.join(rest),
-            None => brain.join(&self.path),
-        }
+        expand(brain, &self.path)
     }
 }
 

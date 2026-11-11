@@ -2,7 +2,7 @@
 //!
 //! Everything project-specific comes from the config block in `<brain>/DREAM.md`; this module
 //! knows no project. Output is JSON (pretty in text mode, enveloped with `--output json`).
-//! Only `check --write` and `reviewed` write, and only `<brain>/.dream/state.json`.
+//! Only `check`, `harvest` and `reviewed` write, and only `<brain>/.dream/state.json`.
 //!
 //! Workers reach these commands through hostexec (`ur.lua` pins the worker's project), so the
 //! brain path and check commands resolve on the host.
@@ -12,13 +12,13 @@ mod changes;
 mod check;
 mod config;
 mod files;
+mod harvest;
 mod lint;
 mod refs;
 mod report;
 mod review;
 mod state;
 mod status;
-mod verify;
 
 use std::path::PathBuf;
 
@@ -47,28 +47,18 @@ pub enum DreamCommands {
     Lint(Target),
     /// Scratch streams: status, recorded and discovered refs, last change
     Refs(Target),
-    /// Run check commands for active streams' refs (refs cached as done are skipped)
-    Check {
-        #[command(flatten)]
-        target: Target,
-        /// Merge results into <brain>/.dream/state.json
-        #[arg(long)]
-        write: bool,
-    },
+    /// Run check commands for active streams' refs (refs cached as done are skipped) and
+    /// record the results in <brain>/.dream/state.json
+    Check(Target),
     /// Classify active streams for promotion from cached checks (candidate, blocked,
     /// possibly_abandoned, active); never runs checks
     Candidates(Target),
-    /// Where the last run stopped: newest report, its Applied section and apply commit,
-    /// uncommitted paths (`.dream/` vs other), and its "Not proposed" items
+    /// Where the last run stopped: newest report and its run commit, uncommitted paths
+    /// (`.dream/` vs other), and its "Needs a human" items
     Status(Target),
-    /// Pre-check a report's proposed edits for apply mode (read-only): per edit `ok`,
-    /// `blob-mismatch`, `off-limits`, `outside-folders`, `missing` or `malformed`, plus counts
-    VerifyReport {
-        #[command(flatten)]
-        target: Target,
-        /// Report date (YYYY-MM-DD), filename, or `.dream/reports/<date>.md` path (default: newest)
-        report: Option<String>,
-    },
+    /// New messages from idle agent transcripts and changed memory files named by `[harvest]`;
+    /// records what was returned so the next call returns only what is new
+    Harvest(Target),
     /// Parse TEXT as a ref of KIND and run its check once (for testing a ref kind)
     Try {
         #[command(flatten)]
@@ -117,16 +107,14 @@ pub fn handle(
             let brain = existing_brain(config, t)?;
             emit(output, &refs::scan(&brain, &Config::load(&brain)?))
         }
-        DreamCommands::Check { target, write } => {
-            let brain = existing_brain(config, target)?;
+        DreamCommands::Check(t) => {
+            let brain = existing_brain(config, t)?;
             let cfg = Config::load(&brain)?;
             let mut st = State::load(&brain)?;
             let scanned = refs::scan(&brain, &cfg);
             let results = check::check_all(&cfg, &scanned.active_refs, &st);
-            if write {
-                check::record(&mut st, &results);
-                st.save(&brain)?;
-            }
+            check::record(&mut st, &results);
+            st.save(&brain)?;
             emit(
                 output,
                 &check::summarize(&results, &check::attribution(&scanned)),
@@ -146,11 +134,14 @@ pub fn handle(
             let brain = existing_brain(config, t)?;
             emit(output, &status::status(&brain)?)
         }
-        DreamCommands::VerifyReport { target, report } => {
-            let brain = existing_brain(config, target)?;
+        DreamCommands::Harvest(t) => {
+            let brain = existing_brain(config, t)?;
             let cfg = Config::load(&brain)?;
-            let r = report::Report::resolve(&brain, report.as_deref())?;
-            emit(output, &verify::verify(&brain, &cfg, &r)?)
+            let mut st = State::load(&brain)?;
+            let report = harvest::harvest(&brain, &cfg, &st, harvest::default_as_of(&cfg));
+            harvest::record(&mut st, &report);
+            st.save(&brain)?;
+            emit(output, &report)
         }
         DreamCommands::Try { target, kind, text } => {
             let brain = existing_brain(config, target)?;

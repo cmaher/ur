@@ -43,7 +43,7 @@ function transform(command, args, working_dir, worker_context)
     end
 
     -- Brain consolidation helpers. Pinned to the worker's own project: `check` runs the
-    -- project's declared check commands and `check --write` / `reviewed` write its brain state.
+    -- project's declared check commands, and `check` / `harvest` / `reviewed` write its brain state.
     if subcmd == "dream" then
         local key = worker_context ~= nil and worker_context.project_key or ""
         if key == "" then

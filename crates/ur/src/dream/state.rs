@@ -14,9 +14,34 @@ pub struct State {
     pub reviews: BTreeMap<String, ReviewRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run: Option<String>,
+    #[serde(default, skip_serializing_if = "HarvestState::is_empty")]
+    pub harvest: HarvestState,
     /// Keys this version doesn't know, kept on rewrite.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// What `ur dream harvest --write` has already handed to a dream run.
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct HarvestState {
+    /// Transcript path → lines already digested.
+    #[serde(default)]
+    pub sessions: BTreeMap<String, SessionCursor>,
+    /// Memory files changed at or before this RFC 3339 instant were already listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_as_of: Option<String>,
+}
+
+impl HarvestState {
+    fn is_empty(&self) -> bool {
+        self.sessions.is_empty() && self.memory_as_of.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SessionCursor {
+    pub lines: usize,
+    pub harvested_at: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

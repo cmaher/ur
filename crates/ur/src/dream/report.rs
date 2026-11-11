@@ -1,7 +1,8 @@
-//! Dream reports: `<brain>/.dream/reports/YYYY-MM-DD.md`, as the brain:dream skill writes them.
+//! Dream reports: `<brain>/.dream/reports/YYYY-MM-DD.md`, the changelog the brain:dream skill
+//! writes as it edits the brain.
 //!
-//! Sections are Markdown headings; a heading inside a fenced code block (e.g. the full content
-//! of a proposed new file) is not a section boundary.
+//! Sections are Markdown headings; a heading inside a fenced code block (e.g. a quoted diff) is
+//! not a section boundary.
 
 use std::path::Path;
 
@@ -10,12 +11,8 @@ use chrono::NaiveDate;
 
 /// Brain-relative directory holding the reports.
 pub const REPORTS_DIR: &str = ".dream/reports";
-/// Heading apply mode appends to a report.
-pub const APPLIED: &str = "Applied";
 /// Heading for findings the agent could not act on.
-pub const NOT_PROPOSED: &str = "Not proposed (needs a human)";
-/// Heading holding the `### E<n> <path>: <change>` edits.
-pub const PROPOSED_EDITS: &str = "Proposed edits";
+pub const NEEDS_HUMAN: &str = "Needs a human";
 
 /// One dream report as read from disk.
 #[derive(Debug, Clone)]
@@ -50,28 +47,6 @@ impl Report {
         newest.map(|d| Self::load(brain, d)).transpose()
     }
 
-    /// The report `arg` names (default: the newest): a date (`2026-01-15`), a filename
-    /// (`2026-01-15.md`), or a path ending in `.dream/reports/2026-01-15.md` (brain-relative,
-    /// host, or `/brain/...` as a worker sees it). It is always read from this brain's reports.
-    pub fn resolve(brain: &Path, arg: Option<&str>) -> Result<Report> {
-        let Some(arg) = arg else {
-            return Self::newest(brain)?
-                .with_context(|| format!("no reports in {REPORTS_DIR}: nothing to verify"));
-        };
-        let date = NaiveDate::parse_from_str(arg, "%Y-%m-%d").ok().or_else(|| {
-            let (dir, name) = arg.rsplit_once('/').unwrap_or(("", arg));
-            let in_reports =
-                dir.is_empty() || dir == REPORTS_DIR || dir.ends_with(&format!("/{REPORTS_DIR}"));
-            in_reports.then(|| date_of(name)).flatten()
-        });
-        let date = date.with_context(|| {
-            format!(
-                "report {arg:?}: expected YYYY-MM-DD, YYYY-MM-DD.md or {REPORTS_DIR}/YYYY-MM-DD.md"
-            )
-        })?;
-        Self::load(brain, date)
-    }
-
     /// Read the report for `date`.
     pub fn load(brain: &Path, date: NaiveDate) -> Result<Report> {
         let path = format!("{REPORTS_DIR}/{}.md", date.format("%Y-%m-%d"));
@@ -80,9 +55,9 @@ impl Report {
         Ok(Report { date, path, text })
     }
 
-    /// Subject of the commit apply mode makes for this report.
-    pub fn apply_subject(&self) -> String {
-        format!("brain:dream: apply {}", self.date.format("%Y-%m-%d"))
+    /// Subject of the commit a dream run makes for this report.
+    pub fn run_subject(&self) -> String {
+        format!("brain:dream: {}", self.date.format("%Y-%m-%d"))
     }
 
     /// Body of the first section titled `title` (any heading level), up to the next heading of
@@ -187,14 +162,14 @@ mod tests {
     #[test]
     fn section_stops_at_same_level_and_ignores_fenced_headings() {
         let r = report(
-            "# Dream report 2026-01-15\n## Proposed edits\n### E1 a.md: x\n```markdown\n\
-             ## Not proposed (needs a human)\nfake\n```\n## Not proposed (needs a human)\n\
-             - one\n### sub\n- two\n## Applied\n- E1 applied\n",
+            "# Dream report 2026-01-15\n## Changes\n### C1 a.md: x\n```markdown\n\
+             ## Needs a human\nfake\n```\n## Needs a human\n\
+             - one\n### sub\n- two\n## Open questions\n- why\n",
         );
-        assert_eq!(r.section(NOT_PROPOSED).unwrap(), "- one\n### sub\n- two");
-        assert_eq!(r.section(APPLIED).unwrap(), "- E1 applied");
+        assert_eq!(r.section(NEEDS_HUMAN).unwrap(), "- one\n### sub\n- two");
+        assert_eq!(r.section("Open questions").unwrap(), "- why");
         assert!(r.section("Reviewed").is_none());
-        assert_eq!(r.apply_subject(), "brain:dream: apply 2026-01-15");
+        assert_eq!(r.run_subject(), "brain:dream: 2026-01-15");
     }
 
     #[test]
@@ -232,31 +207,6 @@ mod tests {
         let r = Report::newest(b).unwrap().unwrap();
         assert_eq!(r.path, ".dream/reports/2026-02-01.md");
         assert_eq!(r.text, "new");
-    }
-
-    #[test]
-    fn resolve_accepts_date_name_or_reports_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        let b = tmp.path();
-        let err = Report::resolve(b, None).unwrap_err();
-        assert!(format!("{err:#}").contains("nothing to verify"), "{err:#}");
-        let dir = b.join(REPORTS_DIR);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("2026-01-02.md"), "old").unwrap();
-        std::fs::write(dir.join("2026-02-01.md"), "new").unwrap();
-        assert_eq!(Report::resolve(b, None).unwrap().text, "new");
-        for arg in [
-            "2026-01-02",
-            "2026-01-02.md",
-            ".dream/reports/2026-01-02.md",
-            "/brain/.dream/reports/2026-01-02.md",
-        ] {
-            assert_eq!(Report::resolve(b, Some(arg)).unwrap().text, "old", "{arg}");
-        }
-        for arg in ["other/2026-01-02.md", "notes.md", "2026-13-01"] {
-            assert!(Report::resolve(b, Some(arg)).is_err(), "{arg}");
-        }
-        assert!(Report::resolve(b, Some("2026-03-03")).is_err());
     }
 
     #[test]

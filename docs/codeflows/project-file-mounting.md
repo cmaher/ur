@@ -51,6 +51,7 @@ Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `instr
 | `instruction_md` | `/var/ur/project-instruction/{agent.instruction_filename()}` (`CLAUDE.md` for Claude, `AGENTS.md` for Codex/AGY) | `UR_PROJECT_INSTRUCTION` | yes (`:ro`) |
 | `memory_dir` | `~/{agent.home_subdir()}/{agent.memory_subdir()}` (`/home/worker/.claude/projects/-workspace/memory` for Claude); no-op if the agent has no memory-dir concept | (none) | no |
 | `brain_dir` | `/brain` | (none) | no |
+| transcripts (convention only: `<config_dir>/projects/<key>/transcripts/`) | `~/{agent.home_subdir()}/{agent.transcripts_subdir()}` (`/home/worker/.claude/projects/-workspace` for Claude); no-op if the agent has no transcripts dir | (none) | no |
 | `workspace_brain_dir` (top-level) | `/brain` | (none) | no |
 | `container.mounts` | user-specified `destination` | (none) | no |
 | host hooks overlay — git | `/var/ur/host-hooks/git/` | (none) | yes (`:ro`) |
@@ -158,7 +159,13 @@ Source: `resolve_memory_dir()` in `crates/server/src/worker.rs`, `add_memory_dir
 
 This means creating `~/.ur/projects/ur/brain/` on the host is enough — no config change needed. Unlike `memory_dir`, the mount is **read-write** because the `/brain:init` skill writes the scaffold and `/brain/working/` is worker scratch. The server also sets `UR_BRAIN=/brain`, and records the resolved host path on the worker row (`worker.brain_path`) so hostexec can map `/brain` back to the host for `git`.
 
-**Brain skills** (`brain`, `brain:init`, `brain:dream`, `brain:dream-init`, one copy each in `containers/worker-base/potential-skills/`) resolve the brain root as `$UR_BRAIN`, falling back on the host to the `brain` field of `ur project list --output json` (`ProjectConfig::brain_path`: `brain_dir` resolved, else the convention path), so host and workers agree on projects that override `brain_dir`. `brain:init` makes the brain its own git repository; `brain:dream` consolidates it (lint, reconcile-then-promote finished streams, merge, reindex, scheduled review of durable docs) and keeps state and reports in `<brain>/.dream/`, with git history as the checkpoint. Its mechanical work is the `ur dream` CLI, which reads the TOML config block in `<brain>/DREAM.md` and writes only `.dream/state.json` (ref checks, review log with adaptive intervals). Workers run brain git through hostexec with a `/brain` working directory, which maps to the worker's host brain path for `git` only (see [host-exec-flow.md](host-exec-flow.md)). `brain:dream` and `brain:dream-init` are installed for the Manual strategy only. On the host, install them by symlinking each skill directory into `~/.claude/skills/` under the same bare name (no `ur:` prefix) so cross-references resolve. Everything project-specific lives in `<brain>/DREAM.md`; the skills carry no project content and their examples are placeholders only.
+## Transcripts Convention
+
+There is no config key: creating `<config_dir>/projects/<key>/transcripts/` on the host is the opt-in. `resolve_transcripts_dir()` returns it when it exists (never for a worker without a project), and `add_transcripts_dir()` mounts it over Claude Code's per-cwd session directory, so every container worker of the project writes its `<session>.jsonl` transcripts to one host directory, where `ur dream harvest` reads them. Session ids are UUIDs, so workers sharing the directory don't collide. The memory mount is a child of this path; Docker mounts parents before children. Local workers already write transcripts under the host's `~/.claude/projects/<encoded slot>/` and never use it.
+
+Source: `resolve_transcripts_dir()` in `crates/server/src/worker.rs`, `add_transcripts_dir()` in `crates/server/src/run_opts_builder.rs`, `AgentType::transcripts_subdir()` in `crates/ur_config/src/agent.rs`
+
+**Brain skills** (`brain`, `brain:init`, `brain:dream`, `brain:dream-init`, one copy each in `containers/worker-base/potential-skills/`) resolve the brain root as `$UR_BRAIN`, falling back on the host to the `brain` field of `ur project list --output json` (`ProjectConfig::brain_path`: `brain_dir` resolved, else the convention path), so host and workers agree on projects that override `brain_dir`. `brain:init` makes the brain its own git repository; `brain:dream` consolidates it (lint, harvest agent transcripts and memory, reconcile-then-promote finished streams, merge, reindex, scheduled review of durable docs), editing the brain directly and committing each run with a changelog report in `<brain>/.dream/reports/`; git history is the checkpoint. Its mechanical work is the `ur dream` CLI, which reads the TOML config block in `<brain>/DREAM.md` and writes only `.dream/state.json` (ref checks, harvest cursors, review log with adaptive intervals). Workers run brain git through hostexec with a `/brain` working directory, which maps to the worker's host brain path for `git` only (see [host-exec-flow.md](host-exec-flow.md)). `brain:dream` and `brain:dream-init` are installed for the Manual strategy only. On the host, install them by symlinking each skill directory into `~/.claude/skills/` under the same bare name (no `ur:` prefix) so cross-references resolve. Everything project-specific lives in `<brain>/DREAM.md`; the skills carry no project content and their examples are placeholders only.
 
 **Template restriction**: like `memory_dir`, `%PROJECT%` is rejected for `brain_dir` at config validation time — the brain must be project-stable, not workspace-relative. Only `%URCONFIG%/...` and absolute paths are valid.
 
@@ -272,6 +279,9 @@ WorkerManager::run_and_record()                  [server/src/worker.rs]
   │   │                                  <config_dir>/projects/<key>/hooks/startup-bg/ → /var/ur/host-hooks/startup-bg/:ro
   │   │                                  (each mount added only if the host dir exists)
   │   ├─ .add_project_instruction(agent) → resolve_template_path → mount or env var
+  │   ├─ .add_transcripts_dir(agent)    → create_dir_all + chown → ~/{agent.home_subdir()}/{agent.transcripts_subdir()}
+  │   │                                  (only when <config_dir>/projects/<key>/transcripts/ exists; parent of
+  │   │                                   the memory mount, so added before it)
   │   ├─ .add_memory_dir(agent)         → create_dir_all + chown → ~/{agent.home_subdir()}/{agent.memory_subdir()}
   │   │                                  (no-op if the agent has no memory-dir concept)
   │   ├─ .add_brain_dir()              → create_dir_all + chown → /brain (read-write)

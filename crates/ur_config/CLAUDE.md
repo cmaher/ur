@@ -131,6 +131,8 @@ Some accessors are deliberately `None` for Codex and AGY:
   Codex and AGY have no directory equivalent. Callers gate on
   `if let Some(memory_subdir) = agent.memory_subdir()` and no-op otherwise (e.g.
   `RunOptsBuilder::add_memory_dir` in `crates/server`).
+- `transcripts_subdir()` — Claude Code's per-cwd session directory (`projects/-workspace`), the
+  parent of `memory_subdir()`; `RunOptsBuilder::add_transcripts_dir` no-ops when it is `None`.
 - (Claude's `settings_filename()` and `auth()` are both `Some` for every current agent, but
   follow the same optional pattern for an agent with no settings-file or no-credentials
   concept.)
