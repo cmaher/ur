@@ -22,9 +22,10 @@ pub struct ReportStatus {
     pub date: String,
     /// Subject the run commit has (or will have).
     pub run_subject: String,
-    /// Hash of the newest commit on HEAD with exactly that subject; `None` if not committed.
+    /// Hash of the newest commit on HEAD with exactly that subject; `None` while the report has
+    /// uncommitted changes (an earlier run that day being committed doesn't count).
     pub run_commit: Option<String>,
-    /// Items under `Needs a human`; empty when the section is missing or empty.
+    /// Items under `Needs a human` in the report's last run; empty when missing or empty.
     pub needs_human: Vec<String>,
 }
 
@@ -47,7 +48,10 @@ pub struct StatusReport {
 pub fn status(brain: &Path) -> Result<StatusReport> {
     let uncommitted = uncommitted(brain)?;
     let report = match Report::newest(brain)? {
-        Some(r) => Some(report_status(brain, &r)?),
+        Some(r) => {
+            let dirty = uncommitted.dream.contains(&r.path);
+            Some(report_status(brain, &r, dirty)?)
+        }
         None => None,
     };
     Ok(StatusReport {
@@ -56,12 +60,17 @@ pub fn status(brain: &Path) -> Result<StatusReport> {
     })
 }
 
-fn report_status(brain: &Path, r: &Report) -> Result<ReportStatus> {
+fn report_status(brain: &Path, r: &Report, dirty: bool) -> Result<ReportStatus> {
     let subject = r.run_subject();
+    let run_commit = if dirty {
+        None
+    } else {
+        commit_with_subject(brain, &subject)?
+    };
     Ok(ReportStatus {
         path: r.path.clone(),
         date: r.date.format("%Y-%m-%d").to_string(),
-        run_commit: commit_with_subject(brain, &subject)?,
+        run_commit,
         run_subject: subject,
         needs_human: r
             .section(report::NEEDS_HUMAN)
@@ -213,6 +222,17 @@ mod tests {
         let s = status(b).unwrap();
         assert_eq!(s.report.unwrap().run_commit, Some(hash));
         assert_eq!(s.uncommitted, Uncommitted::default());
+
+        // A second run the same day, interrupted: the earlier run's commit doesn't count, and
+        // only the new block's items are reported.
+        write(
+            b,
+            ".dream/reports/2026-01-15.md",
+            &format!("{REPORT}\n# Dream report 2026-01-15 (run 2)\n## Needs a human\n- later\n"),
+        );
+        let r = status(b).unwrap().report.unwrap();
+        assert_eq!(r.run_commit, None);
+        assert_eq!(r.needs_human, vec!["later"]);
     }
 
     #[test]

@@ -60,11 +60,18 @@ impl Report {
         format!("brain:dream: {}", self.date.format("%Y-%m-%d"))
     }
 
-    /// Body of the first section titled `title` (any heading level), up to the next heading of
-    /// the same or a higher level. `None` when there is no such heading.
+    /// Body of the first section titled `title` (any heading level) in the report's last run —
+    /// the text from its last level-1 heading, since a second run on the same day appends a new
+    /// `# Dream report <date> (run N)` block — up to the next heading of the same or a higher
+    /// level. `None` when there is no such heading.
     pub fn section(&self, title: &str) -> Option<String> {
+        let lines = lines_with_headings(&self.text);
+        let last_run = lines
+            .iter()
+            .rposition(|(_, h)| matches!(h, Some((1, _))))
+            .unwrap_or(0);
         let mut body: Option<(usize, Vec<&str>)> = None;
-        for (line, heading) in lines_with_headings(&self.text) {
+        for (line, heading) in lines.into_iter().skip(last_run) {
             match (&mut body, heading) {
                 (None, Some((level, text))) if text == title => body = Some((level, Vec::new())),
                 (Some((open, _)), Some((level, _))) if level <= *open => break,
@@ -170,6 +177,21 @@ mod tests {
         assert_eq!(r.section("Open questions").unwrap(), "- why");
         assert!(r.section("Reviewed").is_none());
         assert_eq!(r.run_subject(), "brain:dream: 2026-01-15");
+    }
+
+    #[test]
+    fn section_reads_the_last_run_block() {
+        let r = report(
+            "# Dream report 2026-01-15\n## Needs a human\n- old\n\
+             # Dream report 2026-01-15 (run 2)\n## Changes\n- c\n\
+             ```\n# not a run\n## Needs a human\n- fenced\n```\n\
+             ## Needs a human\n- new\n",
+        );
+        assert_eq!(r.section(NEEDS_HUMAN).unwrap(), "- new");
+        let one_run = report("# Dream report 2026-01-15\n## Needs a human\n- only\n");
+        assert_eq!(one_run.section(NEEDS_HUMAN).unwrap(), "- only");
+        let no_run = report("## Needs a human\n- headless\n");
+        assert_eq!(no_run.section(NEEDS_HUMAN).unwrap(), "- headless");
     }
 
     #[test]
