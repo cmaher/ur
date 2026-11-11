@@ -74,7 +74,8 @@ ur worker launch -p <project> [--runtime local]
    ├─ tmux -L ur new-session -d -s ur-<id> -c <slot> -e <env…>
    ├─ background startup hooks: new-window bg -c <slot>
    ├─ registry insert + exit watcher (before the agent: SessionStart calls NotifyIdle)
-   └─ send-keys the agent argv into window 0
+   └─ write the agent argv to .ur/launch.sh (exec), send-keys its path into window 0
+      (typing a >1024-byte argv is truncated by the macOS tty line buffer)
    any failure after build → teardown → error (with "teardown also failed" if it did)
 4. ur-server finalize_worker_launch: provisioning → running (compare-and-set)
    ├─ false (a stop landed mid-launch) → "stopped during launch"; the stopper finishes it

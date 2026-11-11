@@ -4,7 +4,7 @@
 //! Launch order (ur-4p34c): validate id/env → build drive (validates agent)
 //! → sync startup hooks
 //! → tmux session → background hooks in window `:bg` → registry insert →
-//! agent argv typed into window 0. Any failure after the drive build runs the
+//! agent argv written to `.ur/launch.sh` and its path typed into window 0. Any failure after the drive build runs the
 //! full teardown before the error is returned.
 //!
 //! Invariant (ur-j5puq): once [`LocalWorkerManager::adopt_existing`] has
@@ -321,7 +321,13 @@ impl LocalWorkerManager {
             .map(|a| shell_quote(a))
             .collect::<Vec<_>>()
             .join(" ");
-        session.send_keys(&cmd).await.map_err(step("start agent"))?;
+        let script = write_launch_script(drive, &cmd)
+            .await
+            .map_err(step("write launch script"))?;
+        session
+            .send_keys(&shell_quote(&script.to_string_lossy()))
+            .await
+            .map_err(step("start agent"))?;
         info!(worker_id = req.worker_id, cmd, "local worker launched");
         Ok(())
     }
@@ -711,6 +717,20 @@ fn session_env(
 /// POSIX single-quote `s` for typing into a shell.
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// Write `<drive>/.ur/launch.sh`, which `exec`s the agent command.
+///
+/// The agent argv is not typed into the pane directly: a shell that is still
+/// starting up reads it through the tty's canonical line buffer, which macOS
+/// caps at 1024 bytes (`MAX_CANON`), so a long argv (many `--add-dir`s) is
+/// cut off and the agent never starts. Only the short script path is typed.
+async fn write_launch_script(drive: &Path, cmd: &str) -> anyhow::Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = drive.join(".ur").join("launch.sh");
+    tokio::fs::write(&path, format!("#!/bin/sh\nexec {cmd}\n")).await?;
+    tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).await?;
+    Ok(path)
 }
 
 #[cfg(test)]
