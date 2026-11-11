@@ -45,7 +45,7 @@ For each item below, first check whether it already exists. If it exists, **leav
    - If `<brain>/.git` exists, leave it alone and record "already present". Never re-initialize, change branches, or rewrite history.
    - Otherwise, from inside `<brain>`: `git init`, and create `.gitignore` (only if missing) ignoring OS and editor clutter (`.DS_Store`, `*.swp`). Do not ignore `.dream/`.
    - Commit everything present: `git add -A`, then `git commit -m "brain: init"`. Use the user's normal git config; never pass `--no-gpg-sign` or override the author. If a git command fails, stop and show the error.
-   - Never add a remote and never push.
+   - Never add a remote. If the brain already had one (an existing repository), push the commit.
 
 ## After scaffolding
 

@@ -38,6 +38,6 @@ Add refs as they appear. If `<brain>/DREAM.md` lists ref kinds, use those names.
 
 When you write a fact about code into the brain, check that it runs: find the call sites and the flag or config that enables it, and its value per environment. A type or function that exists but has no callers, or a feature behind an off flag, is written down as exactly that, not as current behavior. Cite code by path and symbol, not `file:line` (line numbers go stale).
 
-Commit what you change in the brain when you finish (`cd <brain>`, `git add <the files you changed>`, `git commit -m "brain: <what changed>"`). Never stage files you didn't change, and never push.
+Commit what you change in the brain when you finish (`cd <brain>`, `git add <the files you changed>`, `git commit -m "brain: <what changed>"`). Never stage files you didn't change. If `git remote` lists a remote, push the commit (`git push`); if it lists none, the brain is local-only and the commit is the end. Never add a remote, never force-push.
 
 The brain is user-managed. Do not restructure or delete brain content here. `/brain:init` scaffolds missing layout; `/brain:dream` is the skill that restructures and consolidates.

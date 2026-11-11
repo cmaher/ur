@@ -43,8 +43,8 @@ Use their output as evidence; don't redo their work by hand, and never edit `.dr
 yourself. If a command's output looks wrong, say so in the report rather than working around it.
 
 `<brain>` must be its own git repository (`<brain>/.git` exists). If it isn't, stop and tell the
-user to run `brain:init`. Git history is the checkpoint: there are no snapshot copies. Never push,
-add remotes, rewrite history, or pass `--no-gpg-sign`.
+user to run `brain:init`. Git history is the checkpoint: there are no snapshot copies. Never add remotes, force-push,
+rewrite history, or pass `--no-gpg-sign`.
 
 ## Before anything
 
@@ -217,13 +217,17 @@ Gaps this run noticed but could not fill: questions to investigate, sources to l
 1. `ur dream lint` once more; fix anything your edits introduced.
 2. Stage only the paths this run changed plus `.dream/` (`git add <paths> .dream`), and commit
    once: `git commit -m "brain:dream: YYYY-MM-DD"`. Never stage paths you didn't change.
-3. Tell the user what changed (from "Changes"), the commit hash, and the "Needs a human" items.
+3. If `git remote` lists a remote, push the commit (`git push`); if it lists none, the brain is local-only and the commit is the end. Never add a remote, never force-push. A checkpoint commit made before the run goes out with it. If the push is refused,
+   report the error; don't work around it.
+4. Tell the user what changed (from "Changes"), the commit hash, whether it was pushed, and the
+   "Needs a human" items.
 
 ## Red flags — stop
 
 - Running on a brain that isn't a git work tree, or running git with `-C` or outside `<brain>`.
 - Editing before uncommitted user edits are checkpointed.
-- Pushing, stashing, resetting, or committing paths outside the change you just made.
+- Adding a remote, force-pushing, stashing, resetting, or committing paths outside the change you
+  just made.
 - Running a check command yourself instead of `ur dream check`, or editing `.dream/state.json`.
 - Writing a fact into a durable doc without checking it against the current source of truth or
   marking it not re-verified.

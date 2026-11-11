@@ -71,8 +71,8 @@ in a worker it is pinned). Run git from inside `<brain>` (`cd <brain>` first), n
    `status`, `refs` (using the ref kinds defined in `DREAM.md`), and `last-verified` frontmatter.
    Recording refs when work starts is what keeps `brain:dream` cheap.
 7. **Commit** only the files you wrote: `git add DREAM.md CLAUDE.md` then
-   `git commit -m "brain:dream-init: configure dream"`. Use the user's normal git config; never
-   push.
+   `git commit -m "brain:dream-init: configure dream"`. Use the user's normal git config. If
+   `git remote` lists a remote, push; never add one.
 8. **Report** what you wrote and suggest running `brain:dream` to see a first report. Don't fix
    brain content or backfill frontmatter on existing streams here — `brain:dream` does both.
    Mention problems you noticed so the user knows to expect them.

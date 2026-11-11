@@ -22,6 +22,11 @@ static LINE_REF_RE: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
+/// Follow-on citations that lean on a file named earlier: `` `:84` ``, `(:464-505)`, or an
+/// abbreviated file alias such as `(WWM:455-457)`.
+static FOLLOW_ON_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"`:\d+(?:-\d+)?`|\((?:[A-Z][A-Z0-9]{1,5})?:\d+(?:-\d+)?\)").unwrap()
+});
 
 #[derive(Debug, Serialize)]
 pub struct LintReport {
@@ -133,7 +138,12 @@ fn line_refs(brain: &Path, cfg: &Config, all: &[String]) -> Vec<LineRefs> {
             if fenced {
                 continue;
             }
-            refs.extend(LINE_REF_RE.find_iter(line).map(|m| LineRef {
+            let mut found: Vec<_> = LINE_REF_RE
+                .find_iter(line)
+                .chain(FOLLOW_ON_RE.find_iter(line))
+                .collect();
+            found.sort_by_key(|m| m.start());
+            refs.extend(found.into_iter().map(|m| LineRef {
                 line: i + 1,
                 text: m.as_str().to_string(),
             }));
@@ -292,7 +302,8 @@ mod tests {
             b,
             "reference/indexed.md",
             "links [unindexed](unindexed.md), see `pkg/a/b.go:33` and x.rs:1-9\n\
-             ```\nfenced.go:1\n```\nversion 1.2:3 and https://e.example/p.go:4x",
+             ```\nfenced.go:1\n```\nversion 1.2:3 and https://e.example/p.go:4x\n\
+             then `:84`, (:464-505) and (WWM:455-457), not 10:30 or (10:30)",
         );
         write(b, "reference/unindexed.md", "x");
         write(b, "reference/orphan.md", "x");
@@ -323,7 +334,16 @@ mod tests {
         let lr = &r.line_refs[0];
         assert_eq!(lr.file, "reference/indexed.md");
         let got: Vec<_> = lr.examples.iter().map(|e| e.text.as_str()).collect();
-        assert_eq!(got, vec!["pkg/a/b.go:33", "x.rs:1-9"]);
-        assert_eq!(lr.count, 2);
+        assert_eq!(
+            got,
+            vec![
+                "pkg/a/b.go:33",
+                "x.rs:1-9",
+                "`:84`",
+                "(:464-505)",
+                "(WWM:455-457)"
+            ]
+        );
+        assert_eq!(lr.count, 5);
     }
 }
