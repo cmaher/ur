@@ -253,15 +253,22 @@ mod tests {
     use tokio::sync::watch;
     use uuid::Uuid;
 
-    /// Connect to the CI postgres instance (localhost:5433).
+    /// ci-postgres URL for `db`. The port is `UR_CI_POSTGRES_PORT` (default 5433), so the
+    /// tests can run when another service holds 5433.
+    fn ci_postgres_url(db: &str) -> String {
+        let port = std::env::var("UR_CI_POSTGRES_PORT").unwrap_or_else(|_| "5433".to_string());
+        format!("postgres://ur:ur@localhost:{port}/{db}")
+    }
+
+    /// Connect to the CI postgres instance.
     async fn admin_pool() -> sqlx::PgPool {
-        let opts = PgConnectOptions::from_str("postgres://ur:ur@localhost:5433/postgres")
+        let opts = PgConnectOptions::from_str(&ci_postgres_url("postgres"))
             .expect("invalid connection string");
         PgPoolOptions::new()
             .max_connections(2)
             .connect_with(opts)
             .await
-            .expect("Cannot connect to ci-postgres on localhost:5433. Run: make test-init")
+            .expect("Cannot connect to ci-postgres (port UR_CI_POSTGRES_PORT, default 5433). Run: make test-init")
     }
 
     /// Create an isolated test database, apply `ui_events` DDL, return (pool, db_name, db_url).
@@ -275,7 +282,7 @@ mod tests {
         .await
         .expect("failed to create test database");
 
-        let db_url = format!("postgres://ur:ur@localhost:5433/{db_name}");
+        let db_url = ci_postgres_url(&db_name);
         let pool = PgPoolOptions::new()
             .max_connections(4)
             .connect(&db_url)

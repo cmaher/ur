@@ -38,7 +38,7 @@ build: ## Build all workspace crates and test targets
 test: test-init ## Run tests on all workspace crates
 	cargo test --workspace
 
-test-init: ## Start ci-postgres container for tests (port 5433) if not already up
+test-init: ## Start ci-postgres container for tests (port UR_CI_POSTGRES_PORT, default 5433) if not already up
 	@scripts/build/test-init.sh
 
 test-clean: ## Stop and remove ci-postgres container

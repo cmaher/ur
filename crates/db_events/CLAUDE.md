@@ -35,7 +35,7 @@ The `ui_events` table DDL must be identical in both `ticket_db/migrations/001_in
 
 ## Testing
 
-Tests connect to ci-postgres on `localhost:5433` (same as `ur_db_test`). Run:
+Tests connect to ci-postgres on `localhost:5433` (same as `ur_db_test`; set `UR_CI_POSTGRES_PORT` to use another port). Run:
 
 ```bash
 cargo test -p db_events

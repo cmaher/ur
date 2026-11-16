@@ -27,16 +27,21 @@ mod tests {
     use std::str::FromStr;
     use uuid::Uuid;
 
-    const CI_POSTGRES_URL: &str = "postgres://ur:ur@localhost:5433/postgres";
+    /// ci-postgres URL for `db`. The port is `UR_CI_POSTGRES_PORT` (default 5433), so the
+    /// tests can run when another service holds 5433.
+    fn ci_postgres_url(db: &str) -> String {
+        let port = std::env::var("UR_CI_POSTGRES_PORT").unwrap_or_else(|_| "5433".to_string());
+        format!("postgres://ur:ur@localhost:{port}/{db}")
+    }
 
     async fn admin_pool() -> PgPool {
-        let options = PgConnectOptions::from_str(CI_POSTGRES_URL)
+        let options = PgConnectOptions::from_str(&ci_postgres_url("postgres"))
             .expect("invalid ci-postgres connection string");
         PgPoolOptions::new()
             .max_connections(2)
             .connect_with(options)
             .await
-            .expect("Cannot connect to ci-postgres on localhost:5433. Run: make test-init")
+            .expect("Cannot connect to ci-postgres (port UR_CI_POSTGRES_PORT, default 5433). Run: make test-init")
     }
 
     async fn create_test_pool(admin: &PgPool, db_name: &str) -> PgPool {
@@ -47,7 +52,7 @@ mod tests {
         .await
         .expect("failed to create test database");
 
-        let url = format!("postgres://ur:ur@localhost:5433/{db_name}");
+        let url = ci_postgres_url(db_name);
         let options =
             PgConnectOptions::from_str(&url).expect("invalid test database connection string");
         PgPoolOptions::new()

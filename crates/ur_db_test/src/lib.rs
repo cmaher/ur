@@ -3,7 +3,12 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::str::FromStr;
 use uuid::Uuid;
 
-const CI_POSTGRES_URL: &str = "postgres://ur:ur@localhost:5433/postgres";
+/// ci-postgres URL for `db`. The port is `UR_CI_POSTGRES_PORT` (default 5433), so the
+/// tests can run when another service holds 5433.
+pub fn ci_postgres_url(db: &str) -> String {
+    let port = std::env::var("UR_CI_POSTGRES_PORT").unwrap_or_else(|_| "5433".to_string());
+    format!("postgres://ur:ur@localhost:{port}/{db}")
+}
 
 pub struct TestDb {
     ticket_pool: PgPool,
@@ -28,8 +33,8 @@ impl TestDb {
             .unwrap_or_else(|e| panic!("failed to create test database {db_name}: {e}"));
         }
 
-        let ticket_url = format!("postgres://ur:ur@localhost:5433/{ticket_db_name}");
-        let workflow_url = format!("postgres://ur:ur@localhost:5433/{workflow_db_name}");
+        let ticket_url = ci_postgres_url(&ticket_db_name);
+        let workflow_url = ci_postgres_url(&workflow_db_name);
 
         let ticket_pool = PgPoolOptions::new()
             .max_connections(5)
@@ -100,7 +105,7 @@ impl Drop for TestDb {
 async fn drop_test_dbs(ticket_db_name: String, workflow_db_name: String) {
     let admin = match PgPoolOptions::new()
         .max_connections(1)
-        .connect(CI_POSTGRES_URL)
+        .connect(&ci_postgres_url("postgres"))
         .await
     {
         Ok(p) => p,
@@ -123,14 +128,14 @@ async fn drop_test_dbs(ticket_db_name: String, workflow_db_name: String) {
 }
 
 async fn connect_admin_pool() -> PgPool {
-    let options =
-        PgConnectOptions::from_str(CI_POSTGRES_URL).expect("invalid ci-postgres connection string");
+    let options = PgConnectOptions::from_str(&ci_postgres_url("postgres"))
+        .expect("invalid ci-postgres connection string");
 
     PgPoolOptions::new()
         .max_connections(2)
         .connect_with(options)
         .await
         .unwrap_or_else(|_| {
-            panic!("Cannot connect to ci-postgres on localhost:5433. Run: make test-init")
+            panic!("Cannot connect to ci-postgres (port UR_CI_POSTGRES_PORT, default 5433). Run: make test-init")
         })
 }

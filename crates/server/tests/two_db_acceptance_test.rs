@@ -37,13 +37,13 @@ use ur_server::grpc_ticket::TicketServiceHandler;
 
 /// Connect to the CI postgres admin instance.
 async fn admin_pool() -> PgPool {
-    let opts = PgConnectOptions::from_str("postgres://ur:ur@localhost:5433/postgres")
+    let opts = PgConnectOptions::from_str(&ur_db_test::ci_postgres_url("postgres"))
         .expect("invalid connection string");
     PgPoolOptions::new()
         .max_connections(2)
         .connect_with(opts)
         .await
-        .expect("Cannot connect to ci-postgres on localhost:5433. Run: make test-init")
+        .expect("Cannot connect to ci-postgres (port UR_CI_POSTGRES_PORT, default 5433). Run: make test-init")
 }
 
 /// Create a named Postgres database and connect to it.
@@ -55,7 +55,7 @@ async fn create_test_db(admin: &PgPool, db_name: &str) -> (PgPool, String) {
     .await
     .unwrap_or_else(|e| panic!("failed to create database '{db_name}': {e}"));
 
-    let db_url = format!("postgres://ur:ur@localhost:5433/{db_name}");
+    let db_url = ur_db_test::ci_postgres_url(db_name);
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&db_url)
