@@ -8,7 +8,8 @@
 //! A file is only considered once it has been idle for `idle_minutes` (the `as_of` cutoff), so
 //! live sessions, including the dream run's own, are left for a later run. Every call records
 //! in `state.json` how far each returned session was read and the memory cutoff, so the next call
-//! returns only what is new. An interrupted run that never commits can discard the uncommitted
+//! returns only what is new. Sessions are keyed there by `state::session_key`, which keeps the
+//! home directory out of the committed brain; printed paths stay absolute. An interrupted run that never commits can discard the uncommitted
 //! `state.json` to have the same content returned again.
 
 use std::collections::BTreeSet;
@@ -23,7 +24,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::config::{Config, Harvest, expand};
-use super::state::{SessionCursor, State};
+use super::state::{SessionCursor, State, session_key};
 
 static REMINDER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<system-reminder>.*?</system-reminder>").unwrap());
@@ -145,7 +146,7 @@ pub fn harvest(brain: &Path, cfg: &Config, st: &State, as_of: DateTime<Utc>) -> 
         }
         match digest(&c, h) {
             Ok(s) => {
-                cursors.push((key(&c.path), s.through_line));
+                cursors.push((cursor_key(&c.path), s.through_line));
                 if s.messages.is_empty() {
                     skipped_without_messages += 1;
                 } else {
@@ -191,8 +192,14 @@ pub fn record(st: &mut State, report: &HarvestReport) {
     st.harvest.memory_as_of = Some(report.as_of.clone());
 }
 
+/// A path as printed: absolute (output is not committed).
 fn key(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+/// A transcript's `harvest.sessions` key, as `state.json` stores it.
+fn cursor_key(path: &Path) -> String {
+    session_key(&key(path), dirs::home_dir().as_deref())
 }
 
 fn expand_globs(
@@ -254,7 +261,7 @@ fn candidates(
             if m > as_of || !on_or_after(m, since) {
                 continue;
             }
-            let cursor = st.harvest.sessions.get(&key(&path));
+            let cursor = st.harvest.sessions.get(&cursor_key(&path));
             let unchanged = cursor
                 .and_then(|c| parse_as_of(&c.harvested_at))
                 .is_some_and(|at| m <= at);
@@ -586,7 +593,7 @@ mod tests {
         assert_eq!(r.memory[0].text, "x");
         assert_eq!(r.globs.len(), 2);
         record(&mut st, &r);
-        assert_eq!(st.harvest.sessions[&key(&old)].lines, 2);
+        assert_eq!(st.harvest.sessions[&cursor_key(&old)].lines, 2);
 
         // Same cutoff again: old is done, mid comes up; memory already listed.
         let r = harvest(b, &cfg, &st, as_of);
@@ -601,7 +608,7 @@ mod tests {
         let mut st2 = st;
         st2.harvest
             .sessions
-            .insert(key(&b.join("t/a/mid.jsonl")), cursor(2, &later));
+            .insert(cursor_key(&b.join("t/a/mid.jsonl")), cursor(2, &later));
         let r = harvest(b, &cfg, &st2, later);
         assert_eq!(r.sessions.len(), 1);
         let s = &r.sessions[0];

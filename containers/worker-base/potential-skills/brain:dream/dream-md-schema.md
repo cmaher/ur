@@ -125,8 +125,12 @@ that is not an ASCII letter or digit replaced by `-` (`/Users/me/src/r` →
 Only `<session>.jsonl` files directly in a matched directory are read; subagent transcripts in
 `<session>/` subdirectories are not. A session is read once it has been idle for `idle_minutes`;
 `state.json` `harvest.sessions` records how many lines of each were returned, so a resumed session
-returns only its new lines. Memory files are listed (with their text) when they changed after the
-previous harvest.
+returns only its new lines. Its keys never carry the home directory, since the brain may be shared:
+a path under home is stored as `~/...`, and the encoded home at the start of a transcript directory
+name as `~` (`/Users/me/.claude/projects/-Users-me-src-r/<session>.jsonl` is stored as
+`~/.claude/projects/~-src-r/<session>.jsonl`). Keys written as absolute paths by older versions are
+still matched, and rewritten the next time `state.json` is saved. Memory files are listed (with
+their text) when they changed after the previous harvest.
 
 ## Ref kinds
 
@@ -208,7 +212,7 @@ checkpoint.
                             reviews: { "<path>": { last_reviewed, interval_days,
                                                    history: [{ date, outcome, note,
                                                               at: { <repo>: <sha> } }] } }
-                            harvest: { sessions: { "<transcript path>": { lines, harvested_at } },
+                            harvest: { sessions: { "<~/ transcript path>": { lines, harvested_at } },
                                        memory_as_of }
                             last_run
   reports/YYYY-MM-DD.md   each run's changelog, committed with the run's edits as
