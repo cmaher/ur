@@ -33,6 +33,7 @@ No workerd inbound auth and no host-port auth are added in this batch.
 | `WorkerStop` (worker port, ur-9zj01) | Any worker may stop itself (workerd's exit sink does this). Stopping another worker needs a manual caller and a same-project target. |
 | `WorkerLaunch` (worker port, ur-9zj01) | The launch's effective project must be the caller's project. Manual callers may launch; design callers keep the `ur-workertools workflow dispatch` path (see below); code callers are denied. |
 | Host CLI | Unchanged: full access on the host port. |
+| Agent guidance | The `drive-workers` skill (`containers/worker-base/potential-skills/drive-workers/`), installed for manual-strategy workers only: send → wait-idle → read, `--screen` when stuck, never answer a peer's permission prompts. |
 | Workflow interaction | Allowed. A peer can type into a worker mid-step (e.g. while Implement is in flight); the workflow coordinator is not told. Known limit. |
 | Loop / runaway | None beyond the audit log (follow-up ur-5f3gm: depth and fan-out limits). |
 | Audit | Every worker-initiated call logs caller worker id, target, and verb at info level (`worker peer access`). |

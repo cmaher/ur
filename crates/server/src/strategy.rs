@@ -105,6 +105,8 @@ impl WorkerStrategy {
                     // Brain consolidation: a person drives it, so manual workers only.
                     "brain:dream".into(),
                     "brain:dream-init".into(),
+                    // Only manual workers may drive other workers (grpc_peer.rs).
+                    "drive-workers".into(),
                 ]);
             }
         }
@@ -174,6 +176,7 @@ mod tests {
             let skills = strategy.skills();
             assert!(!skills.contains(&"brain:dream".to_string()));
             assert!(!skills.contains(&"brain:dream-init".to_string()));
+            assert!(!skills.contains(&"drive-workers".to_string()));
         }
     }
 
@@ -194,6 +197,8 @@ mod tests {
         // Brain consolidation
         assert!(skills.contains(&"brain:dream".to_string()));
         assert!(skills.contains(&"brain:dream-init".to_string()));
+        // Driving other workers
+        assert!(skills.contains(&"drive-workers".to_string()));
         // Common skills
         assert!(skills.contains(&"green".to_string()));
         assert!(skills.contains(&"cli-design".to_string()));

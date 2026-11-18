@@ -218,13 +218,22 @@ branches on `runtime`:
 
 `ur worker read|keys|interrupt` and `--wait-idle` (ur-o15mo) take the same route for both runtimes
 as `ur worker send`: CLI → server `CoreService` (`CaptureWorkerPane`, `ReadWorkerTranscript`,
-`SendWorkerKeys`, `InterruptWorker`, `WaitWorkerIdle`; host server only, the worker server answers
-`Unimplemented`) → `WorkerdAddressResolver::tracked_client_for` → the container's workerd, or
+`SendWorkerKeys`, `InterruptWorker`, `WaitWorkerIdle`) → `WorkerdAddressResolver::tracked_client_for` → the container's workerd, or
 builderd's `WorkerdRouter` (`ur-worker-id`) → the local worker's in-process daemon. That daemon's
 `SessionControlManager` reads Claude logs from the user's `~/.claude/projects/<slot slug>/` (the
 pane cwd is the slot), and shares an `InterruptGrace` with the worker's exit watcher so a key press
 or interrupt never reads as the agent exiting. Details: `crates/workerd/CLAUDE.md` ("Session
 control").
+
+The worker server serves the same RPCs (plus `WorkerList` and `SendWorkerMessage`) to agents inside
+workers, through `ur-workertools worker list|read|send|keys|interrupt|wait-idle`, for both
+runtimes. There every call first passes `WorkerCoreServiceHandler::peer_access`
+(`crates/server/src/grpc_peer.rs`): the caller's row comes from `ur-worker-id`, only a `manual`
+caller may drive other workers (`PermissionDenied` otherwise), and targets are limited to running
+workers in the caller's project (`NotFound` otherwise). The same resolver gates the worker port's
+`WorkerStop` (self-stop always allowed) and `WorkerLaunch` (caller's project only). Agents learn it
+from the manual-only `drive-workers` skill. Policy and trust model:
+`docs/plans/ur-o15mo-session-control.md`.
 
 Session logs last written before the worker's session started are ignored (a reused slot keeps the
 previous worker's logs): a fresh launch records the time before creating the tmux session, an

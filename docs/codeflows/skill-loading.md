@@ -314,7 +314,7 @@ Prefer `%URCONFIG%/...` paths stored under `~/.ur/` (or wherever `$UR_CONFIG` po
 | `crates/workerd/src/init/instructions.rs` | Composes the strategy instruction file + shared fragments + project reference |
 | `crates/workerd/src/init/settings.rs` | Verbatim-copies the baked settings file (no model merge) |
 | `crates/ur_config/src/agent.rs` | `AgentType`/`AgentAuth` — per-agent home subdir, skill subdir, instruction filename, default models |
-| `crates/server/src/strategy.rs` | Default skill lists per mode (`WorkerStrategy::skills()`, `common_skills()`) |
+| `crates/server/src/strategy.rs` | Default skill lists per mode (`WorkerStrategy::skills()`, `common_skills()`); manual-only skills (`brain:dream*`, `drive-workers`) are listed only under `Manual` |
 | `crates/server/src/worker.rs` | Mode resolution, `[worker_models]` parsing (`RawWorkerModels`, `effective_default_model()`), injects UR_WORKER_SKILLS, UR_WORKER_INSTRUCTION_STRATEGY, UR_WORKER_MODEL, and UR_AGENT_TYPE env vars |
 
 ## Skill Hook Integration
