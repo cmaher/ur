@@ -361,20 +361,40 @@ impl AgentType {
     /// (`/Users/me/p.q` → `-Users-me-p-q`), under `~/.claude/projects/`.
     pub fn local_memory_dir(&self, home: &Path, cwd: &Path) -> Option<PathBuf> {
         match self {
-            Self::Claude => {
-                let encoded: String = cwd
-                    .to_string_lossy()
-                    .chars()
-                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-                    .collect();
-                Some(
-                    home.join(self.home_subdir())
-                        .join("projects")
-                        .join(encoded)
-                        .join("memory"),
-                )
-            }
+            Self::Claude => Some(
+                home.join(self.home_subdir())
+                    .join("projects")
+                    .join(claude_cwd_slug(cwd))
+                    .join("memory"),
+            ),
             Self::Codex | Self::Agy => None,
+        }
+    }
+
+    /// Where this agent writes its per-session conversation log for a session
+    /// whose cwd is `cwd`, under the agent home `<home>/<home_subdir()>`, or
+    /// `None` when the agent has no stable log format to read (agy: callers
+    /// fall back to capturing the screen).
+    pub fn transcript_location(&self, home: &Path, cwd: &Path) -> Option<TranscriptLocation> {
+        let agent_home = home.join(self.home_subdir());
+        match self {
+            Self::Claude => Some(TranscriptLocation::ClaudeProjectDir {
+                dir: agent_home.join("projects").join(claude_cwd_slug(cwd)),
+            }),
+            Self::Codex => Some(TranscriptLocation::CodexSessions {
+                root: agent_home.join("sessions"),
+                cwd: cwd.to_path_buf(),
+            }),
+            Self::Agy => None,
+        }
+    }
+
+    /// tmux key names that interrupt the agent's current turn without
+    /// exiting it. Every agent stops a running turn on `Escape`; `C-c` is
+    /// avoided because on an idle prompt it starts the agent's exit sequence.
+    pub fn interrupt_keys(&self) -> &'static [&'static str] {
+        match self {
+            Self::Claude | Self::Codex | Self::Agy => &["Escape"],
         }
     }
 
@@ -521,10 +541,59 @@ impl AgentType {
     }
 }
 
+/// Where an agent's session logs live; see [`AgentType::transcript_location`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TranscriptLocation {
+    /// Claude Code: one `<session>.jsonl` per session in `dir`; the newest by
+    /// mtime is the live session.
+    ClaudeProjectDir { dir: PathBuf },
+    /// Codex: `rollout-*.jsonl` files anywhere under `root`, each opening with
+    /// a `session_meta` line naming the session's `cwd`; the newest whose
+    /// cwd equals `cwd` is the live session.
+    CodexSessions { root: PathBuf, cwd: PathBuf },
+}
+
+/// Claude Code's per-project directory name for `cwd`: every character that is
+/// not an ASCII letter or digit becomes `-` (`/Users/me/p.q` → `-Users-me-p-q`).
+fn claude_cwd_slug(cwd: &Path) -> String {
+    cwd.to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn transcript_location_per_agent() {
+        let home = Path::new("/home/worker");
+        let cwd = Path::new("/workspace");
+        assert_eq!(
+            AgentType::Claude.transcript_location(home, cwd),
+            Some(TranscriptLocation::ClaudeProjectDir {
+                dir: PathBuf::from("/home/worker/.claude/projects/-workspace"),
+            })
+        );
+        assert_eq!(
+            AgentType::Codex.transcript_location(home, cwd),
+            Some(TranscriptLocation::CodexSessions {
+                root: PathBuf::from("/home/worker/.codex/sessions"),
+                cwd: PathBuf::from("/workspace"),
+            })
+        );
+        assert_eq!(AgentType::Agy.transcript_location(home, cwd), None);
+    }
+
+    #[test]
+    fn interrupt_keys_never_include_ctrl_c() {
+        for agent in AgentType::ALL {
+            assert!(!agent.interrupt_keys().is_empty(), "{agent:?}");
+            assert!(!agent.interrupt_keys().contains(&"C-c"), "{agent:?}");
+        }
+    }
 
     /// Serialize tests that mutate the process-wide `UR_AGENT_TYPE` env var.
     static ENV_MUTEX: Mutex<()> = Mutex::new(());

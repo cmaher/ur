@@ -6,7 +6,7 @@ mod template_path;
 
 pub use agent::{
     AgentAuth, AgentType, AuthSource, MIN_SEEDED_CREDENTIALS_BYTES, ParseAgentError,
-    UnknownAliasError, credentials_file_is_seeded,
+    TranscriptLocation, UnknownAliasError, credentials_file_is_seeded,
 };
 pub use forge::{ForgeType, UR_WORKER_FORGE_ENV, parse_forge_from_url};
 pub use runtime::{WorkerRuntime, resolve_worker_runtime};
