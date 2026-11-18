@@ -25,7 +25,7 @@ container and host-local workers.
 - `ur-workertools workflow set-ticket <id>` — sets the ticket ID on workerd for dispatch
 - `ur-workertools workflow dispatch` — dispatches the previously set ticket to the server for workflow creation
   (workerd sends `CreateWorkflow` + `WorkerLaunch` to the worker port; the server allows that launch for
-  design and manual callers in the same project)
+  design callers sending exactly that request, and manual callers, in the same project)
 - `ur-workertools worker list|read|send|keys|interrupt|wait-idle` (`src/worker.rs`) — drive other workers in
   this worker's project through the server's worker port (`CoreService`). Flags mirror `ur worker`
   (`read --screen [--lines N] | --turns N | --json`, `send --no-submit | --wait-idle [--timeout S]`,

@@ -31,12 +31,12 @@ No workerd inbound auth and no host-port auth are added in this batch.
 | Targets | Running workers in the caller's project (by process id or full worker id). Anything else, including another project's worker, is `NotFound` with the same message as a missing worker. A caller with no project sees no peers. |
 | Worker-callable verbs | `list`, `read` (transcript and `--screen`), `send` (submit / `--no-submit` / `--wait-idle`), `keys`, `interrupt`, `wait-idle`. Launching or stopping peers through `ur-workertools` is not added (follow-up ur-ge03l). |
 | `WorkerStop` (worker port, ur-9zj01) | Any worker may stop itself (workerd's exit sink does this). Stopping another worker needs a manual caller and a same-project target. |
-| `WorkerLaunch` (worker port, ur-9zj01) | The launch's effective project must be the caller's project. Manual callers may launch; design callers keep the `ur-workertools workflow dispatch` path (see below); code callers are denied. |
+| `WorkerLaunch` (worker port, ur-9zj01) | The launch's effective project must be the caller's project. Manual callers may launch; design callers may send only workerd's exact dispatch request (`WorkerLaunchRequest { worker_id, ..Default::default() }`, the `ur-workertools workflow dispatch` path, see below); everything else is denied. |
 | Host CLI | Unchanged: full access on the host port. |
 | Agent guidance | The `drive-workers` skill (`containers/worker-base/potential-skills/drive-workers/`), installed for manual-strategy workers only: send → wait-idle → read, `--screen` when stuck, never answer a peer's permission prompts. |
 | Workflow interaction | Allowed. A peer can type into a worker mid-step (e.g. while Implement is in flight); the workflow coordinator is not told. Known limit. |
 | Loop / runaway | None beyond the audit log (follow-up ur-5f3gm: depth and fan-out limits). |
-| Audit | Every worker-initiated call logs caller worker id, target, and verb at info level (`worker peer access`). |
+| Audit | Every worker-initiated call, whatever its outcome, logs one info line `worker peer access` with caller worker id, requested target, verb, and outcome (`allowed`, `denied`, `not_found`, `unauthenticated`). |
 
 Existing self-directed worker calls are unaffected: workerd's self-stop on agent exit sends
 `WorkerStop` with its own worker id, and design workers' `workflow dispatch` reaches the
@@ -57,7 +57,7 @@ WorkerCoreServiceHandler ── PeerAccess (crates/server/src/grpc_peer.rs), sha
   │   1. load caller row by ur-worker-id                       else Unauthenticated
   │   2. caller strategy == manual (self-stop / design launch)  else PermissionDenied
   │   3. target running + same project                         else NotFound
-  │   4. info!(caller, target, verb)
+  │   4. info!(caller, target, verb, outcome) — on every outcome above
   ▼
 grpc_session.rs shared verb bodies (same validation/defaults as the host path)
   │   WorkerdAddressResolver::tracked_client_for(target)

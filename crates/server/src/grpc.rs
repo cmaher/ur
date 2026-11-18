@@ -1383,8 +1383,10 @@ impl CoreService for WorkerCoreServiceHandler {
         &self,
         req: Request<WorkerLaunchRequest>,
     ) -> Result<Response<WorkerLaunchResponse>, Status> {
+        let verb = crate::grpc_peer::launch_verb(req.get_ref());
+        let target = req.get_ref().worker_id.clone();
         let access = self
-            .peer_access(req.metadata(), PeerVerb::Launch, None)
+            .peer_access(req.metadata(), verb, Some(&target))
             .await?;
         let req = req.into_inner();
         access.authorize_launch(&req)?;
@@ -1447,8 +1449,9 @@ impl CoreService for WorkerCoreServiceHandler {
         &self,
         req: Request<SendWorkerMessageRequest>,
     ) -> Result<Response<SendWorkerMessageResponse>, Status> {
+        let target = req.get_ref().worker_id.clone();
         let access = self
-            .peer_access(req.metadata(), PeerVerb::Send, None)
+            .peer_access(req.metadata(), PeerVerb::Send, Some(&target))
             .await?;
         crate::grpc_session::send_worker_message(&access, req.into_inner()).await?;
         Ok(Response::new(SendWorkerMessageResponse {
@@ -1461,8 +1464,9 @@ impl CoreService for WorkerCoreServiceHandler {
         &self,
         req: Request<CaptureWorkerPaneRequest>,
     ) -> Result<Response<CaptureWorkerPaneResponse>, Status> {
+        let target = req.get_ref().worker_id.clone();
         let access = self
-            .peer_access(req.metadata(), PeerVerb::ReadScreen, None)
+            .peer_access(req.metadata(), PeerVerb::ReadScreen, Some(&target))
             .await?;
         Ok(Response::new(
             crate::grpc_session::capture_worker_pane(&access, req.into_inner()).await?,
@@ -1473,8 +1477,9 @@ impl CoreService for WorkerCoreServiceHandler {
         &self,
         req: Request<ReadWorkerTranscriptRequest>,
     ) -> Result<Response<ReadWorkerTranscriptResponse>, Status> {
+        let target = req.get_ref().worker_id.clone();
         let access = self
-            .peer_access(req.metadata(), PeerVerb::ReadTranscript, None)
+            .peer_access(req.metadata(), PeerVerb::ReadTranscript, Some(&target))
             .await?;
         Ok(Response::new(
             crate::grpc_session::read_worker_transcript(&access, req.into_inner()).await?,
@@ -1485,8 +1490,9 @@ impl CoreService for WorkerCoreServiceHandler {
         &self,
         req: Request<SendWorkerKeysRequest>,
     ) -> Result<Response<SendWorkerKeysResponse>, Status> {
+        let target = req.get_ref().worker_id.clone();
         let access = self
-            .peer_access(req.metadata(), PeerVerb::Keys, None)
+            .peer_access(req.metadata(), PeerVerb::Keys, Some(&target))
             .await?;
         crate::grpc_session::send_worker_keys(&access, req.into_inner()).await?;
         Ok(Response::new(SendWorkerKeysResponse {}))
@@ -1496,8 +1502,9 @@ impl CoreService for WorkerCoreServiceHandler {
         &self,
         req: Request<InterruptWorkerRequest>,
     ) -> Result<Response<InterruptWorkerResponse>, Status> {
+        let target = req.get_ref().worker_id.clone();
         let access = self
-            .peer_access(req.metadata(), PeerVerb::Interrupt, None)
+            .peer_access(req.metadata(), PeerVerb::Interrupt, Some(&target))
             .await?;
         crate::grpc_session::interrupt_worker(&access, req.into_inner()).await?;
         Ok(Response::new(InterruptWorkerResponse {}))
@@ -1507,8 +1514,9 @@ impl CoreService for WorkerCoreServiceHandler {
         &self,
         req: Request<WaitWorkerIdleRequest>,
     ) -> Result<Response<WaitWorkerIdleResponse>, Status> {
+        let target = req.get_ref().worker_id.clone();
         let access = self
-            .peer_access(req.metadata(), PeerVerb::WaitIdle, None)
+            .peer_access(req.metadata(), PeerVerb::WaitIdle, Some(&target))
             .await?;
         Ok(Response::new(
             crate::grpc_session::wait_worker_idle(&access, req.into_inner()).await?,

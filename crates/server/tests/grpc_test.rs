@@ -866,8 +866,29 @@ async fn worker_port_with_peers() -> (
     FakeWorkerd,
     ur_db_test::TestDb,
 ) {
+    worker_port_with_projects(None).await
+}
+
+/// [`worker_port_with_peers`], with the project registry loaded from
+/// `ur_toml` when given.
+async fn worker_port_with_projects(
+    ur_toml: Option<&str>,
+) -> (
+    ur_rpc::proto::core::core_service_client::CoreServiceClient<tonic::transport::Channel>,
+    FakeWorkerd,
+    ur_db_test::TestDb,
+) {
     let fake = FakeWorkerd::default();
     let (mut handler, _ticket_repo, _workflow_repo, test_db) = make_worker_handler().await;
+    if let Some(toml) = ur_toml {
+        let config =
+            ur_config::Config::from_toml_str(toml, std::path::Path::new("/tmp/ur-peer-test"))
+                .unwrap();
+        handler.launch_manager.project_registry = ur_server::ProjectRegistry::new(
+            config.projects,
+            ur_server::hostexec::HostExecConfigManager::empty(),
+        );
+    }
     handler.launch_manager.workerd_resolver = fake_workerd_resolver(&fake).await;
     for row in [
         peer_row(MANUAL, "ur", "manual"),
@@ -1118,27 +1139,14 @@ async fn worker_port_cross_project_target_is_not_found_for_every_verb() {
     assert!(fake.routed_ids.lock().unwrap().is_empty());
 }
 
-/// What a non-manual caller gets: `PermissionDenied`, except a design
-/// caller's launch, which passes the policy into its own project only.
+/// What a non-manual caller gets: `PermissionDenied` (a design caller's
+/// launch here is not workerd's dispatch shape, so it is refused too).
 fn assert_non_manual_outcome(
     caller: &str,
     target: &str,
     verb: &str,
     result: Result<(), tonic::Status>,
 ) {
-    if caller == DESIGN && verb == "launch" {
-        let expected = if target == PEER {
-            Ok(())
-        } else {
-            Err(tonic::Code::NotFound)
-        };
-        assert_eq!(
-            result.map_err(|s| s.code()),
-            expected,
-            "design launch into {target}"
-        );
-        return;
-    }
     let err = result.expect_err(verb);
     assert_eq!(
         err.code(),
@@ -1149,8 +1157,9 @@ fn assert_non_manual_outcome(
 }
 
 /// Only manual workers may drive other workers: code and design callers are
-/// refused on every verb before any lookup. Design keeps same-project launch
-/// (`workflow dispatch`), and any worker may still stop itself.
+/// refused on every verb before any lookup (design keeps only workerd's exact
+/// dispatch launch, see `worker_port_design_dispatch_shape_*`), and any worker
+/// may still stop itself.
 #[tokio::test]
 async fn worker_port_non_manual_caller_is_denied_every_verb() {
     use ur_rpc::proto::core::{WorkerListRequest, WorkerStopRequest};
@@ -1204,4 +1213,167 @@ async fn worker_port_unknown_caller_is_unauthenticated() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::Unauthenticated);
+}
+
+/// workerd's `DispatchTicket` sends exactly `WorkerLaunch { worker_id }`; from
+/// a design caller that passes the policy when the ticket prefix is a
+/// registered project of the caller's (here the launch then stops at the
+/// local-project check, past the policy), and nothing else does.
+#[tokio::test]
+async fn worker_port_design_dispatch_shape_passes_policy() {
+    use ur_rpc::proto::core::WorkerLaunchRequest;
+
+    let (mut client, _fake, _db) =
+        worker_port_with_projects(Some("[projects.ur]\nlocal = true\n")).await;
+    let dispatch = WorkerLaunchRequest {
+        worker_id: "ur-abc".into(),
+        ..Default::default()
+    };
+    let err = client
+        .worker_launch(as_worker(DESIGN, dispatch.clone()))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition, "{err:?}");
+    assert!(err.message().contains("is local"), "{err:?}");
+
+    let as_manual_mode = WorkerLaunchRequest {
+        mode: "manual".into(),
+        ..dispatch.clone()
+    };
+    let err = client
+        .worker_launch(as_worker(DESIGN, as_manual_mode))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::PermissionDenied, "{err:?}");
+    assert!(err.message().contains("only manual workers"), "{err:?}");
+
+    // The same shape from a code worker is still refused.
+    let err = client
+        .worker_launch(as_worker(CODE, dispatch))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::PermissionDenied, "{err:?}");
+}
+
+/// A dispatch for a ticket whose prefix is not a registered project has no
+/// project, so it is NotFound even from a design caller.
+#[tokio::test]
+async fn worker_port_design_dispatch_shape_needs_the_callers_project() {
+    use ur_rpc::proto::core::WorkerLaunchRequest;
+
+    let (mut client, _fake, _db) = worker_port_with_peers().await;
+    let err = client
+        .worker_launch(as_worker(
+            DESIGN,
+            WorkerLaunchRequest {
+                worker_id: "ur-abc".into(),
+                ..Default::default()
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::NotFound, "{err:?}");
+}
+
+/// Another project's worker and a missing one give the same code and the
+/// same message (apart from echoing the requested id).
+#[tokio::test]
+async fn worker_port_hidden_and_missing_targets_look_identical() {
+    let (mut client, _fake, _db) = worker_port_with_peers().await;
+    let outcome = |results: VerbResults, id: &str| -> Vec<(&'static str, tonic::Code, String)> {
+        results
+            .into_iter()
+            .filter(|(verb, _)| matches!(*verb, "read" | "read --screen" | "stop"))
+            .map(|(verb, r)| {
+                let err = r.expect_err(verb);
+                (verb, err.code(), err.message().replace(id, "<id>"))
+            })
+            .collect()
+    };
+    let hidden = outcome(
+        every_targeted_verb(&mut client, MANUAL, OTHER_PROJECT).await,
+        OTHER_PROJECT,
+    );
+    let missing = outcome(
+        every_targeted_verb(&mut client, MANUAL, "ur-nope").await,
+        "ur-nope",
+    );
+    assert_eq!(hidden.len(), 3);
+    assert_eq!(hidden, missing);
+}
+
+/// Captures `fmt` output for the duration of a test on this thread.
+#[derive(Clone, Default)]
+struct LogCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl LogCapture {
+    /// The process-wide capture, installed as the global subscriber on first
+    /// use. Global rather than thread-local: tests run in parallel, and a
+    /// callsite first hit on another thread would otherwise cache "never".
+    /// Other tests' lines land here too, so assertions match unique ids.
+    fn global() -> &'static LogCapture {
+        static CAPTURE: std::sync::OnceLock<LogCapture> = std::sync::OnceLock::new();
+        CAPTURE.get_or_init(|| {
+            let capture = LogCapture::default();
+            let writer = capture.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .with_max_level(tracing::Level::INFO)
+                .with_writer(move || writer.clone())
+                .finish();
+            tracing::subscriber::set_global_default(subscriber).unwrap();
+            capture
+        })
+    }
+
+    /// The `worker peer access` audit lines logged so far.
+    fn audit_lines(&self) -> Vec<String> {
+        String::from_utf8_lossy(&self.0.lock().unwrap())
+            .lines()
+            .filter(|l| l.contains("worker peer access"))
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+/// Denied and not-found calls are audited too, with the requested target.
+#[tokio::test]
+async fn worker_port_audits_denied_and_not_found_calls() {
+    use ur_rpc::proto::core::CaptureWorkerPaneRequest;
+
+    let capture = LogCapture::global();
+    let (mut client, _fake, _db) = worker_port_with_peers().await;
+    let read = |target: &str| CaptureWorkerPaneRequest {
+        worker_id: target.into(),
+        lines: 0,
+    };
+    client
+        .capture_worker_pane(as_worker(CODE, read(PEER)))
+        .await
+        .unwrap_err();
+    client
+        .capture_worker_pane(as_worker(MANUAL, read(OTHER_PROJECT)))
+        .await
+        .unwrap_err();
+
+    let lines = capture.audit_lines();
+    let has = |parts: &[&str]| lines.iter().any(|l| parts.iter().all(|p| l.contains(p)));
+    assert!(
+        has(&[CODE, PEER, "read_screen", "denied"]),
+        "no denied audit line: {lines:#?}"
+    );
+    assert!(
+        has(&[MANUAL, OTHER_PROJECT, "read_screen", "not_found"]),
+        "no not_found audit line: {lines:#?}"
+    );
 }

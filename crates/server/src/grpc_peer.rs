@@ -6,9 +6,10 @@
 //! `ur-worker-id` header (the auth interceptor already checked its secret) and
 //! refuses callers that may not drive other workers; [`PeerAccess`] then
 //! resolves targets in the caller's project only, so another project's worker
-//! is indistinguishable from a missing one. Every resolved call is logged with
-//! caller, target and verb. This is a guardrail for well-behaved agents, not a
-//! security boundary.
+//! is indistinguishable from a missing one. Every call, whatever its outcome,
+//! is logged once as `worker peer access` with caller, requested target, verb
+//! and outcome. This is a guardrail for well-behaved agents, not a security
+//! boundary.
 
 use tonic::Status;
 use tonic::metadata::MetadataMap;
@@ -36,6 +37,9 @@ pub(crate) enum PeerVerb {
     WaitIdle,
     Stop,
     Launch,
+    /// A `WorkerLaunch` exactly as workerd's `DispatchTicket` sends it
+    /// (see [`launch_verb`]).
+    DispatchLaunch,
 }
 
 impl PeerVerb {
@@ -50,7 +54,23 @@ impl PeerVerb {
             Self::WaitIdle => "wait_idle",
             Self::Stop => "stop",
             Self::Launch => "launch",
+            Self::DispatchLaunch => "dispatch_launch",
         }
+    }
+}
+
+/// `DispatchLaunch` for the request workerd's `dispatch_ticket_to_server`
+/// builds — `WorkerLaunchRequest { worker_id, ..Default::default() }`, every
+/// other field at its default — else `Launch`.
+pub(crate) fn launch_verb(req: &WorkerLaunchRequest) -> PeerVerb {
+    let dispatch_shape = WorkerLaunchRequest {
+        worker_id: req.worker_id.clone(),
+        ..Default::default()
+    };
+    if !req.worker_id.is_empty() && *req == dispatch_shape {
+        PeerVerb::DispatchLaunch
+    } else {
+        PeerVerb::Launch
     }
 }
 
@@ -60,10 +80,28 @@ fn may_drive(strategy: Option<WorkerStrategy>, verb: PeerVerb) -> bool {
     match strategy {
         Some(WorkerStrategy::Manual) => true,
         // Design workers' `ur-workertools workflow dispatch` reaches the
-        // server as workerd's WorkerLaunch; the default design mode depends on it.
-        Some(WorkerStrategy::Design) => verb == PeerVerb::Launch,
+        // server as workerd's WorkerLaunch; the default design mode depends on
+        // it. Only that exact request shape.
+        Some(WorkerStrategy::Design) => verb == PeerVerb::DispatchLaunch,
         _ => false,
     }
+}
+
+/// Audit outcomes.
+const ALLOWED: &str = "allowed";
+const DENIED: &str = "denied";
+const NOT_FOUND: &str = "not_found";
+const UNAUTHENTICATED: &str = "unauthenticated";
+
+/// The one audit line per worker-initiated peer call.
+fn audit(caller: &str, target: &str, verb: PeerVerb, outcome: &str) {
+    info!(
+        caller,
+        target,
+        verb = verb.as_str(),
+        outcome,
+        "worker peer access"
+    );
 }
 
 /// A caller cleared to use one verb; resolves its targets.
@@ -75,24 +113,33 @@ pub(crate) struct PeerAccess<'a> {
 
 impl WorkerCoreServiceHandler {
     /// Load the caller and check it may use `verb`. `target` is the worker id
-    /// the request names, if any: a worker may always stop itself.
+    /// the request names (`None` for list; the new worker id for launch): a
+    /// worker may always stop itself.
     pub(crate) async fn peer_access(
         &self,
         metadata: &MetadataMap,
         verb: PeerVerb,
         target: Option<&str>,
     ) -> Result<PeerAccess<'_>, Status> {
+        let shown = target.unwrap_or("*");
         let caller_id = metadata
             .get(ur_config::WORKER_ID_HEADER)
-            .ok_or_else(|| Status::unauthenticated("missing ur-worker-id header"))?
-            .to_str()
-            .map_err(|_| Status::unauthenticated("invalid ur-worker-id header encoding"))?;
-        let caller = self
-            .worker_repo
-            .get_worker(caller_id)
-            .await
-            .map_err(|e| Status::internal(format!("db error: {e}")))?
-            .ok_or_else(|| Status::unauthenticated(format!("unknown worker {caller_id}")))?;
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        let caller = if caller_id.is_empty() {
+            None
+        } else {
+            self.worker_repo
+                .get_worker(caller_id)
+                .await
+                .map_err(|e| Status::internal(format!("db error: {e}")))?
+        };
+        let Some(caller) = caller else {
+            audit(caller_id, shown, verb, UNAUTHENTICATED);
+            return Err(Status::unauthenticated(format!(
+                "unknown or missing ur-worker-id '{caller_id}'"
+            )));
+        };
         let access = PeerAccess {
             handler: self,
             caller,
@@ -101,13 +148,7 @@ impl WorkerCoreServiceHandler {
         let self_stop = verb == PeerVerb::Stop && target.is_some_and(|t| access.is_caller(t));
         let strategy = WorkerStrategy::from_name(&access.caller.strategy).ok();
         if !self_stop && !may_drive(strategy, verb) {
-            info!(
-                caller = access.caller.worker_id,
-                target = target.unwrap_or_default(),
-                verb = verb.as_str(),
-                strategy = access.caller.strategy,
-                "worker peer access denied"
-            );
+            access.audit(shown, DENIED);
             return Err(Status::permission_denied(DRIVER_ONLY_MESSAGE));
         }
         Ok(access)
@@ -124,13 +165,17 @@ impl PeerAccess<'_> {
         !self.caller.project_key.is_empty() && project_key == self.caller.project_key
     }
 
-    fn audit(&self, target: &str) {
-        info!(
-            caller = self.caller.worker_id,
-            target,
-            verb = self.verb.as_str(),
-            "worker peer access"
-        );
+    fn audit(&self, target: &str, outcome: &str) {
+        audit(&self.caller.worker_id, target, self.verb, outcome);
+    }
+
+    /// `NotFound` for `id`, identical for a missing and a hidden worker.
+    fn not_found(&self, id: &str) -> Status {
+        self.audit(id, NOT_FOUND);
+        CoreError::WorkerNotFound {
+            worker_id: id.to_owned(),
+        }
+        .into()
     }
 
     /// The running same-project worker `id` names (process id or full id).
@@ -145,16 +190,14 @@ impl PeerAccess<'_> {
             .into_iter()
             .filter(|w| self.visible(&w.project_key))
             .find(|w| w.worker_id == id || w.process_id == id)
-            .ok_or_else(|| CoreError::WorkerNotFound {
-                worker_id: id.to_owned(),
-            })?;
-        self.audit(&target.worker_id);
+            .ok_or_else(|| self.not_found(id))?;
+        self.audit(id, ALLOWED);
         Ok(target)
     }
 
     /// Running workers in the caller's project, for `WorkerList`.
     pub(crate) async fn peers(&self) -> Vec<WorkerSummary> {
-        self.audit("*");
+        self.audit("*", ALLOWED);
         let summaries = self
             .handler
             .launch_manager
@@ -176,23 +219,19 @@ impl PeerAccess<'_> {
     /// (provisioning/running/stopping) same-project worker.
     pub(crate) async fn stop_target(&self, id: &str) -> Result<String, Status> {
         if self.is_caller(id) {
-            self.audit(id);
+            self.audit(id, ALLOWED);
             return Ok(id.to_owned());
         }
-        let not_found = || CoreError::WorkerNotFound {
-            worker_id: id.to_owned(),
-        };
         let target = self
             .handler
             .launch_manager
             .worker_manager
             .find_active_worker(id)
             .await
-            .map_err(|_| not_found())?;
-        if !self.visible(&target.project_key) {
-            return Err(not_found().into());
-        }
-        self.audit(&target.worker_id);
+            .ok()
+            .filter(|w| self.visible(&w.project_key))
+            .ok_or_else(|| self.not_found(id))?;
+        self.audit(id, ALLOWED);
         Ok(target.worker_id)
     }
 
@@ -203,6 +242,7 @@ impl PeerAccess<'_> {
             .launch_manager
             .resolve_effective_project_key(req);
         if !self.visible(&project_key) {
+            self.audit(&req.worker_id, NOT_FOUND);
             let shown = if project_key.is_empty() {
                 "(none)"
             } else {
@@ -213,7 +253,7 @@ impl PeerAccess<'_> {
                 req.worker_id
             )));
         }
-        self.audit(&req.worker_id);
+        self.audit(&req.worker_id, ALLOWED);
         Ok(())
     }
 }
@@ -247,6 +287,7 @@ mod tests {
             WaitIdle,
             Stop,
             Launch,
+            DispatchLaunch,
         ];
         for verb in all {
             assert!(may_drive(Some(WorkerStrategy::Manual), verb), "{verb:?}");
@@ -254,9 +295,35 @@ mod tests {
             assert!(!may_drive(None, verb), "{verb:?}");
             assert_eq!(
                 may_drive(Some(WorkerStrategy::Design), verb),
-                verb == Launch,
+                verb == DispatchLaunch,
                 "{verb:?}"
             );
+        }
+    }
+
+    #[test]
+    fn launch_verb_matches_only_the_workerd_dispatch_shape() {
+        let dispatch = WorkerLaunchRequest {
+            worker_id: "ur-abc".into(),
+            ..Default::default()
+        };
+        assert_eq!(launch_verb(&dispatch), PeerVerb::DispatchLaunch);
+        for other in [
+            WorkerLaunchRequest {
+                mode: "manual".into(),
+                ..dispatch.clone()
+            },
+            WorkerLaunchRequest {
+                workspace_dir: "/tmp/x".into(),
+                ..dispatch.clone()
+            },
+            WorkerLaunchRequest {
+                project_key: "ur".into(),
+                ..dispatch.clone()
+            },
+            WorkerLaunchRequest::default(),
+        ] {
+            assert_eq!(launch_verb(&other), PeerVerb::Launch, "{other:?}");
         }
     }
 }
