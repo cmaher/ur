@@ -26,8 +26,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use container::ContainerRuntime;
+use tonic::transport::Channel;
 use tracing::{debug, info, instrument, warn};
-use ur_rpc::connection::HostChannel;
 use ur_rpc::error::StatusResultExt;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::*;
@@ -455,19 +455,13 @@ async fn stop_server(
 
     // Try graceful stop via gRPC (proper slot release + DB cleanup), fall back to Docker
     let port = config.server_port;
-    match connection::connect(port).await {
-        Ok(channel) => {
-            let mut client = CoreServiceClient::new(channel);
-            info!("stopping workers via gRPC");
-            stop_workers_via_grpc(&mut client, output).await;
-        }
-        Err(e) => {
-            warn!(error = %e, "cannot connect to server — stopping workers via Docker");
-            output.print_text(&format!(
-                "warning: {e:#}; stopping workers via Docker instead"
-            ));
-            kill_all_containers(&config.network.worker_prefix, output)?;
-        }
+    if let Some(channel) = connection::try_connect(port) {
+        let mut client = CoreServiceClient::new(channel);
+        info!("server reachable — stopping workers via gRPC");
+        stop_workers_via_grpc(&mut client, output).await;
+    } else {
+        info!("server unreachable — stopping workers via Docker");
+        kill_all_containers(&config.network.worker_prefix, output)?;
     }
 
     let server_was_running = compose.is_running()?;
@@ -533,10 +527,7 @@ fn redeploy_component(
 ///
 /// Best-effort: logs warnings for individual failures but does not propagate errors,
 /// since the server is about to be stopped anyway.
-async fn stop_workers_via_grpc(
-    client: &mut CoreServiceClient<HostChannel>,
-    output: &OutputManager,
-) {
+async fn stop_workers_via_grpc(client: &mut CoreServiceClient<Channel>, output: &OutputManager) {
     let workers = match client.worker_list(WorkerListRequest {}).await {
         Ok(resp) => resp.into_inner().workers,
         Err(e) => {
@@ -591,7 +582,7 @@ async fn stop_workers_via_grpc(
     }
 }
 
-async fn connect(port: u16) -> Result<CoreServiceClient<HostChannel>> {
+async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
     let channel = connection::connect(port).await?;
     Ok(CoreServiceClient::new(channel))
 }
@@ -675,7 +666,7 @@ async fn attach_with_rm_cleanup(
 
 #[instrument(skip(client, output))]
 async fn process_list(
-    client: &mut CoreServiceClient<HostChannel>,
+    client: &mut CoreServiceClient<Channel>,
     output: &OutputManager,
 ) -> Result<()> {
     info!("listing processes");
@@ -725,7 +716,7 @@ fn format_worker_list(workers: &[WorkerSummary]) -> String {
 
 #[instrument(skip(client, output))]
 async fn worker_describe(
-    client: &mut CoreServiceClient<HostChannel>,
+    client: &mut CoreServiceClient<Channel>,
     worker_id: Option<&str>,
     output: &OutputManager,
 ) -> Result<()> {
@@ -839,7 +830,7 @@ async fn dispatch_ticket(port: u16, ticket_id: &str) -> Result<()> {
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip(client, output, projects), fields(ticket_id, workspace = ?workspace, project_key = ?project_key, mode, skills = ?skills))]
 async fn process_launch(
-    client: &mut CoreServiceClient<HostChannel>,
+    client: &mut CoreServiceClient<Channel>,
     ticket_id: &str,
     workspace: Option<PathBuf>,
     project_key: &str,
@@ -989,7 +980,7 @@ fn worker_launch_request(
 
 #[instrument(skip(client, output))]
 async fn process_stop(
-    client: &mut CoreServiceClient<HostChannel>,
+    client: &mut CoreServiceClient<Channel>,
     worker_id: &str,
     output: &OutputManager,
 ) -> Result<()> {
@@ -1749,23 +1740,17 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
         Commands::Init { .. } => unreachable!(),
         Commands::Project { command } => handle_project(command, &config, output).await?,
         Commands::Proxy { command } => handle_proxy(command, &config, output)?,
-        Commands::Server { command } => {
-            // Create-if-absent so every compose invocation that (re)creates
-            // ur-server hands it the host listener's token.
-            let host_token = ur_config::ensure_host_token(&config.config_dir)?;
-            let compose = compose.with_env(ur_config::UR_HOST_TOKEN_ENV, host_token);
-            match command {
-                ServerCommands::Redeploy { component } => {
-                    redeploy_component(&component, &config, &compose, output)?;
-                }
-                ServerCommands::Restart => {
-                    stop_server(&config, &compose, output).await?;
-                    start_server(&config, &compose, output)?;
-                }
-                ServerCommands::Start => start_server(&config, &compose, output)?,
-                ServerCommands::Stop => stop_server(&config, &compose, output).await?,
+        Commands::Server { command } => match command {
+            ServerCommands::Redeploy { component } => {
+                redeploy_component(&component, &config, &compose, output)?;
             }
-        }
+            ServerCommands::Restart => {
+                stop_server(&config, &compose, output).await?;
+                start_server(&config, &compose, output)?;
+            }
+            ServerCommands::Start => start_server(&config, &compose, output)?,
+            ServerCommands::Stop => stop_server(&config, &compose, output).await?,
+        },
         Commands::Ticket { command } => {
             ticket::handle(port, command, output, &config.projects).await?
         }

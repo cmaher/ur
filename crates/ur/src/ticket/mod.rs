@@ -10,10 +10,10 @@ pub use format::{format_ticket_detail, format_ticket_list};
 
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Serialize;
+use tonic::transport::Channel;
 use ur_config::ProjectConfig;
-use ur_rpc::connection::HostChannel;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::{
     ActivityDetail, ActivityEntry, DispatchableTicket, MetadataEntry, Ticket,
@@ -141,10 +141,12 @@ pub fn format_output(output: &TicketOutput) -> String {
 
 // --- Connection and project resolution (host CLI specific) ---
 
-async fn connect_ticket(port: u16) -> Result<TicketServiceClient<HostChannel>> {
-    Ok(TicketServiceClient::new(
-        ur_rpc::connection::connect(port).await?,
-    ))
+async fn connect_ticket(port: u16) -> Result<TicketServiceClient<Channel>> {
+    let addr = format!("http://127.0.0.1:{port}");
+    let retry_channel =
+        ur_rpc::retry::RetryChannel::new(&addr, ur_rpc::retry::RetryConfig::default())
+            .context("invalid server address")?;
+    Ok(TicketServiceClient::new(retry_channel.channel().clone()))
 }
 
 /// Extract the project prefix from a ticket ID (format: `{project}-{hash}`).

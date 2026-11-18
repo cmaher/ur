@@ -2,7 +2,7 @@
 
 Long-running server process. Auto-spawned by `ur` on first use (not a launchd service). Listens on TCP via tonic gRPC, serves both host CLI (`ur`) and in-container workers (`ur-workertools` and `workerd` binaries). Depends on the `ur-postgres` container for database access — reads `DATABASE_URL` env var or falls back to `config.db.database_url()` (default: `postgres://ur:ur@ur-postgres:5432/ur`).
 
-- Two gRPC servers: host server on `0.0.0.0:$server_port` (Core + Ticket, `auth::host_auth_interceptor` requires the `ur-host-token` header matching `UR_HOST_TOKEN`; the server refuses to start without it — see `docs/codeflows/server-lifecycle.md#host-listener-authentication`) and worker server on `0.0.0.0:$worker_port` (HostExec + Ticket, auth interceptor validates worker-id/secret via WorkerManager)
+- Two gRPC servers: host server on `127.0.0.1:$server_port` (Core + Ticket, no auth) and worker server on `0.0.0.0:$worker_port` (HostExec + Ticket, auth interceptor validates worker-id/secret via WorkerManager)
 - `CoreServiceHandler` is `Clone` — keep it stateless or use `Arc` for shared state
 - Config and constants are in the `ur_config` crate, re-exported via `ur_server::config`
 - `stream::spawn_child_output_stream` is the shared helper for streaming child process output as `CommandOutput` gRPC frames

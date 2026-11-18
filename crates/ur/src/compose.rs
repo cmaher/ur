@@ -54,15 +54,6 @@ impl ComposeManager {
         self
     }
 
-    /// Add an environment variable passed to `docker compose` (for the compose
-    /// file's variable interpolation). Used for secrets such as the host token
-    /// that are resolved only by commands that start containers.
-    pub fn with_env(mut self, key: &str, value: String) -> Self {
-        self.env_vars.retain(|(k, _)| k != key);
-        self.env_vars.push((key.to_owned(), value));
-        self
-    }
-
     /// Build the base `docker compose -f <file>` command with environment variables.
     fn base_command(&self) -> std::process::Command {
         let mut cmd = std::process::Command::new("docker");
@@ -542,14 +533,6 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
         "      - UR_BUILDERD_ADDR=http://host.docker.internal:${{UR_BUILDERD_PORT:-12323}}"
     )
     .unwrap();
-    // Host listener credential, interpolated from `ur start`'s environment so
-    // the token never lands in the compose file. Empty → server refuses to start.
-    writeln!(
-        out,
-        "      - {env}=${{{env}:-}}",
-        env = ur_config::UR_HOST_TOKEN_ENV
-    )
-    .unwrap();
     writeln!(out, "      - GH_TOKEN=${{GH_TOKEN:-}}").unwrap();
     writeln!(out, "      - GITHUB_TOKEN=${{GITHUB_TOKEN:-}}").unwrap();
 
@@ -779,34 +762,6 @@ mod tests {
                 .env_vars
                 .contains(&("UR_LOGS_DIR".to_string(), "/test/config/logs".to_string()))
         );
-    }
-
-    /// The host token reaches ur-server only through compose interpolation:
-    /// the generated file names the variable, never a value.
-    #[test]
-    fn host_token_is_interpolated_not_written() {
-        let config = test_config_for_compose();
-        let manager = compose_manager_from_config(&config).with_env(
-            ur_config::UR_HOST_TOKEN_ENV,
-            "secret-token-value".to_string(),
-        );
-        assert!(
-            manager
-                .compose_content
-                .contains("      - UR_HOST_TOKEN=${UR_HOST_TOKEN:-}")
-        );
-        assert!(!manager.compose_content.contains("secret-token-value"));
-        assert!(manager.env_vars.contains(&(
-            ur_config::UR_HOST_TOKEN_ENV.to_string(),
-            "secret-token-value".to_string()
-        )));
-        let manager = manager.with_env(ur_config::UR_HOST_TOKEN_ENV, "second".to_string());
-        let tokens: Vec<_> = manager
-            .env_vars
-            .iter()
-            .filter(|(k, _)| k == ur_config::UR_HOST_TOKEN_ENV)
-            .collect();
-        assert_eq!(tokens.len(), 1);
     }
 
     fn default_ticket_db() -> ur_config::TicketDbConfig {

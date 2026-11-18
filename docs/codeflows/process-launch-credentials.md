@@ -195,7 +195,6 @@ Layers are ordered by how often they change: base OS packages, then the agent CL
 | `UR_AGENT_TYPE` | WorkerManager (server) | workerd (`AgentType::from_env()`) | Which agent this worker runs — resolves all agent-specific paths and the spawn command |
 | `HTTP_PROXY` / `HTTPS_PROXY` | WorkerManager (server) | Claude Code, curl, etc. | Squid forward proxy |
 | `GH_TOKEN` / `GITHUB_TOKEN` | docker-compose.yml | gh CLI (on server) | GitHub auth for server-side git/gh |
-| `UR_HOST_TOKEN` | `ur server *` (from `$UR_CONFIG/host-token`, via docker-compose.yml interpolation) | ur-server host listener | Host client credential; never mounted or passed to workers (see `server-lifecycle.md#host-listener-authentication`) |
 
 ## Key Files
 

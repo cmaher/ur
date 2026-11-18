@@ -4,8 +4,8 @@
 
 use anyhow::{Result, bail};
 use serde::Serialize;
+use tonic::transport::Channel;
 use tracing::info;
-use ur_rpc::connection::HostChannel;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::{
     CaptureWorkerPaneRequest, InterruptWorkerRequest, ReadWorkerTranscriptRequest,
@@ -140,7 +140,7 @@ pub fn parse_key(name: &str) -> Result<WorkerKey> {
 
 /// Block until the worker is idle; a timeout is a [`WaitIdleTimedOut`] error.
 pub async fn wait_idle(
-    client: &mut CoreServiceClient<HostChannel>,
+    client: &mut CoreServiceClient<Channel>,
     worker_id: &str,
     wait: WaitIdle,
 ) -> Result<()> {

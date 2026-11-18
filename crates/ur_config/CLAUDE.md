@@ -195,14 +195,6 @@ curating the CLI's current model/effort matrix. AGY validates unsupported combin
 surfaces its own error, consistent with ur treating model-specific restrictions as an agent
 concern.
 
-## Host Token (`src/host_token.rs`)
-
-`$UR_CONFIG/host-token` authenticates host clients to ur-server's host listener.
-`ensure_host_token` (create-if-absent, 0600, OS RNG via `getrandom`; called by `ur server *`),
-`read_host_token` (clients; errors name the file), `validate_host_token` (≥32 visible ASCII).
-Constants: `HOST_TOKEN_HEADER` (`ur-host-token`), `UR_HOST_TOKEN_ENV`, `HOST_TOKEN_FILE`.
-Never add a worker mount that covers the config dir root.
-
 ## Other Config
 
 - Proxy constants: `DEFAULT_PROXY_HOSTNAME` ("ur-squid"), `SQUID_PORT` (3128); `hostname` replaces the old `port` field

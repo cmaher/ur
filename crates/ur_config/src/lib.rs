@@ -1,7 +1,6 @@
 mod agent;
 pub mod backup;
 pub mod forge;
-mod host_token;
 mod runtime;
 mod template_path;
 
@@ -10,10 +9,6 @@ pub use agent::{
     TranscriptLocation, UnknownAliasError, credentials_file_is_seeded,
 };
 pub use forge::{ForgeType, UR_WORKER_FORGE_ENV, parse_forge_from_url};
-pub use host_token::{
-    HOST_TOKEN_FILE, HOST_TOKEN_HEADER, MIN_HOST_TOKEN_LEN, UR_HOST_TOKEN_ENV, ensure_host_token,
-    host_token_path, read_host_token, validate_host_token,
-};
 pub use runtime::{WorkerRuntime, resolve_worker_runtime};
 pub use template_path::{
     ResolvedTemplatePath, WORKSPACE_TEMPLATE, resolve_template_path, resolve_workspace_content,

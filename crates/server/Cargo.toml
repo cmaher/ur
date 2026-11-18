@@ -10,7 +10,6 @@ futures = "0.3"
 clap = { workspace = true }
 prost = { workspace = true }
 rand = "0.9"
-subtle = "2"
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 thiserror = { workspace = true }

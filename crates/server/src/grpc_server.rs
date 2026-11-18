@@ -14,45 +14,22 @@ use crate::{ProjectRegistry, WorkerManager};
 
 /// Start the host gRPC server on a TCP socket.
 ///
-/// Serves host-side clients (`ur`, urui) with the routes from
-/// [`host_routes`]. Refuses to serve with an invalid token (fail closed).
+/// Serves the host CLI (`ur`). Registers Core and Ticket services
+/// directly — no auth interceptor.
 pub async fn serve_grpc(
     addr: SocketAddr,
-    host_token: String,
     handler: CoreServiceHandler,
     ticket_handler: crate::grpc_ticket::TicketServiceHandler,
 ) -> anyhow::Result<()> {
-    let routes = host_routes(host_token, handler, ticket_handler)?;
     tracing::info!(addr = %addr, "host gRPC server listening");
-    Server::builder().add_routes(routes).serve(addr).await?;
-    Ok(())
-}
 
-/// Build the host listener's services: Core and Ticket, both wrapped with the
-/// host auth interceptor requiring `host_token` in the `ur-host-token`
-/// header. The listener is reachable from the workers network, so without
-/// it any container worker could call every host RPC on any worker.
-///
-/// Errors when `host_token` is not a valid host token, so the listener is
-/// never built unauthenticated.
-pub fn host_routes(
-    host_token: String,
-    handler: CoreServiceHandler,
-    ticket_handler: crate::grpc_ticket::TicketServiceHandler,
-) -> anyhow::Result<tonic::service::Routes> {
-    ur_config::validate_host_token(&host_token)
-        .map_err(|e| anyhow::anyhow!("refusing to serve the host gRPC listener: {e}"))?;
-    let interceptor = crate::auth::host_auth_interceptor(host_token);
-    let mut routes = tonic::service::Routes::builder();
-    routes.add_service(CoreServiceServer::with_interceptor(
-        handler,
-        interceptor.clone(),
-    ));
-    routes.add_service(TicketServiceServer::with_interceptor(
-        ticket_handler,
-        interceptor,
-    ));
-    Ok(routes.routes())
+    let router = Server::builder()
+        .add_service(CoreServiceServer::new(handler))
+        .add_service(TicketServiceServer::new(ticket_handler));
+
+    router.serve(addr).await?;
+
+    Ok(())
 }
 
 /// Start the shared worker gRPC server on a TCP socket.
