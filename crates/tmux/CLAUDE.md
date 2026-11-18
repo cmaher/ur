@@ -7,7 +7,7 @@ the host CLI (attach command generation), and host-local worker management (dedi
 - `send_keys()` sends text via `send-keys -l` (literal mode — the argument is text, not key names)
 - `send_keys_no_enter()` types text without submitting; `send_enter()` presses Enter on its own
 - `send_keys_raw()` bypasses `-l` for control sequences like `Enter`, `C-c`
-- Agent-pane (`=name:0.0`) session-control helpers: `capture_agent_pane(history)` (`capture-pane -p -J -S -<history>`, trailing blank lines trimmed), `agent_pane_current_path()` (`#{pane_current_path}`; empty output is an error), `send_named_keys_to_agent_pane(keys)` (non-literal `send-keys`; callers pass allowlisted names only)
+- Agent-pane (`=name:0.0`) session-control helpers: `capture_agent_pane(history)` (`capture-pane -p -J -S -<history>`, trailing blank lines trimmed), `agent_pane_current_path()` (`#{pane_current_path}`; empty output is an error), `send_named_keys_to_agent_pane(keys)` (non-literal `send-keys`; callers pass allowlisted names only), `created_at()` (`#{session_created}`, whole seconds)
 - `attach_command()` returns command parts for use with container runtime `exec_interactive`
 - Lifecycle checks target the original pane (`<session>:0.0`), independent of added or selected helper panes such as AGY's sign-in link pane.
 - All async operations use `tokio::process::Command` under the hood

@@ -83,11 +83,14 @@ pub struct Transcript {
 }
 
 /// Find the live session log for `agent` running in `cwd` and return its last
-/// `turns` turns. Blocking file IO; run it on a blocking thread.
+/// `turns` turns. Logs last written before `not_before` (when this worker's
+/// session started) are ignored: in a reused pool slot they belong to an
+/// earlier worker. Blocking file IO; run it on a blocking thread.
 pub fn read_transcript(
     agent: AgentType,
     home: &Path,
     cwd: &Path,
+    not_before: SystemTime,
     turns: usize,
 ) -> Result<Transcript, TranscriptError> {
     let location = agent
@@ -96,9 +99,11 @@ pub fn read_transcript(
             agent: agent.name(),
         })?;
     let (path, parse): (PathBuf, fn(&Value) -> Option<Entry>) = match &location {
-        TranscriptLocation::ClaudeProjectDir { dir } => (newest_claude_log(dir)?, claude_entry),
+        TranscriptLocation::ClaudeProjectDir { dir } => {
+            (newest_claude_log(dir, not_before)?, claude_entry)
+        }
         TranscriptLocation::CodexSessions { root, cwd } => {
-            (newest_codex_log(root, cwd)?, codex_entry)
+            (newest_codex_log(root, cwd, not_before)?, codex_entry)
         }
     };
     let content = std::fs::read_to_string(&path).map_err(|e| TranscriptError::Io {
@@ -297,8 +302,8 @@ fn str_field(v: &Value, key: &str) -> String {
         .to_owned()
 }
 
-/// The newest-mtime `*.jsonl` directly in `dir`.
-fn newest_claude_log(dir: &Path) -> Result<PathBuf, TranscriptError> {
+/// The newest-mtime `*.jsonl` directly in `dir`, written at or after `not_before`.
+fn newest_claude_log(dir: &Path, not_before: SystemTime) -> Result<PathBuf, TranscriptError> {
     let entries = std::fs::read_dir(dir).map_err(|e| TranscriptError::NotFound {
         reason: format!("{}: {e}", dir.display()),
     })?;
@@ -307,17 +312,27 @@ fn newest_claude_log(dir: &Path) -> Result<PathBuf, TranscriptError> {
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|ext| ext == "jsonl"))
         .filter_map(|p| Some((mtime(&p)?, p)))
+        .filter(|(t, _)| *t >= not_before)
         .max_by_key(|(t, _)| *t)
         .map(|(_, p)| p)
         .ok_or_else(|| TranscriptError::NotFound {
-            reason: format!("no *.jsonl session log in {}", dir.display()),
+            reason: format!(
+                "no *.jsonl session log in {} written since this worker started",
+                dir.display()
+            ),
         })
 }
 
-/// The newest-mtime rollout under `root` whose `session_meta` names `cwd`.
-fn newest_codex_log(root: &Path, cwd: &Path) -> Result<PathBuf, TranscriptError> {
+/// The newest-mtime rollout under `root` whose `session_meta` names `cwd`,
+/// written at or after `not_before`.
+fn newest_codex_log(
+    root: &Path,
+    cwd: &Path,
+    not_before: SystemTime,
+) -> Result<PathBuf, TranscriptError> {
     let mut files = Vec::new();
     collect_jsonl(root, &mut files);
+    files.retain(|(t, _)| *t >= not_before);
     files.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
     files
         .into_iter()
@@ -326,7 +341,7 @@ fn newest_codex_log(root: &Path, cwd: &Path) -> Result<PathBuf, TranscriptError>
         .find(|p| codex_session_cwd(p).as_deref() == Some(cwd))
         .ok_or_else(|| TranscriptError::NotFound {
             reason: format!(
-                "no codex rollout under {} for cwd {}",
+                "no codex rollout under {} for cwd {} written since this worker started",
                 root.display(),
                 cwd.display()
             ),

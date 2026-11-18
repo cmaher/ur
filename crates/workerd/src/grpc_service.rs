@@ -332,12 +332,10 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         let submit = req.submit.unwrap_or(true);
         info!(message, submit, "SendMessage received");
 
-        let session = &self.session;
         let result = if submit {
-            self.control.idle().mark_busy();
-            session.send_keys(message).await
+            self.control.submit(message).await
         } else {
-            session.send_keys_no_enter(message).await
+            self.session.send_keys_no_enter(message).await
         };
         match result {
             Ok(()) => {
@@ -481,10 +479,8 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         // Pop the first command and send it immediately
         let first_command = buf.commands.pop_front().expect("commands is non-empty");
         drop(buf);
-        self.control.idle().mark_busy();
 
-        let session = &self.session;
-        if let Err(e) = session.send_keys(&first_command).await {
+        if let Err(e) = self.control.submit(&first_command).await {
             error!(error = %e, "tmux send-keys failed for first buffered command");
         }
 
@@ -512,10 +508,8 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         // Pop the first command and send it immediately
         let first_command = buf.commands.pop_front().expect("commands is non-empty");
         drop(buf);
-        self.control.idle().mark_busy();
 
-        let session = &self.session;
-        if let Err(e) = session.send_keys(&first_command).await {
+        if let Err(e) = self.control.submit(&first_command).await {
             error!(error = %e, "tmux send-keys failed for first buffered command");
         }
 
@@ -548,10 +542,8 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         // Pop the first command and send it immediately
         let first_command = buf.commands.pop_front().expect("commands is non-empty");
         drop(buf);
-        self.control.idle().mark_busy();
 
-        let session = &self.session;
-        if let Err(e) = session.send_keys(&first_command).await {
+        if let Err(e) = self.control.submit(&first_command).await {
             error!(error = %e, "tmux send-keys failed for first buffered command");
         }
 

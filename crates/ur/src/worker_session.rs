@@ -74,7 +74,8 @@ pub struct ReadArgs {
     /// Number of most recent turns (default: server default, 10)
     #[arg(long, conflicts_with = "screen")]
     pub turns: Option<u32>,
-    /// Print JSON (same as --output json)
+    /// Print JSON (same as --output json; `main` switches the global output
+    /// mode, so errors are JSON too)
     #[arg(long)]
     pub json: bool,
     #[command(flatten)]
@@ -172,8 +173,6 @@ pub async fn read(port: u16, output: &OutputManager, args: ReadArgs) -> Result<(
             turns: args.turns.unwrap_or(0),
         }
     };
-    let json_output = OutputManager::from_args(Some("json"));
-    let output = if args.json { &json_output } else { output };
     let client = &mut crate::connect(port).await?;
     if let Some(wait) = args.wait.wait() {
         wait_idle(client, worker_id, wait).await?;

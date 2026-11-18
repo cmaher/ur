@@ -94,15 +94,6 @@ async fn create_list_window_kill_on_dedicated_socket() {
     );
     assert!(env.iter().all(|(k, _)| !k.starts_with('-')), "{env:?}");
     assert_eq!(session.start_dir().await.expect("start dir"), start_dir);
-    assert_eq!(
-        session
-            .agent_pane_current_path()
-            .await
-            .expect("pane current path")
-            .canonicalize()
-            .expect("canonical pane path"),
-        start_dir
-    );
     assert!(
         Session::on_socket(&socket, "ur-w")
             .environment()
@@ -203,6 +194,7 @@ async fn targeted_ops_do_not_prefix_match_sibling_session() {
             .is_err()
     );
     assert!(missing.agent_pane_current_path().await.is_err());
+    assert!(missing.created_at().await.is_err());
     assert!(missing.new_window("other", None).await.is_err());
     assert!(missing.is_pane_alive().await.is_err());
     // Older tmux errors; newer tmux prints nothing for a missing target.
@@ -265,9 +257,11 @@ async fn named_keys_and_scrollback_capture() {
     let _guard = ServerGuard {
         socket: socket.clone(),
     };
+    let start_dir = std::env::temp_dir().canonicalize().expect("temp dir");
     let session = Session::create(CreateOptions {
         name: "ur-w1".into(),
         socket: Some(socket.clone()),
+        start_dir: Some(start_dir.clone()),
         width: Some(80),
         height: Some(10),
         detached: true,
@@ -275,6 +269,20 @@ async fn named_keys_and_scrollback_capture() {
     })
     .await
     .expect("create session");
+    let created = session.created_at().await.expect("session created");
+    let age = SystemTime::now()
+        .duration_since(created)
+        .expect("created in the past");
+    assert!(age < Duration::from_secs(60), "{age:?}");
+    assert_eq!(
+        session
+            .agent_pane_current_path()
+            .await
+            .expect("pane current path")
+            .canonicalize()
+            .expect("canonical pane path"),
+        start_dir
+    );
 
     session
         .send_keys_no_enter("for i in $(seq 1 50); do echo SCROLL_$i; done")

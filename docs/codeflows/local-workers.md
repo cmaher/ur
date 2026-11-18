@@ -226,6 +226,20 @@ pane cwd is the slot), and shares an `InterruptGrace` with the worker's exit wat
 or interrupt never reads as the agent exiting. Details: `crates/workerd/CLAUDE.md` ("Session
 control").
 
+Session logs last written before the worker's session started are ignored (a reused slot keeps the
+previous worker's logs): a fresh launch records the time before creating the tmux session, an
+adopted session uses tmux's `#{session_created}`.
+
+Known limits:
+
+- Re-adopted sessions (builderd restart) start idle (`IdleTracker::default`), even if the agent is
+  mid-turn; a `--wait-idle` right after adoption can return early.
+- Claude's `SessionStart` hook (matcher `""`) may fire `NotifyIdle` on a mid-turn auto-compaction,
+  marking the worker idle early (unverified).
+- A CLI newer than the server or workerd gets `Unimplemented` with an empty message for these RPCs
+  (pre-existing status mapping in `crates/ur/src/output.rs`).
+- `--timeout 0` means the server default (600s), not "don't wait".
+
 ## Spike results (ur-wdfir, Claude Code 2.1.314)
 
 | Check | Result |

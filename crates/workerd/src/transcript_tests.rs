@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use std::time::UNIX_EPOCH;
 
 fn lines(values: &[Value]) -> String {
     values
@@ -34,7 +35,7 @@ fn claude_turns_merge_tool_round_trips_and_skip_sidechains() {
     ]) + "\n{\"type\":\"assistant\",\"message\":{\"con";
     std::fs::write(dir.join("live.jsonl"), log).unwrap();
 
-    let t = read_transcript(AgentType::Claude, home, cwd, 10).unwrap();
+    let t = read_transcript(AgentType::Claude, home, cwd, UNIX_EPOCH, 10).unwrap();
     assert_eq!(t.source_path, dir.join("live.jsonl"));
     assert_eq!(t.turns.len(), 2);
     assert_eq!(t.turns[0].role, "user");
@@ -49,7 +50,7 @@ fn claude_turns_merge_tool_round_trips_and_skip_sidechains() {
         }]
     );
 
-    let last = read_transcript(AgentType::Claude, home, cwd, 1).unwrap();
+    let last = read_transcript(AgentType::Claude, home, cwd, UNIX_EPOCH, 1).unwrap();
     assert_eq!(last.turns.len(), 1);
     assert_eq!(last.turns[0].role, "assistant");
 }
@@ -79,7 +80,14 @@ fn codex_picks_rollout_for_cwd_and_skips_context() {
     // Newer, but for a different cwd.
     std::fs::write(day.join("rollout-b.jsonl"), lines(&[meta("/elsewhere")])).unwrap();
 
-    let t = read_transcript(AgentType::Codex, home, Path::new("/workspace"), 5).unwrap();
+    let t = read_transcript(
+        AgentType::Codex,
+        home,
+        Path::new("/workspace"),
+        UNIX_EPOCH,
+        5,
+    )
+    .unwrap();
     assert_eq!(t.source_path, day.join("rollout-a.jsonl"));
     assert_eq!(t.turns.len(), 2);
     assert_eq!(t.turns[0].text, "hello");
@@ -100,15 +108,15 @@ fn missing_empty_and_unsupported_logs_are_errors() {
     let home = tmp.path();
     let cwd = Path::new("/workspace");
     assert!(matches!(
-        read_transcript(AgentType::Claude, home, cwd, 3),
+        read_transcript(AgentType::Claude, home, cwd, UNIX_EPOCH, 3),
         Err(TranscriptError::NotFound { .. })
     ));
     assert!(matches!(
-        read_transcript(AgentType::Codex, home, cwd, 3),
+        read_transcript(AgentType::Codex, home, cwd, UNIX_EPOCH, 3),
         Err(TranscriptError::NotFound { .. })
     ));
     assert_eq!(
-        read_transcript(AgentType::Agy, home, cwd, 3).unwrap_err(),
+        read_transcript(AgentType::Agy, home, cwd, UNIX_EPOCH, 3).unwrap_err(),
         TranscriptError::Unsupported { agent: "agy" }
     );
 
@@ -116,7 +124,7 @@ fn missing_empty_and_unsupported_logs_are_errors() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("s.jsonl"), "not json\n").unwrap();
     assert!(matches!(
-        read_transcript(AgentType::Claude, home, cwd, 3),
+        read_transcript(AgentType::Claude, home, cwd, UNIX_EPOCH, 3),
         Err(TranscriptError::Empty { .. })
     ));
 }
@@ -128,4 +136,48 @@ fn summary_truncates_long_input() {
     assert_eq!(s.chars().count(), SUMMARY_MAX_CHARS);
     assert!(s.ends_with('…'));
     assert_eq!(summarize_input(&json!({"file_path":"/a/b.rs"})), "/a/b.rs");
+}
+
+/// A log last written before this worker started belongs to an earlier
+/// worker in the same slot: it is never picked, even as the only file.
+#[test]
+fn logs_older_than_worker_start_are_ignored() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let cwd = Path::new("/workspace");
+    let user = |text: &str| lines(&[json!({"type":"user","message":{"content":text}})]);
+
+    let dir = home.join(".claude/projects/-workspace");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("previous.jsonl"), user("old worker")).unwrap();
+    let day = home.join(".codex/sessions/2026/11/18");
+    std::fs::create_dir_all(&day).unwrap();
+    let meta = json!({"type":"session_meta","payload":{"cwd":"/workspace"}});
+    let rollout = |text: &str| {
+        lines(&[
+            meta.clone(),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}}),
+        ])
+    };
+    std::fs::write(day.join("rollout-old.jsonl"), rollout("old worker")).unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let started = SystemTime::now();
+    for agent in [AgentType::Claude, AgentType::Codex] {
+        assert!(
+            matches!(
+                read_transcript(agent, home, cwd, started, 3),
+                Err(TranscriptError::NotFound { .. })
+            ),
+            "{agent:?}"
+        );
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(dir.join("current.jsonl"), user("new worker")).unwrap();
+    std::fs::write(day.join("rollout-new.jsonl"), rollout("new worker")).unwrap();
+    for agent in [AgentType::Claude, AgentType::Codex] {
+        let t = read_transcript(agent, home, cwd, started, 3).unwrap();
+        assert_eq!(t.turns[0].text, "new worker", "{agent:?}");
+    }
 }

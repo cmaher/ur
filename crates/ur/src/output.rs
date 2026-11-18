@@ -351,6 +351,19 @@ mod tests {
         assert_eq!(ErrorCode::IoError.exit_code(), 7);
         assert_eq!(ErrorCode::ConfigError.exit_code(), 8);
         assert_eq!(ErrorCode::InteractiveNotSupported.exit_code(), 9);
+        assert_eq!(ErrorCode::TimedOut.exit_code(), 10);
+    }
+
+    #[test]
+    fn wait_idle_timeout_maps_to_timed_out() {
+        let err = anyhow::Error::from(crate::worker_session::WaitIdleTimedOut {
+            worker_id: "w1".into(),
+            screen_tail: "Allow? 1. Yes".into(),
+        });
+        let se = StructuredError::from_anyhow(&err);
+        assert!(matches!(se.code, ErrorCode::TimedOut));
+        assert_eq!(se.code.exit_code(), 10);
+        assert!(se.message.contains("Allow? 1. Yes"), "{}", se.message);
     }
 
     #[test]

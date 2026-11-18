@@ -260,6 +260,8 @@ impl LocalWorkerManager {
             worker_id: req.worker_id.clone(),
             worker_secret: env_value(&env, ur_config::UR_WORKER_SECRET_ENV).to_owned(),
         };
+        // Before the agent exists: its session logs are all written after this.
+        let started_at = std::time::SystemTime::now();
         let session = tmux::Session::create(tmux::CreateOptions {
             name: session_name(&req.worker_id),
             socket: Some(self.tmux_socket.clone()),
@@ -297,7 +299,7 @@ impl LocalWorkerManager {
             req.agent,
             SkillLayout::ur_plugin(),
             session.clone(),
-            self.session_control(&session, req.agent, &grace),
+            self.session_control(&session, req.agent, started_at, &grace),
         );
         let watcher = self.spawn_exit_watcher(
             &req.worker_id,
@@ -342,12 +344,14 @@ impl LocalWorkerManager {
         &self,
         session: &tmux::Session,
         agent: AgentType,
+        started_at: std::time::SystemTime,
         grace: &InterruptGrace,
     ) -> SessionControlManager {
         SessionControlManager::new(
             session.clone(),
             agent,
             self.workspace.home().to_path_buf(),
+            started_at,
             IdleTracker::default(),
             grace.clone(),
         )
@@ -573,7 +577,13 @@ impl LocalWorkerManager {
             ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV,
         ));
         let grace = InterruptGrace::default();
-        let control = self.session_control(&session, agent, &grace);
+        // An adopted session predates this builderd: its start is when tmux
+        // created it.
+        let started_at = session
+            .created_at()
+            .await
+            .map_err(|e| Status::internal(format!("query adopted session start: {e:#}")))?;
+        let control = self.session_control(&session, agent, started_at, &grace);
         let watcher = self.spawn_exit_watcher(worker_id, watch_agent_process, &session, grace);
         let daemon = WorkerDaemonServiceImpl::new(
             identity,

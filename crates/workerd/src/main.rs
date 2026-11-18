@@ -164,6 +164,8 @@ async fn run_daemon_only(agent: ur_config::AgentType, inputs: &WorkerInitInputs)
     let identity = identity_from_env();
 
     // 1. Create tmux session `agent` (220x55)
+    // Before the agent exists: its session logs are all written after this.
+    let started_at = std::time::SystemTime::now();
     let session = tmux::Session::create(tmux::CreateOptions {
         name: AGENT_SESSION_NAME.into(),
         socket: None,
@@ -215,6 +217,7 @@ async fn run_daemon_only(agent: ur_config::AgentType, inputs: &WorkerInitInputs)
         session.clone(),
         agent,
         home,
+        started_at,
         IdleTracker::default(),
         interrupt_grace,
     );

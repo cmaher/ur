@@ -60,12 +60,13 @@ reuse; the binary only resolves container defaults from the environment and wire
   container binary always passes `AgentHome`. See `docs/codeflows/skill-loading.md#skill-layouts-skilllayout`.
 - `grpc_service::WorkerDaemonServiceImpl::new(WorkerIdentity, AgentType, SkillLayout, tmux::Session, SessionControlManager)`
   — the tmux session is injected (no handler calls `Session::agent()`).
-- `session_control::SessionControlManager::new(session, agent, home, IdleTracker, InterruptGrace)`
+- `session_control::SessionControlManager::new(session, agent, home, started_at, IdleTracker, InterruptGrace)`
   serves the host-facing session-control RPCs (`CapturePane`, `ReadTranscript`, `SendKeys`,
   `Interrupt`, `WaitIdle`; reached via the server's CoreService, never from workers). The owner
   creates one `InterruptGrace` and passes it to both this manager and
   `ExitWatcherManager::with_interrupt_grace`; `home` is the agent's home (container `$HOME`,
-  local workers the user's home). See "Session control" below.
+  local workers the user's home); `started_at` is when the agent's tmux session started (taken before
+  creating it; tmux `#{session_created}` for an adopted local session). See "Session control" below.
 - `dispatch::dispatch_commands` builds the dispatch buffer for server-driven dispatches.
 - `test_support` (test-only) has `temp_paths(tmp, agent)`, `container_paths_with_home(agent, home)`
   and the crate-wide `ENV_LOCK`; use them in tests that need `WorkerPaths` or mutate env vars.
@@ -145,7 +146,9 @@ Init phase (`crates/workerd/src/init/{skills,instructions,settings}.rs`, split b
   format: `FailedPrecondition` telling the caller to use `--screen`. Consecutive same-role entries
   merge into one `ur.core.TranscriptTurn`; Claude tool-result-only user entries, sidechain and meta
   entries, Codex developer messages and injected context are skipped. Unparseable lines (agent
-  mid-write) are skipped; a missing log is `NotFound`, a log with no turns is `NotFound`.
+  mid-write) are skipped; a missing log is `NotFound`, a log with no turns is `NotFound`. Logs last
+  written before `started_at` are ignored (a reused pool slot keeps the previous worker's logs).
+  `AgentType::has_transcript()` gates the RPC before any tmux call.
   No session id is captured; "newest file" is the live session (known limit: two sessions in one
   cwd pick the most recently written).
 - `SendKeys{keys}` takes `ur.core.WorkerKey` (allowlist enum, `session_control::tmux_key_name`);
@@ -156,7 +159,9 @@ Init phase (`crates/workerd/src/init/{skills,instructions,settings}.rs`, split b
   treats a shell foreground as "no change this poll" (a dead pane is still reported), so an
   intentional interrupt is never reported as an agent exit.
 - `IdleTracker` (watch channel, starts idle): `SendMessage` with submit and the
-  `Implement`/`Design`/`AddressFeedbackTickets` dispatches mark busy before typing; `NotifyIdle`
+  `Implement`/`Design`/`AddressFeedbackTickets` dispatches type through
+  `SessionControlManager::submit`, which marks busy before typing and restores idle if the send
+  fails; `NotifyIdle`
   marks idle only on the branches that type nothing (step complete, nudge suppressed, stalled, no
   dispatch) — popping a buffered command or nudging keeps the worker busy. `WaitIdle{timeout_secs,
   screen_lines}` returns `timed_out` plus the last screen lines instead of an error. Known limit:

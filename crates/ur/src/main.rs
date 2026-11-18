@@ -1525,6 +1525,17 @@ async fn process_workspace_dir(port: u16, worker_id: &str) -> Result<String> {
     Ok(workspace_dir)
 }
 
+/// The effective `--output` value. `ur worker read --json` is the same as the
+/// global `--output json`, for success and error output alike.
+fn output_arg(cli: &Cli) -> Option<&str> {
+    match &cli.command {
+        Commands::Worker {
+            command: WorkerCommands::Read(args),
+        } if args.json => Some("json"),
+        _ => cli.output.as_deref(),
+    }
+}
+
 /// Extract the subcommand name for span fields.
 fn command_name(cmd: &WorkerCommands) -> &'static str {
     match cmd {
@@ -1555,7 +1566,7 @@ fn main() {
         }
     };
 
-    let out = OutputManager::from_args(cli.output.as_deref());
+    let out = OutputManager::from_args(output_arg(&cli));
 
     // Handle --describe: print schema JSON and exit
     if cli.describe {
@@ -1764,6 +1775,14 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn worker_read_json_switches_global_output() {
+        let cli = Cli::try_parse_from(["ur", "worker", "read", "w1", "--json"]).unwrap();
+        assert!(OutputManager::from_args(output_arg(&cli)).is_json());
+        let cli = Cli::try_parse_from(["ur", "worker", "read", "w1"]).unwrap();
+        assert!(!OutputManager::from_args(output_arg(&cli)).is_json());
+    }
 
     fn project_keys() -> Vec<String> {
         vec!["ur".to_owned(), "myproj".to_owned()]

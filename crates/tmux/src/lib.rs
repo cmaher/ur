@@ -503,6 +503,26 @@ impl Session {
         Ok(parse_environment(&stdout))
     }
 
+    /// When the session was created (`#{session_created}`, whole seconds).
+    pub async fn created_at(&self) -> Result<std::time::SystemTime> {
+        let args = self.argv(&[
+            "display-message",
+            "-p",
+            "-t",
+            &self.session_target(),
+            "#{session_created}",
+        ]);
+        let out = run_tmux_stdout(&args).await?;
+        let secs: u64 = out.trim().parse().with_context(|| {
+            format!(
+                "unexpected session_created '{}' for tmux session '{}'",
+                out.trim(),
+                self.name
+            )
+        })?;
+        Ok(std::time::UNIX_EPOCH + Duration::from_secs(secs))
+    }
+
     /// The directory the session was created in (`#{session_path}`, `-c`).
     pub async fn start_dir(&self) -> Result<PathBuf> {
         let args = self.argv(&[

@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use tonic::Status;
 use tracing::info;
@@ -118,6 +118,9 @@ pub struct SessionControlManager {
     /// Home directory the agent runs under (its logs are in
     /// `<home>/<agent.home_subdir()>`).
     home: PathBuf,
+    /// When this worker's agent session started; older session logs belong
+    /// to an earlier worker in the same slot and are ignored.
+    started_at: SystemTime,
     idle: IdleTracker,
     grace: InterruptGrace,
 }
@@ -127,6 +130,7 @@ impl SessionControlManager {
         session: tmux::Session,
         agent: AgentType,
         home: PathBuf,
+        started_at: SystemTime,
         idle: IdleTracker,
         grace: InterruptGrace,
     ) -> Self {
@@ -134,9 +138,24 @@ impl SessionControlManager {
             session,
             agent,
             home,
+            started_at,
             idle,
             grace,
         }
+    }
+
+    /// Type `text` into the agent and submit it, marking the worker busy.
+    /// Busy is set before typing (the agent's `Stop` hook may fire before the
+    /// send returns); if the send fails the previous state is restored, so a
+    /// failed send never leaves the worker busy forever.
+    pub async fn submit(&self, text: &str) -> anyhow::Result<()> {
+        let was_idle = self.idle.is_idle();
+        self.idle.mark_busy();
+        let result = self.session.send_keys(text).await;
+        if result.is_err() && was_idle {
+            self.idle.mark_idle();
+        }
+        result
     }
 
     pub fn idle(&self) -> &IdleTracker {
@@ -155,11 +174,7 @@ impl SessionControlManager {
             return Err(Status::invalid_argument("turns must be at least 1"));
         }
         // Checked before touching tmux: an agent with no log format fails fast.
-        if self
-            .agent
-            .transcript_location(&self.home, std::path::Path::new("/"))
-            .is_none()
-        {
+        if !self.agent.has_transcript() {
             return Err(transcript_status(TranscriptError::Unsupported {
                 agent: self.agent.name(),
             }));
@@ -169,9 +184,9 @@ impl SessionControlManager {
             .agent_pane_current_path()
             .await
             .map_err(|e| Status::internal(format!("{e:#}")))?;
-        let (agent, home) = (self.agent, self.home.clone());
+        let (agent, home, started_at) = (self.agent, self.home.clone(), self.started_at);
         let transcript = tokio::task::spawn_blocking(move || {
-            read_transcript(agent, &home, &cwd, turns as usize)
+            read_transcript(agent, &home, &cwd, started_at, turns as usize)
         })
         .await
         .map_err(|e| Status::internal(format!("transcript reader failed: {e}")))?
@@ -292,15 +307,66 @@ mod tests {
         assert_eq!(tmux_key_name(WorkerKey::Digit7).unwrap(), "7");
     }
 
-    #[tokio::test]
-    async fn agy_transcript_is_failed_precondition() {
-        let mgr = SessionControlManager::new(
+    /// A manager whose tmux session does not exist: every tmux call fails.
+    fn missing_session_manager(agent: AgentType) -> SessionControlManager {
+        SessionControlManager::new(
             tmux::Session::on_socket("ur-test-none", "missing"),
-            AgentType::Agy,
+            agent,
             PathBuf::from("/nonexistent"),
+            SystemTime::UNIX_EPOCH,
             IdleTracker::default(),
             InterruptGrace::default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn failed_submit_leaves_worker_idle() {
+        let mgr = missing_session_manager(AgentType::Claude);
+        assert!(mgr.submit("hello").await.is_err());
+        assert!(mgr.idle().is_idle());
+
+        // A worker that was already busy stays busy.
+        mgr.idle().mark_busy();
+        assert!(mgr.submit("hello").await.is_err());
+        assert!(!mgr.idle().is_idle());
+    }
+
+    /// Interrupt marks the worker idle and arms the exit-watcher grace. The
+    /// key press itself needs a live pane, so this uses a real tmux server.
+    #[tokio::test]
+    async fn interrupt_marks_idle_and_arms_grace() {
+        let socket = format!("ur-test-interrupt-{}", std::process::id());
+        let session = tmux::Session::create(tmux::CreateOptions {
+            name: "agent".into(),
+            socket: Some(socket.clone()),
+            detached: true,
+            ..Default::default()
+        })
+        .await
+        .expect("create tmux session");
+        let idle = IdleTracker::default();
+        let grace = InterruptGrace::default();
+        let mgr = SessionControlManager::new(
+            session.clone(),
+            AgentType::Claude,
+            PathBuf::from("/nonexistent"),
+            SystemTime::UNIX_EPOCH,
+            idle.clone(),
+            grace.clone(),
         );
+        idle.mark_busy();
+        let result = mgr.interrupt().await;
+        let _ = std::process::Command::new("tmux")
+            .args(["-L", &socket, "kill-server"])
+            .output();
+        result.expect("interrupt");
+        assert!(idle.is_idle());
+        assert!(grace.is_active());
+    }
+
+    #[tokio::test]
+    async fn agy_transcript_is_failed_precondition() {
+        let mgr = missing_session_manager(AgentType::Agy);
         let err = mgr.read_transcript(5).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
         assert!(err.message().contains("--screen"), "{}", err.message());

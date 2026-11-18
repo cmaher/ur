@@ -389,6 +389,15 @@ impl AgentType {
         }
     }
 
+    /// Whether this agent writes a session log `ur worker read` can parse
+    /// (exactly when [`Self::transcript_location`] is `Some`).
+    pub fn has_transcript(&self) -> bool {
+        match self {
+            Self::Claude | Self::Codex => true,
+            Self::Agy => false,
+        }
+    }
+
     /// tmux key names that interrupt the agent's current turn without
     /// exiting it. Every agent stops a running turn on `Escape`; `C-c` is
     /// avoided because on an idle prompt it starts the agent's exit sequence.
@@ -585,6 +594,13 @@ mod tests {
             })
         );
         assert_eq!(AgentType::Agy.transcript_location(home, cwd), None);
+        for agent in AgentType::ALL {
+            assert_eq!(
+                agent.has_transcript(),
+                agent.transcript_location(home, cwd).is_some(),
+                "{agent:?}"
+            );
+        }
     }
 
     #[test]
