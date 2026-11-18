@@ -94,6 +94,15 @@ async fn create_list_window_kill_on_dedicated_socket() {
     );
     assert!(env.iter().all(|(k, _)| !k.starts_with('-')), "{env:?}");
     assert_eq!(session.start_dir().await.expect("start dir"), start_dir);
+    assert_eq!(
+        session
+            .agent_pane_current_path()
+            .await
+            .expect("pane current path")
+            .canonicalize()
+            .expect("canonical pane path"),
+        start_dir
+    );
     assert!(
         Session::on_socket(&socket, "ur-w")
             .environment()
@@ -186,6 +195,14 @@ async fn targeted_ops_do_not_prefix_match_sibling_session() {
     assert!(missing.set_option("status-left", MARKER).await.is_err());
     assert!(missing.set_status_left(MARKER).await.is_err());
     assert!(missing.capture_pane().await.is_err());
+    assert!(missing.capture_agent_pane(10).await.is_err());
+    assert!(
+        missing
+            .send_named_keys_to_agent_pane(&["Enter"])
+            .await
+            .is_err()
+    );
+    assert!(missing.agent_pane_current_path().await.is_err());
     assert!(missing.new_window("other", None).await.is_err());
     assert!(missing.is_pane_alive().await.is_err());
     // Older tmux errors; newer tmux prints nothing for a missing target.
@@ -238,4 +255,51 @@ async fn targeted_ops_do_not_prefix_match_sibling_session() {
     keep.send_keys_to_window("bg", "true")
         .await
         .expect("send to ur-w10:bg");
+}
+
+/// Named keys reach the agent pane, and a scrollback capture returns output
+/// that has scrolled off the visible screen.
+#[tokio::test]
+async fn named_keys_and_scrollback_capture() {
+    let socket = unique_socket("scrollback");
+    let _guard = ServerGuard {
+        socket: socket.clone(),
+    };
+    let session = Session::create(CreateOptions {
+        name: "ur-w1".into(),
+        socket: Some(socket.clone()),
+        width: Some(80),
+        height: Some(10),
+        detached: true,
+        ..Default::default()
+    })
+    .await
+    .expect("create session");
+
+    session
+        .send_keys_no_enter("for i in $(seq 1 50); do echo SCROLL_$i; done")
+        .await
+        .expect("type loop");
+    session
+        .send_named_keys_to_agent_pane(&["Enter"])
+        .await
+        .expect("named Enter");
+
+    let mut screen = String::new();
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        screen = session.capture_agent_pane(0).await.expect("capture screen");
+        if screen.contains("SCROLL_50") {
+            break;
+        }
+    }
+    assert!(screen.contains("SCROLL_50"), "{screen}");
+    assert!(!screen.contains("SCROLL_1\n"), "visible screen is 10 rows");
+
+    let history = session
+        .capture_agent_pane(200)
+        .await
+        .expect("capture history");
+    assert!(history.lines().any(|l| l == "SCROLL_1"), "{history}");
+    assert!(!history.ends_with('\n'), "trailing blank lines trimmed");
 }

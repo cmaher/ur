@@ -333,6 +333,45 @@ impl Session {
             .with_context(|| format!("failed to capture pane for tmux session '{}'", self.name))
     }
 
+    /// Capture the original agent pane with up to `history` lines of
+    /// scrollback above the visible screen (`capture-pane -p -J -S -<history>`).
+    ///
+    /// `-J` joins lines tmux wrapped to fit the pane width, so long lines read
+    /// as one line. `history = 0` captures only the visible screen. Trailing
+    /// blank lines (the unused bottom of the pane) are trimmed.
+    pub async fn capture_agent_pane(&self, history: u32) -> Result<String> {
+        let out = run_tmux_stdout(&self.capture_agent_pane_args(history))
+            .await
+            .with_context(|| format!("failed to capture pane for tmux session '{}'", self.name))?;
+        Ok(trim_trailing_blank_lines(&out))
+    }
+
+    /// The working directory of the original agent pane's foreground process
+    /// (`#{pane_current_path}`).
+    pub async fn agent_pane_current_path(&self) -> Result<PathBuf> {
+        let output = run_tmux_stdout(&self.agent_pane_query_args("#{pane_current_path}"))
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to query pane_current_path for tmux session '{}'",
+                    self.name
+                )
+            })?;
+        let path = output.trim();
+        if path.is_empty() {
+            bail!("tmux session '{}' reported no pane path", self.name);
+        }
+        Ok(PathBuf::from(path))
+    }
+
+    /// Send tmux named keys (non-literal `send-keys`, e.g. `Escape`, `C-c`)
+    /// to the original agent pane.
+    pub async fn send_named_keys_to_agent_pane(&self, keys: &[&str]) -> Result<()> {
+        run_tmux(&self.send_keys_args(&self.agent_pane_target(), keys))
+            .await
+            .with_context(|| format!("failed to send keys to tmux session '{}'", self.name))
+    }
+
     /// Send literal text to the session via `send-keys -l` (literal mode) without
     /// pressing Enter afterwards. This is useful for pre-filling text in a prompt
     /// without submitting it.
@@ -541,6 +580,19 @@ impl Session {
         self.argv(&["capture-pane", "-p", "-t", &self.session_target()])
     }
 
+    fn capture_agent_pane_args(&self, history: u32) -> Vec<String> {
+        let start = format!("-{history}");
+        self.argv(&[
+            "capture-pane",
+            "-p",
+            "-J",
+            "-S",
+            &start,
+            "-t",
+            &self.agent_pane_target(),
+        ])
+    }
+
     fn set_option_args(&self, key: &str, value: &str) -> Vec<String> {
         self.argv(&["set-option", "-t", &self.session_target(), key, value])
     }
@@ -631,6 +683,15 @@ fn submit_probe(text: &str) -> String {
         .chars()
         .take(SUBMIT_PROBE_LEN)
         .collect::<String>()
+}
+
+/// Drop the blank lines tmux pads a capture with below the last output line.
+fn trim_trailing_blank_lines(text: &str) -> String {
+    let mut lines: Vec<&str> = text.lines().collect();
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
 }
 
 /// `show-environment` output → `(name, value)`, skipping removed (`-NAME`) entries.
@@ -814,6 +875,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn trim_trailing_blank_lines_keeps_interior_blanks() {
+        assert_eq!(trim_trailing_blank_lines("a\n\nb\n  \n\n"), "a\n\nb");
+        assert_eq!(trim_trailing_blank_lines("\n\n"), "");
+    }
+
+    #[test]
     fn stat_ppid_skips_comm_with_spaces_and_parens() {
         assert_eq!(stat_ppid("42 (zsh) S 7 42 42 0 -1"), Some(7));
         assert_eq!(stat_ppid("43 (a) b (c)) T 42 43 42"), Some(42));
@@ -976,6 +1043,14 @@ mod tests {
         assert_eq!(
             s.agent_pane_query_args("#{pane_dead}"),
             vec!["display-message", "-p", "-t", "=agent:0.0", "#{pane_dead}"]
+        );
+        assert_eq!(
+            s.capture_agent_pane_args(200),
+            vec!["capture-pane", "-p", "-J", "-S", "-200", "-t", "=agent:0.0"]
+        );
+        assert_eq!(
+            s.send_keys_args(&s.agent_pane_target(), &["Escape", "Enter"]),
+            vec!["send-keys", "-t", "=agent:0.0", "Escape", "Enter"]
         );
         assert_eq!(
             s.send_keys_args(&s.window_target("bg"), &["Enter"]),
