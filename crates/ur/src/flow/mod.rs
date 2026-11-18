@@ -4,9 +4,9 @@ mod execute;
 pub use args::FlowArgs;
 pub use execute::execute;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
-use tonic::transport::Channel;
+use ur_rpc::connection::HostChannel;
 use ur_rpc::proto::ticket::WorkflowInfo;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 
@@ -110,12 +110,10 @@ fn format_workflow_line(w: &WorkflowInfo) -> String {
     )
 }
 
-async fn connect_flow(port: u16) -> Result<TicketServiceClient<Channel>> {
-    let addr = format!("http://127.0.0.1:{port}");
-    let retry_channel =
-        ur_rpc::retry::RetryChannel::new(&addr, ur_rpc::retry::RetryConfig::default())
-            .context("invalid server address")?;
-    Ok(TicketServiceClient::new(retry_channel.channel().clone()))
+async fn connect_flow(port: u16) -> Result<TicketServiceClient<HostChannel>> {
+    Ok(TicketServiceClient::new(
+        ur_rpc::connection::connect(port).await?,
+    ))
 }
 
 pub async fn handle(port: u16, args: FlowArgs, output: &OutputManager) -> Result<()> {

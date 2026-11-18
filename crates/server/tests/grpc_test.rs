@@ -855,3 +855,105 @@ async fn session_control_routes_to_worker_daemon() {
         .unwrap_err();
     assert_eq!(missing.code(), tonic::Code::NotFound);
 }
+
+/// A host-listener TicketServiceHandler sharing `handler`'s repos.
+fn host_ticket_handler(
+    handler: &ur_server::grpc::CoreServiceHandler,
+) -> ur_server::grpc_ticket::TicketServiceHandler {
+    ur_server::grpc_ticket::TicketServiceHandler {
+        ticket_repo: handler.ticket_repo.clone(),
+        workflow_repo: handler.workflow_repo.clone(),
+        project_registry: handler.project_registry.clone(),
+        transition_tx: None,
+        cancel_tx: None,
+        ui_event_poller: None,
+        worker_manager: None,
+        worker_repo: None,
+        workerd_resolver: ur_server::WorkerdAddressResolver::new(
+            String::new(),
+            ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+        ),
+    }
+}
+
+/// Serve the real host listener routes (`grpc_server::host_routes`) on an
+/// ephemeral port, requiring `token`.
+async fn spawn_host_listener(dir: &Path, token: &str) -> (SocketAddr, ur_db_test::TestDb) {
+    let (handler, test_db) = make_grpc_handler(dir).await;
+    let ticket_handler = host_ticket_handler(&handler);
+    let routes =
+        ur_server::grpc_server::host_routes(token.to_owned(), handler, ticket_handler).unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    tokio::spawn(async move {
+        Server::builder()
+            .add_routes(routes)
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+    (addr, test_db)
+}
+
+/// ur-8q8gi: the host listener rejects requests without the host token or
+/// with a wrong one (Core and Ticket services alike), and accepts the right
+/// one presented through the shared client helper.
+#[tokio::test]
+async fn host_listener_requires_host_token() {
+    use ur_rpc::proto::core::PingRequest;
+    use ur_rpc::proto::core::core_service_client::CoreServiceClient;
+    use ur_rpc::proto::ticket::ListTicketsRequest;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+
+    let dir = tempfile::tempdir().unwrap();
+    let token = "a".repeat(64);
+    let (addr, _test_db) = spawn_host_listener(dir.path(), &token).await;
+    let list = ListTicketsRequest::default;
+
+    // No token: a bare channel, as a container worker would open.
+    let bare = Endpoint::try_from(format!("http://{addr}"))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let status = CoreServiceClient::new(bare.clone())
+        .ping(PingRequest {})
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
+    let status = TicketServiceClient::new(bare)
+        .list_tickets(list())
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
+
+    // Wrong token of the same length.
+    let wrong = ur_rpc::connection::connect_with_token(addr.port(), &"b".repeat(64)).unwrap();
+    let status = CoreServiceClient::new(wrong)
+        .ping(PingRequest {})
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
+
+    // Right token.
+    let good = ur_rpc::connection::connect_with_token(addr.port(), &token).unwrap();
+    CoreServiceClient::new(good.clone())
+        .ping(PingRequest {})
+        .await
+        .unwrap();
+    TicketServiceClient::new(good)
+        .list_tickets(list())
+        .await
+        .unwrap();
+}
+
+/// ur-8q8gi: the host listener is never built without a valid token.
+#[tokio::test]
+async fn host_listener_refuses_invalid_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let (handler, _test_db) = make_grpc_handler(dir.path()).await;
+    let ticket_handler = host_ticket_handler(&handler);
+    assert!(ur_server::grpc_server::host_routes(String::new(), handler, ticket_handler).is_err());
+}

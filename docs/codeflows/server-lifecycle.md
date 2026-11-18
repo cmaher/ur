@@ -22,6 +22,11 @@ ur start
 │   │   the PID file is removed and the error names builderd.log* / builderd.err
 │   └── Release lock (drop)
 │
+├── ensure_host_token(config_dir)   (every `ur server` subcommand, before compose)
+│   ├── $UR_CONFIG/host-token exists → reuse (permissions tightened to 0600)
+│   └── absent → 32 OS-RNG bytes, hex, written 0600 via temp file + hard link
+│   └── passed to compose as UR_HOST_TOKEN (environment only, never in the file)
+│
 └── compose.up()
     ├── generate_compose() → YAML string from ur.toml config
     ├── Write ~/.ur/docker-compose.yml
@@ -30,6 +35,8 @@ ur start
         ├── ur-postgres (postgres:17-alpine, infra network, data at $UR_CONFIG/postgres)
         ├── ur-squid (forward proxy, infra + workers networks)
         └── ur-server (gRPC server, infra + workers networks)
+            ├── Reads UR_HOST_TOKEN at startup; unset/invalid → exits before DB init
+            │   (fail closed; `compose up --wait` then fails and `ur start` shows it)
             ├── Connects to builderd via UR_BUILDERD_ADDR
             │   └── All container ops (launch/stop/exec/network inspect) go through builderd
             └── Connects to ur-postgres via DATABASE_URL (depends_on: ur-postgres healthy)
@@ -88,6 +95,8 @@ Environment variables passed to `docker compose`:
 - `UR_BUILDERD_PORT` — builderd port (server uses this to build `UR_BUILDERD_ADDR`)
 - `DATABASE_URL` — Postgres connection URL for ur-server (e.g., `postgres://ur:ur@ur-postgres:5432/ur`)
 
+- `UR_HOST_TOKEN` — host listener credential (see [Host Listener Authentication](#host-listener-authentication)); the compose file references `${UR_HOST_TOKEN:-}`, so the value lives only in the `docker compose` process environment
+
 The server container receives `UR_BUILDERD_ADDR=http://host.docker.internal:$UR_BUILDERD_PORT`
 to reach builderd on the host via Docker's host gateway.
 
@@ -120,7 +129,7 @@ Host (macOS / Linux)
 └── Docker
     ├── infra network (bridge)
     │   ├── ur-postgres [:5432] ← Postgres connections from ur-server
-    │   ├── ur-server [:12321] ← gRPC from CLI + workers
+    │   ├── ur-server [:12321] ← host gRPC (CLI, urui); requires ur-host-token
     │   └── ur-squid [:3128] ← HTTP proxy for workers
     │
     └── workers network (bridge, internal)
@@ -128,6 +137,35 @@ Host (macOS / Linux)
         ├── ur-squid (also on this network)
         └── worker containers (launched dynamically)
 ```
+
+## Host Listener Authentication
+
+ur-server sits on the workers network, so its host listener (`server_port`, Core +
+Ticket services) is reachable from every container worker. It is authenticated by a host
+credential (ur-8q8gi):
+
+- **Token file**: `$UR_CONFIG/host-token` (`ur_config::host_token_path`), mode 0600, created
+  by `ur_config::ensure_host_token` on any `ur server` subcommand and reused afterwards.
+- **Server**: `auth::host_token_from_env` reads `UR_HOST_TOKEN` and refuses to start without a
+  valid one. `grpc_server::host_routes` wraps Core and Ticket with
+  `auth::host_auth_interceptor`, which requires the token in the `ur-host-token` header
+  (`ur_config::HOST_TOKEN_HEADER`), compared in constant time (`subtle`). Missing or wrong →
+  `Unauthenticated`.
+- **Clients**: every host client of `server_port` goes through
+  `ur_rpc::connection::connect(port)` → `HostChannel` (an `InterceptedService` adding the
+  header). It reads the token file via `ur_config::resolve_config_dir()`; a missing or
+  unreadable file is an error naming the file. Callers: the `ur` CLI (`crates/ur`, incl.
+  ticket/flow/worker/attach/project reload/stop) and urui. builderd and workerd never call
+  the host listener; acceptance drives it through the `ur` CLI.
+- **Worker listener** (`worker_port`) is unchanged: per-worker id/secret.
+- **Worker mounts**: no built-in worker mount covers the config dir root, only files/dirs under
+  `<agent>/`, `projects/<key>/`, `hostexec/` and `logs/workers/<id>/`
+  (`worker_mounts_never_expose_host_token` in `crates/server/src/worker.rs`). A project
+  `mounts` entry whose source is `%URCONFIG%` itself would expose it — don't.
+- **Known limits**: local workers (`runtime = "local"`) run as the user on the host and can read
+  `$UR_CONFIG/host-token`; their only guard is the settings deny rules. Anyone with the user's
+  host account can too. Rotation: delete the file and `ur server restart`. No TLS: the token
+  travels in cleartext on the Docker networks and host loopback.
 
 ## Image Tags Are Agent-Named
 

@@ -221,6 +221,7 @@ async fn init_and_serve(
     builderd_addr: String,
     host_workspace: PathBuf,
     project_registry: ProjectRegistry,
+    host_token: String,
 ) -> anyhow::Result<()> {
     let graph_manager = GraphManager::new(ticket_pool.clone());
     let ticket_repo = TicketRepo::new(ticket_pool.clone(), graph_manager);
@@ -290,6 +291,7 @@ async fn init_and_serve(
 
     serve_grpc_servers(
         cfg.server_port,
+        host_token,
         cfg.worker_port,
         cfg.network.worker_prefix.clone(),
         project_registry,
@@ -497,6 +499,7 @@ fn spawn_startup_label_backfill(
 #[allow(clippy::too_many_arguments)]
 async fn serve_grpc_servers(
     server_port: u16,
+    host_token: String,
     worker_port: u16,
     network_prefix: String,
     project_registry: ProjectRegistry,
@@ -536,8 +539,12 @@ async fn serve_grpc_servers(
         worker_reconcile_manager(&builderd_addr, &worker_manager, &worker_repo)?
             .spawn(wf.shutdown_tx.subscribe());
 
-    let host_server =
-        ur_server::grpc_server::serve_grpc(host_addr, grpc_handler, ticket_handler.clone());
+    let host_server = ur_server::grpc_server::serve_grpc(
+        host_addr,
+        host_token,
+        grpc_handler,
+        ticket_handler.clone(),
+    );
 
     let remote_repo_handler = {
         let retry_channel =
@@ -698,6 +705,9 @@ async fn main() -> anyhow::Result<()> {
         "server config loaded"
     );
 
+    // Fail closed before touching the databases: no token, no host listener.
+    let host_token = ur_server::auth::host_token_from_env()?;
+
     let (host_workspace, local_workspace) = resolve_workspace_paths(&cfg);
     info!(
         local_workspace = %local_workspace.display(),
@@ -770,6 +780,7 @@ async fn main() -> anyhow::Result<()> {
         builderd_addr,
         host_workspace,
         project_registry,
+        host_token,
     )
     .await;
 

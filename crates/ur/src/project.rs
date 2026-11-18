@@ -334,9 +334,16 @@ pub fn remove(
 /// bind-mount propagation race that would otherwise produce mid-string TOML
 /// parse errors when the server reads its own filesystem view.
 pub async fn try_reload_server(port: u16, config_dir: &Path, key: &str, action: &str) {
-    let Some(channel) = connection::try_connect(port) else {
-        println!("Project {action} in config. Will be available on next server start.");
-        return;
+    let channel = match connection::connect(port).await {
+        Ok(channel) => channel,
+        Err(e) => {
+            warn!(error = %e, "cannot connect to server for project reload");
+            println!(
+                "Warning: project {action} in config but could not reach the server: {e:#} \
+                 — restart server to apply"
+            );
+            return;
+        }
     };
     let toml_path = config_dir.join("ur.toml");
     let config_toml = match std::fs::read_to_string(&toml_path) {

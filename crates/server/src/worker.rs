@@ -1710,6 +1710,64 @@ mod tests {
         (mgr, workspace, test_db)
     }
 
+    /// ur-8q8gi: no worker container mount exposes the host token. Every
+    /// convention mount under the config dir is populated; none may be the
+    /// token file or a directory containing it.
+    #[tokio::test]
+    async fn worker_mounts_never_expose_host_token() {
+        let (mgr, workspace, _test_db) = test_manager().await;
+        let config_dir = workspace.path();
+        let token_path = ur_config::host_token_path(config_dir);
+        std::fs::write(&token_path, "a".repeat(64)).unwrap();
+        let project = config_dir.join("projects").join("proj");
+        for sub in [
+            "memory",
+            "transcripts",
+            "brain",
+            "hooks/git",
+            "hooks/skills",
+            "hooks/startup",
+            "hooks/startup-bg",
+        ] {
+            std::fs::create_dir_all(project.join(sub)).unwrap();
+        }
+        std::fs::write(project.join("CLAUDE.md"), "x").unwrap();
+        std::fs::create_dir_all(config_dir.join(ur_config::HOSTEXEC_DIR)).unwrap();
+
+        let mut config = test_worker_config(WorkerStrategy::Code, "sonnet");
+        config.project_key = "proj".into();
+
+        // The writable convention dirs are chowned to the worker UID at launch,
+        // which needs root; check their resolved sources directly, then drop
+        // them so the full launch request below can build unprivileged.
+        let writable = [
+            resolve_memory_dir(&None, "proj", config_dir),
+            resolve_transcripts_dir("proj", config_dir),
+            resolve_brain_dir(&None, &None, "proj", config_dir),
+        ];
+        let mut sources: Vec<String> = writable
+            .into_iter()
+            .map(|dir| dir.expect("convention dir resolved"))
+            .collect();
+        for sub in ["memory", "transcripts", "brain"] {
+            std::fs::remove_dir_all(project.join(sub)).unwrap();
+        }
+
+        let request = mgr
+            .build_launch_request(&config, "secret", "ur-worker-test")
+            .unwrap();
+        assert!(!request.volumes.is_empty());
+        sources.extend(request.volumes.iter().map(|v| v.host_path.clone()));
+        for host_path in &sources {
+            let source = std::path::Path::new(host_path);
+            assert!(
+                !token_path.starts_with(source),
+                "worker mount source {host_path} exposes {}",
+                token_path.display()
+            );
+        }
+    }
+
     /// The provisional row written before builderd's launch carries the
     /// launch's resolved runtime, not a hardcoded container.
     #[tokio::test]

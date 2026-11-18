@@ -13,6 +13,7 @@ tonic = { workspace = true }
 tonic-types = { workspace = true, optional = true }
 tower = { workspace = true, optional = true, features = ["retry"] }
 tracing = { workspace = true, optional = true }
+ur_config = { path = "../ur_config", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
@@ -22,7 +23,7 @@ tower = { workspace = true, features = ["retry"] }
 [features]
 stream = ["dep:tokio", "dep:tracing"]
 error = ["dep:tonic-types", "dep:anyhow"]
-retry = ["dep:tower", "dep:tokio", "dep:tracing", "dep:anyhow"]
+retry = ["dep:tower", "dep:tokio", "dep:tracing", "dep:anyhow", "dep:ur_config"]
 
 [build-dependencies]
 tonic-build = { workspace = true }
