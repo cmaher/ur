@@ -13,6 +13,8 @@ use std::time::Duration;
 use anyhow::Context;
 use tracing::{debug, info, warn};
 
+use crate::session_control::InterruptGrace;
+
 /// Why the exit watcher concluded the agent is gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentExitReason {
@@ -120,6 +122,8 @@ pub struct ExitWatcherManager {
     sink: Arc<dyn AgentExitSink>,
     watch_agent_process: bool,
     poll_interval: Duration,
+    /// Armed by the daemon on interrupts/key presses; defers shell-return.
+    interrupt_grace: InterruptGrace,
 }
 
 impl ExitWatcherManager {
@@ -137,7 +141,16 @@ impl ExitWatcherManager {
             sink,
             watch_agent_process,
             poll_interval,
+            interrupt_grace: InterruptGrace::default(),
         }
+    }
+
+    /// Share the daemon's [`InterruptGrace`]: while it is armed a shell
+    /// foreground is "no change this poll", so an intentional interrupt is
+    /// never reported as the agent exiting.
+    pub fn with_interrupt_grace(mut self, grace: InterruptGrace) -> Self {
+        self.interrupt_grace = grace;
+        self
     }
 
     /// Run [`ExitWatcherManager::run`] on a new task. Await the handle for the
@@ -214,6 +227,10 @@ impl ExitWatcherManager {
         debug!(foreground = %foreground, state = ?state, next_state = ?next_state, "agent foreground process check");
         *state = next_state;
         if !shell {
+            return None;
+        }
+        if self.interrupt_grace.is_active() {
+            debug!(foreground = %foreground, "shell foreground inside interrupt grace; no change this poll");
             return None;
         }
         match self.pane.pane_has_child_processes().await {
@@ -362,6 +379,25 @@ mod tests {
             .await
             .unwrap();
         sink.reasons.lock().await.clone()
+    }
+
+    /// An armed interrupt grace suppresses the shell-return verdict; the
+    /// dead pane after it is still reported.
+    #[tokio::test]
+    async fn interrupt_grace_defers_shell_return() {
+        let pane = ScriptedPane::new(
+            vec![Ok(true), Ok(true), Ok(true), Ok(true), Ok(true), Ok(false)],
+            vec!["zsh", "node", "node", "zsh", "zsh"],
+        );
+        let sink = Arc::new(RecordingSink::default());
+        let grace = InterruptGrace::default();
+        grace.arm(Duration::from_secs(60));
+        watcher(pane, sink.clone(), true)
+            .with_interrupt_grace(grace)
+            .run()
+            .await
+            .unwrap();
+        assert_eq!(*sink.reasons.lock().await, vec![AgentExitReason::PaneDead]);
     }
 
     #[tokio::test]

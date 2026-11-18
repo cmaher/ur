@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,10 +14,10 @@ use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonServiceServer;
 
 use workerd::{
-    ContainerExitSink, ExitWatcherManager, InitGitHooksManager, InitInstructionsManager,
-    InitSettingsManager, InitSkillHooksManager, InitSkillsManager, SkillLayout,
-    StartupHooksManager, WorkerDaemonServiceImpl, WorkerIdentity, WorkerInitInputs, WorkerPaths,
-    watches_agent_process,
+    ContainerExitSink, ExitWatcherManager, IdleTracker, InitGitHooksManager,
+    InitInstructionsManager, InitSettingsManager, InitSkillHooksManager, InitSkillsManager,
+    InterruptGrace, SessionControlManager, SkillLayout, StartupHooksManager,
+    WorkerDaemonServiceImpl, WorkerIdentity, WorkerInitInputs, WorkerPaths, watches_agent_process,
 };
 
 mod logging;
@@ -198,15 +198,28 @@ async fn run_daemon_only(agent: ur_config::AgentType, inputs: &WorkerInitInputs)
         .strategy
         .as_deref()
         .is_some_and(watches_agent_process);
+    let interrupt_grace = InterruptGrace::default();
     let exit_watcher = ExitWatcherManager::new(
         Arc::new(session.clone()),
         Arc::new(ContainerExitSink::new(identity.clone())),
         watch_agent_process,
         Duration::from_secs(EXIT_WATCHER_POLL_SECS),
     )
+    .with_interrupt_grace(interrupt_grace.clone())
     .spawn();
 
-    let service = WorkerDaemonServiceImpl::new(identity, agent, SkillLayout::AgentHome, session);
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(ur_config::WORKER_HOME));
+    let control = SessionControlManager::new(
+        session.clone(),
+        agent,
+        home,
+        IdleTracker::default(),
+        interrupt_grace,
+    );
+    let service =
+        WorkerDaemonServiceImpl::new(identity, agent, SkillLayout::AgentHome, session, control);
 
     // 4. Spawn healthz HTTP server (port 9119) in background
     tokio::spawn(serve_healthz());

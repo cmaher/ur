@@ -4,11 +4,13 @@
 use tonic::{Request, Response, Status};
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonService;
 use ur_rpc::proto::workerd::{
-    AddressFeedbackRequest, AddressFeedbackResponse, DesignRequest, DesignResponse,
-    DispatchTicketRequest, DispatchTicketResponse, ImplementRequest, ImplementResponse,
-    NotifyIdleRequest, NotifyIdleResponse, PauseNudgeRequest, PauseNudgeResponse,
-    SendMessageRequest, SendMessageResponse, SetStatusLeftRequest, SetStatusLeftResponse,
-    SetTicketRequest, SetTicketResponse, StepCompleteRequest, StepCompleteResponse,
+    AddressFeedbackRequest, AddressFeedbackResponse, CapturePaneRequest, CapturePaneResponse,
+    DesignRequest, DesignResponse, DispatchTicketRequest, DispatchTicketResponse, ImplementRequest,
+    ImplementResponse, InterruptRequest, InterruptResponse, NotifyIdleRequest, NotifyIdleResponse,
+    PauseNudgeRequest, PauseNudgeResponse, ReadTranscriptRequest, ReadTranscriptResponse,
+    SendKeysRequest, SendKeysResponse, SendMessageRequest, SendMessageResponse,
+    SetStatusLeftRequest, SetStatusLeftResponse, SetTicketRequest, SetTicketResponse,
+    StepCompleteRequest, StepCompleteResponse, WaitIdleRequest, WaitIdleResponse,
 };
 use workerd::WorkerDaemonServiceImpl;
 
@@ -62,4 +64,9 @@ route! {
     set_ticket(SetTicketRequest) -> SetTicketResponse;
     dispatch_ticket(DispatchTicketRequest) -> DispatchTicketResponse;
     set_status_left(SetStatusLeftRequest) -> SetStatusLeftResponse;
+    capture_pane(CapturePaneRequest) -> CapturePaneResponse;
+    read_transcript(ReadTranscriptRequest) -> ReadTranscriptResponse;
+    send_keys(SendKeysRequest) -> SendKeysResponse;
+    interrupt(InterruptRequest) -> InterruptResponse;
+    wait_idle(WaitIdleRequest) -> WaitIdleResponse;
 }

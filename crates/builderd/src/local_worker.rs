@@ -36,8 +36,9 @@ use tonic::Status;
 use tracing::{error, info};
 use ur_config::{AgentType, WorkerRuntime};
 use workerd::{
-    AgentExitReason, AgentExitSink, ExitWatcherManager, HookKind, SkillLayout, StartupHooksManager,
-    WorkerDaemonServiceImpl, WorkerIdentity, watches_agent_process,
+    AgentExitReason, AgentExitSink, ExitWatcherManager, HookKind, IdleTracker, InterruptGrace,
+    SessionControlManager, SkillLayout, StartupHooksManager, WorkerDaemonServiceImpl,
+    WorkerIdentity, watches_agent_process,
 };
 
 use crate::barrier::WorkerBarrier;
@@ -290,11 +291,13 @@ impl LocalWorkerManager {
 
         // Register before the agent starts: its SessionStart hook calls
         // NotifyIdle right away.
+        let grace = InterruptGrace::default();
         let daemon = WorkerDaemonServiceImpl::new(
             identity,
             req.agent,
             SkillLayout::ur_plugin(),
             session.clone(),
+            self.session_control(&session, req.agent, &grace),
         );
         let watcher = self.spawn_exit_watcher(
             &req.worker_id,
@@ -302,6 +305,7 @@ impl LocalWorkerManager {
                 .as_deref()
                 .is_some_and(watches_agent_process),
             &session,
+            grace,
         );
         self.registry.insert(
             req.worker_id.clone(),
@@ -332,11 +336,29 @@ impl LocalWorkerManager {
         Ok(())
     }
 
+    /// Session control for a local worker's daemon. Local agents run under
+    /// the user's home, so their session logs are in `~/.claude` etc.
+    fn session_control(
+        &self,
+        session: &tmux::Session,
+        agent: AgentType,
+        grace: &InterruptGrace,
+    ) -> SessionControlManager {
+        SessionControlManager::new(
+            session.clone(),
+            agent,
+            self.workspace.home().to_path_buf(),
+            IdleTracker::default(),
+            grace.clone(),
+        )
+    }
+
     fn spawn_exit_watcher(
         &self,
         worker_id: &str,
         watch_agent_process: bool,
         session: &tmux::Session,
+        grace: InterruptGrace,
     ) -> AbortHandle {
         let sink = LocalExitSink {
             manager: self.clone(),
@@ -347,7 +369,8 @@ impl LocalWorkerManager {
             Arc::new(sink),
             watch_agent_process,
             self.exit_poll_interval,
-        );
+        )
+        .with_interrupt_grace(grace);
         let worker_id = worker_id.to_owned();
         // The server learns of the exit from ListLocalWorkers (its reconcile
         // loop); a failed teardown leaves the worker registered for Stop.
@@ -549,9 +572,16 @@ impl LocalWorkerManager {
             &env,
             ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV,
         ));
-        let watcher = self.spawn_exit_watcher(worker_id, watch_agent_process, &session);
-        let daemon =
-            WorkerDaemonServiceImpl::new(identity, agent, SkillLayout::ur_plugin(), session);
+        let grace = InterruptGrace::default();
+        let control = self.session_control(&session, agent, &grace);
+        let watcher = self.spawn_exit_watcher(worker_id, watch_agent_process, &session, grace);
+        let daemon = WorkerDaemonServiceImpl::new(
+            identity,
+            agent,
+            SkillLayout::ur_plugin(),
+            session,
+            control,
+        );
         self.registry.insert(
             worker_id.to_owned(),
             LocalWorker {

@@ -1,8 +1,10 @@
 use tracing::warn;
+use ur_rpc::proto::core::WorkerKey;
 use ur_rpc::proto::workerd::worker_daemon_service_client::WorkerDaemonServiceClient;
 use ur_rpc::proto::workerd::{
-    AddressFeedbackRequest, DesignRequest, ImplementRequest, SendMessageRequest,
-    SetStatusLeftRequest,
+    AddressFeedbackRequest, CapturePaneRequest, DesignRequest, ImplementRequest, InterruptRequest,
+    ReadTranscriptRequest, ReadTranscriptResponse, SendKeysRequest, SendMessageRequest,
+    SetStatusLeftRequest, WaitIdleRequest, WaitIdleResponse,
 };
 use ur_rpc::retry::{RetryChannel, RetryConfig};
 use workflow_db::WorkerRepo;
@@ -211,5 +213,60 @@ impl WorkerdClient {
 
         self.mark_working().await;
         Ok(())
+    }
+
+    // Session control. These keep workerd's `Status` (code and message) so
+    // the CLI sees e.g. FailedPrecondition for an agent with no transcript.
+
+    fn client(&self) -> WorkerDaemonServiceClient<tonic::transport::Channel> {
+        WorkerDaemonServiceClient::new(self.retry_channel.channel().clone())
+    }
+
+    fn status_request<T>(&self, message: T) -> Result<tonic::Request<T>, tonic::Status> {
+        self.request(message).map_err(tonic::Status::internal)
+    }
+
+    /// Rendered agent pane with `lines` of scrollback.
+    pub async fn capture_pane(&self, lines: u32) -> Result<String, tonic::Status> {
+        let req = self.status_request(CapturePaneRequest { lines })?;
+        Ok(self.client().capture_pane(req).await?.into_inner().text)
+    }
+
+    /// Last `turns` turns of the agent's session log.
+    pub async fn read_transcript(
+        &self,
+        turns: u32,
+    ) -> Result<ReadTranscriptResponse, tonic::Status> {
+        let req = self.status_request(ReadTranscriptRequest { turns })?;
+        Ok(self.client().read_transcript(req).await?.into_inner())
+    }
+
+    /// Press allowlisted keys. Not a dispatch: agent status is unchanged.
+    pub async fn send_keys(&self, keys: &[WorkerKey]) -> Result<(), tonic::Status> {
+        let req = self.status_request(SendKeysRequest {
+            keys: keys.iter().map(|k| *k as i32).collect(),
+        })?;
+        self.client().send_keys(req).await?;
+        Ok(())
+    }
+
+    /// Interrupt the agent's turn with its agent-specific keys.
+    pub async fn interrupt(&self) -> Result<(), tonic::Status> {
+        let req = self.status_request(InterruptRequest {})?;
+        self.client().interrupt(req).await?;
+        Ok(())
+    }
+
+    /// Block until the agent is idle or `timeout_secs` elapse.
+    pub async fn wait_idle(
+        &self,
+        timeout_secs: u32,
+        screen_lines: u32,
+    ) -> Result<WaitIdleResponse, tonic::Status> {
+        let req = self.status_request(WaitIdleRequest {
+            timeout_secs,
+            screen_lines,
+        })?;
+        Ok(self.client().wait_idle(req).await?.into_inner())
     }
 }

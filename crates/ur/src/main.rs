@@ -16,6 +16,7 @@ mod project;
 mod proxy;
 mod ticket;
 mod tui;
+mod worker_session;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -312,9 +313,22 @@ enum WorkerCommands {
         worker_id: String,
         message: String,
         /// Type the message into the agent's prompt without submitting it
-        #[arg(long = "no-submit")]
+        #[arg(long = "no-submit", conflicts_with = "wait_idle")]
         no_submit: bool,
+        #[command(flatten)]
+        wait: worker_session::WaitIdleArgs,
     },
+    /// Read a running worker's conversation (default) or its screen
+    Read(worker_session::ReadArgs),
+    /// Press keys in a worker's agent pane (escape, ctrl-c, enter, up, down,
+    /// left, right, tab, 0-9)
+    Keys {
+        worker_id: String,
+        #[arg(required = true)]
+        keys: Vec<String>,
+    },
+    /// Interrupt the worker agent's current turn
+    Interrupt { worker_id: String },
     /// Stop a running worker process
     Stop { worker_id: String },
     /// Open the host directory for a running process in VS Code
@@ -1069,7 +1083,15 @@ async fn handle_worker(
             worker_id,
             message,
             no_submit,
-        } => handle_worker_send(port, output, worker_id, message, !no_submit).await,
+            wait,
+        } => handle_worker_send(port, output, worker_id, message, !no_submit, wait.wait()).await,
+        WorkerCommands::Read(args) => worker_session::read(port, output, args).await,
+        WorkerCommands::Keys { worker_id, keys } => {
+            worker_session::keys(port, output, &worker_id, &keys).await
+        }
+        WorkerCommands::Interrupt { worker_id } => {
+            worker_session::interrupt(port, output, &worker_id).await
+        }
         WorkerCommands::Stop { worker_id } => {
             input::validate_id(&worker_id, "worker_id")?;
             let mut client = connect(port).await?;
@@ -1206,6 +1228,7 @@ async fn handle_worker_send(
     worker_id: String,
     message: String,
     submit: bool,
+    wait: Option<worker_session::WaitIdle>,
 ) -> Result<()> {
     input::validate_id(&worker_id, "worker_id")?;
     let mut client = connect(port).await?;
@@ -1217,6 +1240,17 @@ async fn handle_worker_send(
             submit: Some(submit),
         })
         .await?;
+    if let Some(wait) = wait {
+        worker_session::wait_idle(&mut client, &worker_id, wait).await?;
+        if output.is_json() {
+            output.print_text(&format!(
+                "{{\"worker_id\":\"{worker_id}\",\"status\":\"idle\"}}"
+            ));
+        } else {
+            println!("Message sent to {worker_id}; agent is idle.");
+        }
+        return Ok(());
+    }
     if output.is_json() {
         output.print_text(&format!(
             "{{\"worker_id\":\"{worker_id}\",\"status\":\"sent\"}}"
@@ -1500,6 +1534,9 @@ fn command_name(cmd: &WorkerCommands) -> &'static str {
         WorkerCommands::ReseedCredentials { .. } => "reseed_credentials",
         WorkerCommands::SaveCredentials { .. } => "save_credentials",
         WorkerCommands::Send { .. } => "send",
+        WorkerCommands::Read(_) => "read",
+        WorkerCommands::Keys { .. } => "keys",
+        WorkerCommands::Interrupt { .. } => "interrupt",
         WorkerCommands::Launch { .. } => "launch",
         WorkerCommands::Describe { .. } => "describe",
         WorkerCommands::Stop { .. } => "stop",

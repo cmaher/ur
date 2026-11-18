@@ -8,6 +8,7 @@ pub mod grpc;
 pub mod grpc_hostexec;
 pub mod grpc_remote_repo;
 pub mod grpc_server;
+mod grpc_session;
 pub mod grpc_ticket;
 pub mod hostexec;
 pub mod launch_runtime;

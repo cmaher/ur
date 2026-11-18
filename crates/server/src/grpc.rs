@@ -9,11 +9,14 @@ use ticket_db::TicketRepo;
 use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
-    LinkCommentTicketRequest, LinkCommentTicketResponse, PingRequest, PingResponse,
-    ReloadProjectsRequest, ReloadProjectsResponse, SendWorkerMessageRequest,
-    SendWorkerMessageResponse, UpdateAgentStatusRequest, UpdateAgentStatusResponse,
-    WorkerInfoRequest, WorkerInfoResponse, WorkerLaunchRequest, WorkerLaunchResponse,
-    WorkerListRequest, WorkerListResponse, WorkerStopRequest, WorkerStopResponse, WorkerSummary,
+    CaptureWorkerPaneRequest, CaptureWorkerPaneResponse, InterruptWorkerRequest,
+    InterruptWorkerResponse, LinkCommentTicketRequest, LinkCommentTicketResponse, PingRequest,
+    PingResponse, ReadWorkerTranscriptRequest, ReadWorkerTranscriptResponse, ReloadProjectsRequest,
+    ReloadProjectsResponse, SendWorkerKeysRequest, SendWorkerKeysResponse,
+    SendWorkerMessageRequest, SendWorkerMessageResponse, UpdateAgentStatusRequest,
+    UpdateAgentStatusResponse, WaitWorkerIdleRequest, WaitWorkerIdleResponse, WorkerInfoRequest,
+    WorkerInfoResponse, WorkerLaunchRequest, WorkerLaunchResponse, WorkerListRequest,
+    WorkerListResponse, WorkerStopRequest, WorkerStopResponse, WorkerSummary,
     WorkflowStepCompleteRequest, WorkflowStepCompleteResponse,
 };
 use workflow_db::WorkflowRepo;
@@ -1199,6 +1202,49 @@ impl CoreService for CoreServiceHandler {
         }))
     }
 
+    async fn capture_worker_pane(
+        &self,
+        req: Request<CaptureWorkerPaneRequest>,
+    ) -> Result<Response<CaptureWorkerPaneResponse>, Status> {
+        Ok(Response::new(
+            self.capture_worker_pane_impl(req.into_inner()).await?,
+        ))
+    }
+
+    async fn read_worker_transcript(
+        &self,
+        req: Request<ReadWorkerTranscriptRequest>,
+    ) -> Result<Response<ReadWorkerTranscriptResponse>, Status> {
+        Ok(Response::new(
+            self.read_worker_transcript_impl(req.into_inner()).await?,
+        ))
+    }
+
+    async fn send_worker_keys(
+        &self,
+        req: Request<SendWorkerKeysRequest>,
+    ) -> Result<Response<SendWorkerKeysResponse>, Status> {
+        self.send_worker_keys_impl(req.into_inner()).await?;
+        Ok(Response::new(SendWorkerKeysResponse {}))
+    }
+
+    async fn interrupt_worker(
+        &self,
+        req: Request<InterruptWorkerRequest>,
+    ) -> Result<Response<InterruptWorkerResponse>, Status> {
+        self.interrupt_worker_impl(req.into_inner()).await?;
+        Ok(Response::new(InterruptWorkerResponse {}))
+    }
+
+    async fn wait_worker_idle(
+        &self,
+        req: Request<WaitWorkerIdleRequest>,
+    ) -> Result<Response<WaitWorkerIdleResponse>, Status> {
+        Ok(Response::new(
+            self.wait_worker_idle_impl(req.into_inner()).await?,
+        ))
+    }
+
     async fn update_agent_status(
         &self,
         _req: Request<UpdateAgentStatusRequest>,
@@ -1378,6 +1424,43 @@ impl CoreService for WorkerCoreServiceHandler {
         &self,
         _req: Request<SendWorkerMessageRequest>,
     ) -> Result<Response<SendWorkerMessageResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
+    }
+
+    // Session control is host-only; workers get Unimplemented.
+
+    async fn capture_worker_pane(
+        &self,
+        _req: Request<CaptureWorkerPaneRequest>,
+    ) -> Result<Response<CaptureWorkerPaneResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
+    }
+
+    async fn read_worker_transcript(
+        &self,
+        _req: Request<ReadWorkerTranscriptRequest>,
+    ) -> Result<Response<ReadWorkerTranscriptResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
+    }
+
+    async fn send_worker_keys(
+        &self,
+        _req: Request<SendWorkerKeysRequest>,
+    ) -> Result<Response<SendWorkerKeysResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
+    }
+
+    async fn interrupt_worker(
+        &self,
+        _req: Request<InterruptWorkerRequest>,
+    ) -> Result<Response<InterruptWorkerResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
+    }
+
+    async fn wait_worker_idle(
+        &self,
+        _req: Request<WaitWorkerIdleRequest>,
+    ) -> Result<Response<WaitWorkerIdleResponse>, Status> {
         Err(CoreError::Unimplemented.into())
     }
 

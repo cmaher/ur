@@ -1,6 +1,8 @@
 syntax = "proto3";
 package ur.workerd;
 
+import "core.proto";
+
 service WorkerDaemonService {
   rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
   rpc NotifyIdle(NotifyIdleRequest) returns (NotifyIdleResponse);
@@ -12,6 +14,12 @@ service WorkerDaemonService {
   rpc SetTicket(SetTicketRequest) returns (SetTicketResponse);
   rpc DispatchTicket(DispatchTicketRequest) returns (DispatchTicketResponse);
   rpc SetStatusLeft(SetStatusLeftRequest) returns (SetStatusLeftResponse);
+  // Session control, reached through the server's CoreService.
+  rpc CapturePane(CapturePaneRequest) returns (CapturePaneResponse);
+  rpc ReadTranscript(ReadTranscriptRequest) returns (ReadTranscriptResponse);
+  rpc SendKeys(SendKeysRequest) returns (SendKeysResponse);
+  rpc Interrupt(InterruptRequest) returns (InterruptResponse);
+  rpc WaitIdle(WaitIdleRequest) returns (WaitIdleResponse);
 }
 
 message SendMessageRequest {
@@ -84,4 +92,43 @@ message SetStatusLeftRequest {
 message SetStatusLeftResponse {
   bool success = 1;
   string error = 2;
+}
+
+message CapturePaneRequest {
+  // Scrollback lines above the visible screen (0 = screen only).
+  uint32 lines = 1;
+}
+
+message CapturePaneResponse {
+  string text = 1;
+}
+
+message ReadTranscriptRequest {
+  // Most recent turns to return (callers pass a non-zero value).
+  uint32 turns = 1;
+}
+
+message ReadTranscriptResponse {
+  repeated ur.core.TranscriptTurn turns = 1;
+  string source_path = 2;
+}
+
+message SendKeysRequest {
+  repeated ur.core.WorkerKey keys = 1;
+}
+
+message SendKeysResponse {}
+
+message InterruptRequest {}
+
+message InterruptResponse {}
+
+message WaitIdleRequest {
+  uint32 timeout_secs = 1;
+  uint32 screen_lines = 2;
+}
+
+message WaitIdleResponse {
+  bool timed_out = 1;
+  string screen_tail = 2;
 }

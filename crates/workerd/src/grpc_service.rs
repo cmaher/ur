@@ -10,15 +10,18 @@ use tracing::{error, info, warn};
 use ur_rpc::proto::core::UpdateAgentStatusRequest;
 
 use crate::dispatch::dispatch_commands;
+use crate::session_control::SessionControlManager;
 use crate::skill_layout::SkillLayout;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonService;
 use ur_rpc::proto::workerd::{
-    AddressFeedbackRequest, AddressFeedbackResponse, DesignRequest, DesignResponse,
-    DispatchTicketRequest, DispatchTicketResponse, ImplementRequest, ImplementResponse,
-    NotifyIdleRequest, NotifyIdleResponse, PauseNudgeRequest, PauseNudgeResponse,
-    SendMessageRequest, SendMessageResponse, SetStatusLeftRequest, SetStatusLeftResponse,
-    SetTicketRequest, SetTicketResponse, StepCompleteRequest, StepCompleteResponse,
+    AddressFeedbackRequest, AddressFeedbackResponse, CapturePaneRequest, CapturePaneResponse,
+    DesignRequest, DesignResponse, DispatchTicketRequest, DispatchTicketResponse, ImplementRequest,
+    ImplementResponse, InterruptRequest, InterruptResponse, NotifyIdleRequest, NotifyIdleResponse,
+    PauseNudgeRequest, PauseNudgeResponse, ReadTranscriptRequest, ReadTranscriptResponse,
+    SendKeysRequest, SendKeysResponse, SendMessageRequest, SendMessageResponse,
+    SetStatusLeftRequest, SetStatusLeftResponse, SetTicketRequest, SetTicketResponse,
+    StepCompleteRequest, StepCompleteResponse, WaitIdleRequest, WaitIdleResponse,
 };
 
 /// Buffer for dispatched commands that workerd drains on idle signals.
@@ -75,6 +78,8 @@ pub struct WorkerDaemonServiceImpl {
     skill_layout: SkillLayout,
     /// The agent's tmux session; every send-keys / status update targets it.
     session: tmux::Session,
+    /// Screen/transcript/keys/idle control; also tracks busy vs idle.
+    control: SessionControlManager,
 }
 
 /// How long to wait before typing into the agent session from a hook-driven RPC.
@@ -91,6 +96,7 @@ impl WorkerDaemonServiceImpl {
         agent: ur_config::AgentType,
         skill_layout: SkillLayout,
         session: tmux::Session,
+        control: SessionControlManager,
     ) -> Self {
         WorkerDaemonServiceImpl {
             identity,
@@ -104,6 +110,7 @@ impl WorkerDaemonServiceImpl {
             agent,
             skill_layout,
             session,
+            control,
         }
     }
 
@@ -327,6 +334,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
 
         let session = &self.session;
         let result = if submit {
+            self.control.idle().mark_busy();
             session.send_keys(message).await
         } else {
             session.send_keys_no_enter(message).await
@@ -379,6 +387,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
             buf.lifecycle_step = String::new();
             drop(buf);
 
+            self.control.idle().mark_idle();
             self.send_workflow_step_complete();
             return Ok(Response::new(NotifyIdleResponse {}));
         }
@@ -393,6 +402,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
             {
                 info!("Nudge suppressed, skipping");
                 drop(buf);
+                self.control.idle().mark_idle();
                 return Ok(Response::new(NotifyIdleResponse {}));
             }
 
@@ -401,6 +411,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
 
             // Check server for stall state before nudging. If stalled or RPC fails, skip.
             if self.is_stalled().await {
+                self.control.idle().mark_idle();
                 return Ok(Response::new(NotifyIdleResponse {}));
             }
 
@@ -422,6 +433,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         // Case 4: No active dispatch — forward idle to server (current behavior)
         drop(buf);
         info!("No active dispatch, forwarding idle to server");
+        self.control.idle().mark_idle();
         self.forward_idle_to_server();
 
         Ok(Response::new(NotifyIdleResponse {}))
@@ -469,6 +481,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         // Pop the first command and send it immediately
         let first_command = buf.commands.pop_front().expect("commands is non-empty");
         drop(buf);
+        self.control.idle().mark_busy();
 
         let session = &self.session;
         if let Err(e) = session.send_keys(&first_command).await {
@@ -499,6 +512,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         // Pop the first command and send it immediately
         let first_command = buf.commands.pop_front().expect("commands is non-empty");
         drop(buf);
+        self.control.idle().mark_busy();
 
         let session = &self.session;
         if let Err(e) = session.send_keys(&first_command).await {
@@ -534,6 +548,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         // Pop the first command and send it immediately
         let first_command = buf.commands.pop_front().expect("commands is non-empty");
         drop(buf);
+        self.control.idle().mark_busy();
 
         let session = &self.session;
         if let Err(e) = session.send_keys(&first_command).await {
@@ -628,5 +643,56 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
                 Ok(Response::new(DispatchTicketResponse { error: e }))
             }
         }
+    }
+
+    async fn capture_pane(
+        &self,
+        request: Request<CapturePaneRequest>,
+    ) -> Result<Response<CapturePaneResponse>, Status> {
+        let text = self.control.capture(request.into_inner().lines).await?;
+        Ok(Response::new(CapturePaneResponse { text }))
+    }
+
+    async fn read_transcript(
+        &self,
+        request: Request<ReadTranscriptRequest>,
+    ) -> Result<Response<ReadTranscriptResponse>, Status> {
+        let turns = request.into_inner().turns;
+        Ok(Response::new(self.control.read_transcript(turns).await?))
+    }
+
+    async fn send_keys(
+        &self,
+        request: Request<SendKeysRequest>,
+    ) -> Result<Response<SendKeysResponse>, Status> {
+        self.control.send_keys(&request.into_inner().keys).await?;
+        Ok(Response::new(SendKeysResponse {}))
+    }
+
+    async fn interrupt(
+        &self,
+        _request: Request<InterruptRequest>,
+    ) -> Result<Response<InterruptResponse>, Status> {
+        info!(agent = self.agent.name(), "Interrupt received");
+        self.control.interrupt().await?;
+        Ok(Response::new(InterruptResponse {}))
+    }
+
+    async fn wait_idle(
+        &self,
+        request: Request<WaitIdleRequest>,
+    ) -> Result<Response<WaitIdleResponse>, Status> {
+        let req = request.into_inner();
+        if req.timeout_secs == 0 {
+            return Err(Status::invalid_argument("timeout_secs must be at least 1"));
+        }
+        let response = self
+            .control
+            .wait_idle(
+                Duration::from_secs(req.timeout_secs.into()),
+                req.screen_lines.max(1) as usize,
+            )
+            .await?;
+        Ok(Response::new(response))
     }
 }

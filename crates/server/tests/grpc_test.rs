@@ -568,3 +568,290 @@ async fn worker_info_by_process_id_prefers_newest_row() {
     assert_eq!(info.runtime, ur_rpc::runtime::LOCAL);
     assert_eq!(info.workspace_dir, "/ws/w1-neww");
 }
+
+/// The worker-facing server must never expose session control: every
+/// session-control RPC answers Unimplemented there.
+#[tokio::test]
+async fn worker_server_rejects_every_session_control_rpc() {
+    use ur_rpc::proto::core::core_service_client::CoreServiceClient;
+    use ur_rpc::proto::core::{
+        CaptureWorkerPaneRequest, InterruptWorkerRequest, ReadWorkerTranscriptRequest,
+        SendWorkerKeysRequest, WaitWorkerIdleRequest, WorkerKey,
+    };
+
+    let (handler, _ticket_repo, _workflow_repo, _test_db) = make_worker_handler().await;
+    let (channel, _addr) = spawn_worker_grpc_server(handler).await;
+    let mut client = CoreServiceClient::new(channel);
+    let id = || "ur-any".to_string();
+
+    let codes = [
+        client
+            .capture_worker_pane(CaptureWorkerPaneRequest {
+                worker_id: id(),
+                lines: 10,
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        client
+            .read_worker_transcript(ReadWorkerTranscriptRequest {
+                worker_id: id(),
+                turns: 1,
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        client
+            .send_worker_keys(SendWorkerKeysRequest {
+                worker_id: id(),
+                keys: vec![WorkerKey::Enter as i32],
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        client
+            .interrupt_worker(InterruptWorkerRequest { worker_id: id() })
+            .await
+            .unwrap_err()
+            .code(),
+        client
+            .wait_worker_idle(WaitWorkerIdleRequest {
+                worker_id: id(),
+                timeout_secs: 1,
+                screen_lines: 1,
+            })
+            .await
+            .unwrap_err()
+            .code(),
+    ];
+    assert_eq!(codes, [tonic::Code::Unimplemented; 5]);
+}
+
+/// Records what a fake worker daemon was asked to do.
+#[derive(Clone, Default)]
+struct FakeWorkerd {
+    keys: std::sync::Arc<std::sync::Mutex<Vec<i32>>>,
+    routed_ids: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl FakeWorkerd {
+    fn record<T>(&self, req: &tonic::Request<T>) {
+        let id = req
+            .metadata()
+            .get(ur_config::WORKER_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        self.routed_ids.lock().unwrap().push(id);
+    }
+}
+
+/// The fake's impl: the listed methods answer Unimplemented, the rest are
+/// written out. (`async_trait` does not expand macros inside an impl, so the
+/// whole impl is generated.)
+macro_rules! fake_workerd_impl {
+    (unimplemented { $($method:ident($req:ident) -> $resp:ident;)* } $($custom:tt)*) => {
+        #[tonic::async_trait]
+        impl ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonService
+            for FakeWorkerd
+        {
+            $(
+                async fn $method(
+                    &self,
+                    _r: tonic::Request<ur_rpc::proto::workerd::$req>,
+                ) -> Result<tonic::Response<ur_rpc::proto::workerd::$resp>, tonic::Status> {
+                    Err(tonic::Status::unimplemented("fake"))
+                }
+            )*
+            $($custom)*
+        }
+    };
+}
+
+fake_workerd_impl! {
+    unimplemented {
+        send_message(SendMessageRequest) -> SendMessageResponse;
+        notify_idle(NotifyIdleRequest) -> NotifyIdleResponse;
+        implement(ImplementRequest) -> ImplementResponse;
+        design(DesignRequest) -> DesignResponse;
+        address_feedback_tickets(AddressFeedbackRequest) -> AddressFeedbackResponse;
+        step_complete(StepCompleteRequest) -> StepCompleteResponse;
+        pause_nudge(PauseNudgeRequest) -> PauseNudgeResponse;
+        set_ticket(SetTicketRequest) -> SetTicketResponse;
+        dispatch_ticket(DispatchTicketRequest) -> DispatchTicketResponse;
+        set_status_left(SetStatusLeftRequest) -> SetStatusLeftResponse;
+        interrupt(InterruptRequest) -> InterruptResponse;
+    }
+
+    async fn capture_pane(
+        &self,
+        r: tonic::Request<ur_rpc::proto::workerd::CapturePaneRequest>,
+    ) -> Result<tonic::Response<ur_rpc::proto::workerd::CapturePaneResponse>, tonic::Status> {
+        self.record(&r);
+        Ok(tonic::Response::new(
+            ur_rpc::proto::workerd::CapturePaneResponse {
+                text: format!("screen+{}", r.into_inner().lines),
+            },
+        ))
+    }
+
+    async fn read_transcript(
+        &self,
+        _r: tonic::Request<ur_rpc::proto::workerd::ReadTranscriptRequest>,
+    ) -> Result<tonic::Response<ur_rpc::proto::workerd::ReadTranscriptResponse>, tonic::Status>
+    {
+        Err(tonic::Status::failed_precondition(
+            "agent 'agy' has no readable session log; use `ur worker read --screen`",
+        ))
+    }
+
+    async fn send_keys(
+        &self,
+        r: tonic::Request<ur_rpc::proto::workerd::SendKeysRequest>,
+    ) -> Result<tonic::Response<ur_rpc::proto::workerd::SendKeysResponse>, tonic::Status> {
+        self.keys.lock().unwrap().extend(r.into_inner().keys);
+        Ok(tonic::Response::new(ur_rpc::proto::workerd::SendKeysResponse {}))
+    }
+
+    async fn wait_idle(
+        &self,
+        r: tonic::Request<ur_rpc::proto::workerd::WaitIdleRequest>,
+    ) -> Result<tonic::Response<ur_rpc::proto::workerd::WaitIdleResponse>, tonic::Status> {
+        let req = r.into_inner();
+        Ok(tonic::Response::new(
+            ur_rpc::proto::workerd::WaitIdleResponse {
+                timed_out: true,
+                screen_tail: format!("{}s/{} lines", req.timeout_secs, req.screen_lines),
+            },
+        ))
+    }
+}
+
+/// A host handler whose builderd address is a [`FakeWorkerd`], with one
+/// running local worker `ur-sc1` (full id `ur-sc1-x1`).
+async fn handler_with_local_worker(
+    dir: &Path,
+    fake: &FakeWorkerd,
+) -> (ur_server::grpc::CoreServiceHandler, ur_db_test::TestDb) {
+    use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonServiceServer;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fake_addr = listener.local_addr().unwrap();
+    let svc = fake.clone();
+    tokio::spawn(async move {
+        Server::builder()
+            .add_service(WorkerDaemonServiceServer::new(svc))
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+            .await
+            .unwrap();
+    });
+
+    let (mut handler, test_db) = make_grpc_handler(dir).await;
+    handler.workerd_resolver = ur_server::WorkerdAddressResolver::new(
+        format!("http://{fake_addr}"),
+        ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+    );
+    handler
+        .worker_repo
+        .insert_worker(&workflow_db::model::Worker {
+            worker_id: "ur-sc1-x1".into(),
+            process_id: "ur-sc1".into(),
+            project_key: "ur".into(),
+            container_id: "ur-sc1-x1".into(),
+            worker_secret: "secret".into(),
+            strategy: "code".into(),
+            agent_type: "claude".into(),
+            container_status: "running".into(),
+            agent_status: "idle".into(),
+            workspace_path: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+            idle_redispatch_count: 0,
+            brain_path: None,
+            runtime: ur_config::WorkerRuntime::Local,
+        })
+        .await
+        .unwrap();
+    (handler, test_db)
+}
+
+/// Session-control RPCs reach a running local worker's daemon (through the
+/// builderd address with the routing header), keep the daemon's status code,
+/// and apply server defaults; unknown workers and bad input are rejected.
+#[tokio::test]
+async fn session_control_routes_to_worker_daemon() {
+    use ur_rpc::proto::core::core_service_client::CoreServiceClient;
+    use ur_rpc::proto::core::{
+        CaptureWorkerPaneRequest, ReadWorkerTranscriptRequest, SendWorkerKeysRequest,
+        WaitWorkerIdleRequest, WorkerKey,
+    };
+
+    let fake = FakeWorkerd::default();
+    let dir = tempfile::tempdir().unwrap();
+    let (handler, _test_db) = handler_with_local_worker(dir.path(), &fake).await;
+    let (channel, _addr) = spawn_grpc_server(handler).await;
+    let mut client = CoreServiceClient::new(channel);
+
+    let screen = client
+        .capture_worker_pane(CaptureWorkerPaneRequest {
+            worker_id: "ur-sc1".into(),
+            lines: 7,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(screen.text, "screen+7");
+    assert_eq!(*fake.routed_ids.lock().unwrap(), ["ur-sc1-x1"]);
+
+    let err = client
+        .read_worker_transcript(ReadWorkerTranscriptRequest {
+            worker_id: "ur-sc1".into(),
+            turns: 0,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert!(err.message().contains("ur-sc1"), "{}", err.message());
+    assert!(err.message().contains("--screen"), "{}", err.message());
+
+    client
+        .send_worker_keys(SendWorkerKeysRequest {
+            worker_id: "ur-sc1".into(),
+            keys: vec![WorkerKey::Digit2 as i32, WorkerKey::Enter as i32],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        *fake.keys.lock().unwrap(),
+        [WorkerKey::Digit2 as i32, WorkerKey::Enter as i32]
+    );
+    let bad_key = client
+        .send_worker_keys(SendWorkerKeysRequest {
+            worker_id: "ur-sc1".into(),
+            keys: vec![999],
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(bad_key.code(), tonic::Code::InvalidArgument);
+
+    let wait = client
+        .wait_worker_idle(WaitWorkerIdleRequest {
+            worker_id: "ur-sc1".into(),
+            timeout_secs: 0,
+            screen_lines: 0,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(wait.timed_out);
+    assert_eq!(wait.screen_tail, "600s/40 lines");
+
+    let missing = client
+        .capture_worker_pane(CaptureWorkerPaneRequest {
+            worker_id: "ur-nope".into(),
+            lines: 0,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(missing.code(), tonic::Code::NotFound);
+}

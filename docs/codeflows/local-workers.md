@@ -214,6 +214,18 @@ branches on `runtime`:
 
 `--rm` stops the worker through the server once the attach ends, or on SIGHUP, SIGINT or SIGTERM.
 
+## Session control (read / keys / interrupt / wait-idle)
+
+`ur worker read|keys|interrupt` and `--wait-idle` (ur-o15mo) take the same route for both runtimes
+as `ur worker send`: CLI → server `CoreService` (`CaptureWorkerPane`, `ReadWorkerTranscript`,
+`SendWorkerKeys`, `InterruptWorker`, `WaitWorkerIdle`; host server only, the worker server answers
+`Unimplemented`) → `WorkerdAddressResolver::tracked_client_for` → the container's workerd, or
+builderd's `WorkerdRouter` (`ur-worker-id`) → the local worker's in-process daemon. That daemon's
+`SessionControlManager` reads Claude logs from the user's `~/.claude/projects/<slot slug>/` (the
+pane cwd is the slot), and shares an `InterruptGrace` with the worker's exit watcher so a key press
+or interrupt never reads as the agent exiting. Details: `crates/workerd/CLAUDE.md` ("Session
+control").
+
 ## Spike results (ur-wdfir, Claude Code 2.1.314)
 
 | Check | Result |

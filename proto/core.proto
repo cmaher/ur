@@ -29,6 +29,18 @@ service CoreService {
   rpc LinkCommentTicket(LinkCommentTicketRequest) returns (LinkCommentTicketResponse);
   // Hot-reload projects from ur.toml without restarting the server.
   rpc ReloadProjects(ReloadProjectsRequest) returns (ReloadProjectsResponse);
+  // Session control (host-facing only; the worker-facing server answers
+  // Unimplemented). Each routes to the worker's daemon like SendWorkerMessage.
+  // Rendered pane text of the worker's agent, with scrollback.
+  rpc CaptureWorkerPane(CaptureWorkerPaneRequest) returns (CaptureWorkerPaneResponse);
+  // Last turns parsed from the agent's own session log.
+  rpc ReadWorkerTranscript(ReadWorkerTranscriptRequest) returns (ReadWorkerTranscriptResponse);
+  // Press allowlisted named keys in the worker's agent pane.
+  rpc SendWorkerKeys(SendWorkerKeysRequest) returns (SendWorkerKeysResponse);
+  // Interrupt the agent's current turn with its agent-specific key.
+  rpc InterruptWorker(InterruptWorkerRequest) returns (InterruptWorkerResponse);
+  // Block until the agent finishes its turn (Stop hook), or time out.
+  rpc WaitWorkerIdle(WaitWorkerIdleRequest) returns (WaitWorkerIdleResponse);
 }
 
 message PingRequest {}
@@ -105,6 +117,98 @@ message SendWorkerMessageRequest {
 message SendWorkerMessageResponse {
   bool success = 1;
   string error = 2;
+}
+
+message CaptureWorkerPaneRequest {
+  string worker_id = 1;
+  // Scrollback lines above the visible screen to include (0 = screen only).
+  uint32 lines = 2;
+}
+
+message CaptureWorkerPaneResponse {
+  string text = 1;
+}
+
+message ReadWorkerTranscriptRequest {
+  string worker_id = 1;
+  // Number of most recent turns to return; 0 means the server default.
+  uint32 turns = 2;
+}
+
+// One tool invocation inside a transcript turn.
+message TranscriptToolCall {
+  string name = 1;
+  // Short one-line summary of the call's input (command, path, ...).
+  string summary = 2;
+}
+
+// One turn of an agent conversation, normalized across agent types.
+// Consecutive log entries from the same role merge into one turn; tool
+// results do not end an assistant turn.
+message TranscriptTurn {
+  // "user" or "assistant".
+  string role = 1;
+  string text = 2;
+  repeated TranscriptToolCall tool_calls = 3;
+}
+
+message ReadWorkerTranscriptResponse {
+  repeated TranscriptTurn turns = 1;
+  // Path of the session log the turns were read from (inside the worker).
+  string source_path = 2;
+}
+
+// Keys a caller may press in a worker's agent pane. An allowlist: raw tmux
+// key strings are never accepted.
+enum WorkerKey {
+  WORKER_KEY_UNSPECIFIED = 0;
+  WORKER_KEY_ESCAPE = 1;
+  WORKER_KEY_CTRL_C = 2;
+  WORKER_KEY_ENTER = 3;
+  WORKER_KEY_UP = 4;
+  WORKER_KEY_DOWN = 5;
+  WORKER_KEY_LEFT = 6;
+  WORKER_KEY_RIGHT = 7;
+  WORKER_KEY_TAB = 8;
+  WORKER_KEY_DIGIT_0 = 10;
+  WORKER_KEY_DIGIT_1 = 11;
+  WORKER_KEY_DIGIT_2 = 12;
+  WORKER_KEY_DIGIT_3 = 13;
+  WORKER_KEY_DIGIT_4 = 14;
+  WORKER_KEY_DIGIT_5 = 15;
+  WORKER_KEY_DIGIT_6 = 16;
+  WORKER_KEY_DIGIT_7 = 17;
+  WORKER_KEY_DIGIT_8 = 18;
+  WORKER_KEY_DIGIT_9 = 19;
+}
+
+message SendWorkerKeysRequest {
+  string worker_id = 1;
+  repeated WorkerKey keys = 2;
+}
+
+message SendWorkerKeysResponse {}
+
+message InterruptWorkerRequest {
+  string worker_id = 1;
+}
+
+message InterruptWorkerResponse {}
+
+message WaitWorkerIdleRequest {
+  string worker_id = 1;
+  // Seconds to wait before giving up; 0 means the server default.
+  uint32 timeout_secs = 2;
+  // Screen lines to return when the wait times out; 0 means the default.
+  uint32 screen_lines = 3;
+}
+
+message WaitWorkerIdleResponse {
+  // True when the agent did not go idle in time. The wait is not an error at
+  // the RPC level so the screen tail reaches the caller.
+  bool timed_out = 1;
+  // Last screen lines of the agent pane, set only when timed_out.
+  string screen_tail = 2;
 }
 
 message UpdateAgentStatusRequest {

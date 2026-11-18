@@ -58,8 +58,14 @@ reuse; the binary only resolves container defaults from the environment and wire
   Injected into `InitSkillsManager::new(paths, layout)`,
   `InitInstructionsManager::new(paths, layout)` and `WorkerDaemonServiceImpl::new`; the
   container binary always passes `AgentHome`. See `docs/codeflows/skill-loading.md#skill-layouts-skilllayout`.
-- `grpc_service::WorkerDaemonServiceImpl::new(WorkerIdentity, AgentType, SkillLayout, tmux::Session)`
+- `grpc_service::WorkerDaemonServiceImpl::new(WorkerIdentity, AgentType, SkillLayout, tmux::Session, SessionControlManager)`
   — the tmux session is injected (no handler calls `Session::agent()`).
+- `session_control::SessionControlManager::new(session, agent, home, IdleTracker, InterruptGrace)`
+  serves the host-facing session-control RPCs (`CapturePane`, `ReadTranscript`, `SendKeys`,
+  `Interrupt`, `WaitIdle`; reached via the server's CoreService, never from workers). The owner
+  creates one `InterruptGrace` and passes it to both this manager and
+  `ExitWatcherManager::with_interrupt_grace`; `home` is the agent's home (container `$HOME`,
+  local workers the user's home). See "Session control" below.
 - `dispatch::dispatch_commands` builds the dispatch buffer for server-driven dispatches.
 - `test_support` (test-only) has `temp_paths(tmp, agent)`, `container_paths_with_home(agent, home)`
   and the crate-wide `ENV_LOCK`; use them in tests that need `WorkerPaths` or mutate env vars.
@@ -127,3 +133,31 @@ Init phase (`crates/workerd/src/init/{skills,instructions,settings}.rs`, split b
 - `InitSkillHooksManager` copies skill hooks from `<workspace>/ur-hooks/skills/` (in-repo), then `<host_hooks>/skills/` (host overlay, wins on conflict), into `skill_hooks` (container: always under `/home/worker` in the agent's customization root — `/home/worker/.claude/skill-hooks/`, `/home/worker/.codex/skill-hooks/`, `/home/worker/.gemini/config/skill-hooks/` — which is also what `%UR_SKILL_HOOKS%` renders to)
 - Calls `ListHostExecCommands` RPC on ur-server (retries with backoff)
 - Generates shims in `shim_dir` (container: `~/.local/bin/`) that call `ur-workertools host-exec <command> "$@"`
+
+## Session control (host-facing)
+
+- `CapturePane{lines}` → `tmux::Session::capture_agent_pane` (`capture-pane -p -J -S -<lines>` on
+  `=name:0.0`, trailing blank lines trimmed).
+- `ReadTranscript{turns}` → `transcript::read_transcript` on a blocking thread. The log is located by
+  `AgentType::transcript_location(home, cwd)` with `cwd` = the agent pane's `#{pane_current_path}`:
+  Claude = newest-mtime `*.jsonl` in `~/.claude/projects/<cwd-slug>/`; Codex = newest rollout under
+  `~/.codex/sessions/` whose first `session_meta` line names that cwd. AGY has no stable log
+  format: `FailedPrecondition` telling the caller to use `--screen`. Consecutive same-role entries
+  merge into one `ur.core.TranscriptTurn`; Claude tool-result-only user entries, sidechain and meta
+  entries, Codex developer messages and injected context are skipped. Unparseable lines (agent
+  mid-write) are skipped; a missing log is `NotFound`, a log with no turns is `NotFound`.
+  No session id is captured; "newest file" is the live session (known limit: two sessions in one
+  cwd pick the most recently written).
+- `SendKeys{keys}` takes `ur.core.WorkerKey` (allowlist enum, `session_control::tmux_key_name`);
+  raw tmux key strings are never accepted. `Interrupt` presses `AgentType::interrupt_keys()`
+  (Escape for every agent; never `C-c`, which starts an exit on an idle prompt) and marks the worker
+  idle, since an interrupted turn runs no `Stop` hook.
+- Every key press arms `InterruptGrace` (`INTERRUPT_GRACE`, 10s): while armed the exit watcher
+  treats a shell foreground as "no change this poll" (a dead pane is still reported), so an
+  intentional interrupt is never reported as an agent exit.
+- `IdleTracker` (watch channel, starts idle): `SendMessage` with submit and the
+  `Implement`/`Design`/`AddressFeedbackTickets` dispatches mark busy before typing; `NotifyIdle`
+  marks idle only on the branches that type nothing (step complete, nudge suppressed, stalled, no
+  dispatch) — popping a buffered command or nudging keeps the worker busy. `WaitIdle{timeout_secs,
+  screen_lines}` returns `timed_out` plus the last screen lines instead of an error. Known limit:
+  text typed into the pane by hand (attach) does not mark the worker busy.

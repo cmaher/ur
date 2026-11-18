@@ -125,6 +125,11 @@ impl LocalWorkspaceManager {
         }
     }
 
+    /// The user's home: local agents run under it (`~/.claude`, ...).
+    pub fn home(&self) -> &Path {
+        &self.home
+    }
+
     /// `<workspace>/drive`, the parent of every drive this builderd owns.
     pub fn drive_root(&self) -> PathBuf {
         self.workspace_root.join(DRIVE_DIR)

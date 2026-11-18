@@ -112,6 +112,8 @@ pub enum ErrorCode {
     ConfigError,
     InteractiveNotSupported,
     InternalError,
+    /// `--wait-idle` gave up before the worker went idle.
+    TimedOut,
 }
 
 impl ErrorCode {
@@ -126,12 +128,20 @@ impl ErrorCode {
             Self::IoError => 7,
             Self::ConfigError => 8,
             Self::InteractiveNotSupported => 9,
+            Self::TimedOut => 10,
         }
     }
 }
 
 impl StructuredError {
     pub fn from_anyhow(err: &anyhow::Error) -> Self {
+        if let Some(timeout) = err.downcast_ref::<crate::worker_session::WaitIdleTimedOut>() {
+            return Self {
+                code: ErrorCode::TimedOut,
+                message: timeout.to_string(),
+            };
+        }
+
         // Check for tonic::Status downcast
         if let Some(status) = err.downcast_ref::<tonic::Status>() {
             let code = match status.code() {
