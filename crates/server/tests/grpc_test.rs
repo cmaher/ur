@@ -569,68 +569,12 @@ async fn worker_info_by_process_id_prefers_newest_row() {
     assert_eq!(info.workspace_dir, "/ws/w1-neww");
 }
 
-/// The worker-facing server must never expose session control: every
-/// session-control RPC answers Unimplemented there.
-#[tokio::test]
-async fn worker_server_rejects_every_session_control_rpc() {
-    use ur_rpc::proto::core::core_service_client::CoreServiceClient;
-    use ur_rpc::proto::core::{
-        CaptureWorkerPaneRequest, InterruptWorkerRequest, ReadWorkerTranscriptRequest,
-        SendWorkerKeysRequest, WaitWorkerIdleRequest, WorkerKey,
-    };
-
-    let (handler, _ticket_repo, _workflow_repo, _test_db) = make_worker_handler().await;
-    let (channel, _addr) = spawn_worker_grpc_server(handler).await;
-    let mut client = CoreServiceClient::new(channel);
-    let id = || "ur-any".to_string();
-
-    let codes = [
-        client
-            .capture_worker_pane(CaptureWorkerPaneRequest {
-                worker_id: id(),
-                lines: 10,
-            })
-            .await
-            .unwrap_err()
-            .code(),
-        client
-            .read_worker_transcript(ReadWorkerTranscriptRequest {
-                worker_id: id(),
-                turns: 1,
-            })
-            .await
-            .unwrap_err()
-            .code(),
-        client
-            .send_worker_keys(SendWorkerKeysRequest {
-                worker_id: id(),
-                keys: vec![WorkerKey::Enter as i32],
-            })
-            .await
-            .unwrap_err()
-            .code(),
-        client
-            .interrupt_worker(InterruptWorkerRequest { worker_id: id() })
-            .await
-            .unwrap_err()
-            .code(),
-        client
-            .wait_worker_idle(WaitWorkerIdleRequest {
-                worker_id: id(),
-                timeout_secs: 1,
-                screen_lines: 1,
-            })
-            .await
-            .unwrap_err()
-            .code(),
-    ];
-    assert_eq!(codes, [tonic::Code::Unimplemented; 5]);
-}
-
 /// Records what a fake worker daemon was asked to do.
 #[derive(Clone, Default)]
 struct FakeWorkerd {
     keys: std::sync::Arc<std::sync::Mutex<Vec<i32>>>,
+    messages: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    interrupts: std::sync::Arc<std::sync::Mutex<u32>>,
     routed_ids: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
@@ -670,7 +614,6 @@ macro_rules! fake_workerd_impl {
 
 fake_workerd_impl! {
     unimplemented {
-        send_message(SendMessageRequest) -> SendMessageResponse;
         notify_idle(NotifyIdleRequest) -> NotifyIdleResponse;
         implement(ImplementRequest) -> ImplementResponse;
         design(DesignRequest) -> DesignResponse;
@@ -680,7 +623,6 @@ fake_workerd_impl! {
         set_ticket(SetTicketRequest) -> SetTicketResponse;
         dispatch_ticket(DispatchTicketRequest) -> DispatchTicketResponse;
         set_status_left(SetStatusLeftRequest) -> SetStatusLeftResponse;
-        interrupt(InterruptRequest) -> InterruptResponse;
     }
 
     async fn capture_pane(
@@ -705,6 +647,29 @@ fake_workerd_impl! {
         ))
     }
 
+    async fn send_message(
+        &self,
+        r: tonic::Request<ur_rpc::proto::workerd::SendMessageRequest>,
+    ) -> Result<tonic::Response<ur_rpc::proto::workerd::SendMessageResponse>, tonic::Status> {
+        self.record(&r);
+        self.messages.lock().unwrap().push(r.into_inner().message);
+        Ok(tonic::Response::new(
+            ur_rpc::proto::workerd::SendMessageResponse {
+                success: true,
+                error: String::new(),
+            },
+        ))
+    }
+
+    async fn interrupt(
+        &self,
+        r: tonic::Request<ur_rpc::proto::workerd::InterruptRequest>,
+    ) -> Result<tonic::Response<ur_rpc::proto::workerd::InterruptResponse>, tonic::Status> {
+        self.record(&r);
+        *self.interrupts.lock().unwrap() += 1;
+        Ok(tonic::Response::new(ur_rpc::proto::workerd::InterruptResponse {}))
+    }
+
     async fn send_keys(
         &self,
         r: tonic::Request<ur_rpc::proto::workerd::SendKeysRequest>,
@@ -727,12 +692,9 @@ fake_workerd_impl! {
     }
 }
 
-/// A host handler whose builderd address is a [`FakeWorkerd`], with one
-/// running local worker `ur-sc1` (full id `ur-sc1-x1`).
-async fn handler_with_local_worker(
-    dir: &Path,
-    fake: &FakeWorkerd,
-) -> (ur_server::grpc::CoreServiceHandler, ur_db_test::TestDb) {
+/// Serve `fake` and return a resolver that routes local workers to it (as
+/// builderd would).
+async fn fake_workerd_resolver(fake: &FakeWorkerd) -> ur_server::WorkerdAddressResolver {
     use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonServiceServer;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -745,12 +707,20 @@ async fn handler_with_local_worker(
             .await
             .unwrap();
     });
-
-    let (mut handler, test_db) = make_grpc_handler(dir).await;
-    handler.workerd_resolver = ur_server::WorkerdAddressResolver::new(
+    ur_server::WorkerdAddressResolver::new(
         format!("http://{fake_addr}"),
         ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
-    );
+    )
+}
+
+/// A host handler whose builderd address is a [`FakeWorkerd`], with one
+/// running local worker `ur-sc1` (full id `ur-sc1-x1`).
+async fn handler_with_local_worker(
+    dir: &Path,
+    fake: &FakeWorkerd,
+) -> (ur_server::grpc::CoreServiceHandler, ur_db_test::TestDb) {
+    let (mut handler, test_db) = make_grpc_handler(dir).await;
+    handler.workerd_resolver = fake_workerd_resolver(fake).await;
     handler
         .worker_repo
         .insert_worker(&workflow_db::model::Worker {
@@ -854,4 +824,384 @@ async fn session_control_routes_to_worker_daemon() {
         .await
         .unwrap_err();
     assert_eq!(missing.code(), tonic::Code::NotFound);
+}
+
+// ---- Worker-port session control (policy: docs/plans/ur-o15mo-session-control.md) ----
+
+/// Callers and targets seeded by [`worker_port_with_peers`]. Every row is a
+/// running local worker, so its daemon is the fake behind builderd's address.
+const MANUAL: &str = "ur-man1-a1";
+const CODE: &str = "ur-cod1-a1";
+const DESIGN: &str = "ur-des1-a1";
+const PEER: &str = "ur-tgt1";
+const PEER_FULL: &str = "ur-tgt1-a1";
+const OTHER_PROJECT: &str = "ox-tgt2";
+
+fn peer_row(worker_id: &str, project_key: &str, strategy: &str) -> workflow_db::model::Worker {
+    let process_id = worker_id.rsplit_once('-').unwrap().0;
+    workflow_db::model::Worker {
+        worker_id: worker_id.into(),
+        process_id: process_id.into(),
+        project_key: project_key.into(),
+        container_id: worker_id.into(),
+        worker_secret: "secret".into(),
+        strategy: strategy.into(),
+        agent_type: "claude".into(),
+        container_status: "running".into(),
+        agent_status: "idle".into(),
+        workspace_path: None,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        updated_at: chrono::Utc::now().to_rfc3339(),
+        idle_redispatch_count: 0,
+        brain_path: None,
+        runtime: ur_config::WorkerRuntime::Local,
+    }
+}
+
+/// A worker-port client plus the fake daemon all seeded workers route to:
+/// manual, code and design callers and a peer in project `ur`, and one
+/// worker in project `ox`.
+async fn worker_port_with_peers() -> (
+    ur_rpc::proto::core::core_service_client::CoreServiceClient<tonic::transport::Channel>,
+    FakeWorkerd,
+    ur_db_test::TestDb,
+) {
+    let fake = FakeWorkerd::default();
+    let (mut handler, _ticket_repo, _workflow_repo, test_db) = make_worker_handler().await;
+    handler.launch_manager.workerd_resolver = fake_workerd_resolver(&fake).await;
+    for row in [
+        peer_row(MANUAL, "ur", "manual"),
+        peer_row(CODE, "ur", "code"),
+        peer_row(DESIGN, "ur", "design"),
+        peer_row(PEER_FULL, "ur", "code"),
+        peer_row("ox-tgt2-a1", "ox", "manual"),
+    ] {
+        handler.worker_repo.insert_worker(&row).await.unwrap();
+    }
+    let (channel, _addr) = spawn_worker_grpc_server(handler).await;
+    let client = ur_rpc::proto::core::core_service_client::CoreServiceClient::new(channel);
+    (client, fake, test_db)
+}
+
+/// `msg` as sent by worker `caller` (the auth interceptor, which checks the
+/// secret, is not in front of the test server).
+fn as_worker<T>(caller: &str, msg: T) -> tonic::Request<T> {
+    let mut req = tonic::Request::new(msg);
+    req.metadata_mut()
+        .insert(ur_config::WORKER_ID_HEADER, caller.parse().unwrap());
+    req
+}
+
+type WorkerPortClient =
+    ur_rpc::proto::core::core_service_client::CoreServiceClient<tonic::transport::Channel>;
+type VerbResults = Vec<(&'static str, Result<(), tonic::Status>)>;
+
+/// Every worker-callable verb that names a target, plus stop and launch,
+/// each as `(verb, result)`.
+async fn every_targeted_verb(
+    client: &mut WorkerPortClient,
+    caller: &str,
+    target: &str,
+) -> VerbResults {
+    let mut results = session_verbs(client, caller, target).await;
+    results.extend(lifecycle_verbs(client, caller, target).await);
+    results
+}
+
+/// The six session-control verbs on `target`.
+async fn session_verbs(client: &mut WorkerPortClient, caller: &str, target: &str) -> VerbResults {
+    use ur_rpc::proto::core::{
+        CaptureWorkerPaneRequest, InterruptWorkerRequest, ReadWorkerTranscriptRequest,
+        SendWorkerKeysRequest, SendWorkerMessageRequest, WaitWorkerIdleRequest, WorkerKey,
+    };
+    let id = || target.to_string();
+    vec![
+        (
+            "read --screen",
+            client
+                .capture_worker_pane(as_worker(
+                    caller,
+                    CaptureWorkerPaneRequest {
+                        worker_id: id(),
+                        lines: 3,
+                    },
+                ))
+                .await
+                .map(drop),
+        ),
+        (
+            "read",
+            client
+                .read_worker_transcript(as_worker(
+                    caller,
+                    ReadWorkerTranscriptRequest {
+                        worker_id: id(),
+                        turns: 1,
+                    },
+                ))
+                .await
+                .map(drop)
+                // The fake has no transcript; reaching it is what counts.
+                .or_else(|s| match s.code() {
+                    tonic::Code::FailedPrecondition => Ok(()),
+                    _ => Err(s),
+                }),
+        ),
+        (
+            "send",
+            client
+                .send_worker_message(as_worker(
+                    caller,
+                    SendWorkerMessageRequest {
+                        worker_id: id(),
+                        message: "hello".into(),
+                        submit: None,
+                    },
+                ))
+                .await
+                .map(drop),
+        ),
+        (
+            "keys",
+            client
+                .send_worker_keys(as_worker(
+                    caller,
+                    SendWorkerKeysRequest {
+                        worker_id: id(),
+                        keys: vec![WorkerKey::Enter as i32],
+                    },
+                ))
+                .await
+                .map(drop),
+        ),
+        (
+            "interrupt",
+            client
+                .interrupt_worker(as_worker(
+                    caller,
+                    InterruptWorkerRequest { worker_id: id() },
+                ))
+                .await
+                .map(drop),
+        ),
+        (
+            "wait-idle",
+            client
+                .wait_worker_idle(as_worker(
+                    caller,
+                    WaitWorkerIdleRequest {
+                        worker_id: id(),
+                        timeout_secs: 1,
+                        screen_lines: 1,
+                    },
+                ))
+                .await
+                .map(drop),
+        ),
+    ]
+}
+
+/// Launch into `target`'s project (`ur` unless it starts with `ox`), then
+/// stop `target`.
+async fn lifecycle_verbs(client: &mut WorkerPortClient, caller: &str, target: &str) -> VerbResults {
+    use ur_rpc::proto::core::{WorkerLaunchRequest, WorkerStopRequest};
+    let project = if target.starts_with("ox") { "ox" } else { "ur" };
+    vec![
+        (
+            "launch",
+            client
+                .worker_launch(as_worker(
+                    caller,
+                    WorkerLaunchRequest {
+                        worker_id: format!("{project}-new1"),
+                        project_key: project.into(),
+                        mode: "no-such-mode".into(),
+                        ..Default::default()
+                    },
+                ))
+                .await
+                .map(drop)
+                // Past the policy, the bogus mode stops the launch.
+                .or_else(|s| match s.code() {
+                    tonic::Code::InvalidArgument => Ok(()),
+                    _ => Err(s),
+                }),
+        ),
+        (
+            "stop",
+            client
+                .worker_stop(as_worker(
+                    caller,
+                    WorkerStopRequest {
+                        worker_id: target.to_string(),
+                    },
+                ))
+                .await
+                .map(drop)
+                // Past the policy, the unreachable builderd fails the stop.
+                .or_else(|s| match s.code() {
+                    tonic::Code::Internal => Ok(()),
+                    _ => Err(s),
+                }),
+        ),
+    ]
+}
+
+fn list_ids(resp: ur_rpc::proto::core::WorkerListResponse) -> Vec<String> {
+    let mut ids: Vec<_> = resp.workers.into_iter().map(|w| w.worker_id).collect();
+    ids.sort();
+    ids
+}
+
+/// A manual worker can list its project's workers and use every verb on a
+/// same-project peer (by process id or full id); the daemon sees the peer.
+#[tokio::test]
+async fn worker_port_manual_caller_drives_same_project_peer() {
+    use ur_rpc::proto::core::{CaptureWorkerPaneRequest, WorkerListRequest};
+
+    let (mut client, fake, _db) = worker_port_with_peers().await;
+
+    let listed = client
+        .worker_list(as_worker(MANUAL, WorkerListRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        list_ids(listed),
+        ["ur-cod1", "ur-des1", "ur-man1", "ur-tgt1"],
+        "only project ur"
+    );
+
+    let screen = client
+        .capture_worker_pane(as_worker(
+            MANUAL,
+            CaptureWorkerPaneRequest {
+                worker_id: PEER_FULL.into(),
+                lines: 3,
+            },
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(screen.text, "screen+3");
+
+    for (verb, result) in every_targeted_verb(&mut client, MANUAL, PEER).await {
+        assert!(result.is_ok(), "{verb}: {:?}", result.unwrap_err());
+    }
+    assert_eq!(*fake.messages.lock().unwrap(), ["hello"]);
+    assert_eq!(*fake.interrupts.lock().unwrap(), 1);
+    let routed = fake.routed_ids.lock().unwrap();
+    assert!(!routed.is_empty());
+    assert!(routed.iter().all(|id| id == PEER_FULL), "{routed:?}");
+}
+
+/// Another project's worker looks exactly like a missing one, for every verb.
+#[tokio::test]
+async fn worker_port_cross_project_target_is_not_found_for_every_verb() {
+    let (mut client, fake, _db) = worker_port_with_peers().await;
+
+    for target in [OTHER_PROJECT, "ox-tgt2-a1", "ur-nope"] {
+        let results = every_targeted_verb(&mut client, MANUAL, target).await;
+        // A launch "into ur-nope" is a same-project launch, not a lookup.
+        let lookups = results
+            .into_iter()
+            .filter(|(verb, _)| !(target == "ur-nope" && *verb == "launch"));
+        for (verb, result) in lookups {
+            let err = result.expect_err(verb);
+            assert_eq!(
+                err.code(),
+                tonic::Code::NotFound,
+                "{target} {verb}: {err:?}"
+            );
+        }
+    }
+    assert!(fake.routed_ids.lock().unwrap().is_empty());
+}
+
+/// What a non-manual caller gets: `PermissionDenied`, except a design
+/// caller's launch, which passes the policy into its own project only.
+fn assert_non_manual_outcome(
+    caller: &str,
+    target: &str,
+    verb: &str,
+    result: Result<(), tonic::Status>,
+) {
+    if caller == DESIGN && verb == "launch" {
+        let expected = if target == PEER {
+            Ok(())
+        } else {
+            Err(tonic::Code::NotFound)
+        };
+        assert_eq!(
+            result.map_err(|s| s.code()),
+            expected,
+            "design launch into {target}"
+        );
+        return;
+    }
+    let err = result.expect_err(verb);
+    assert_eq!(
+        err.code(),
+        tonic::Code::PermissionDenied,
+        "{caller} {verb} {target}: {err:?}"
+    );
+    assert!(err.message().contains("only manual workers"), "{err:?}");
+}
+
+/// Only manual workers may drive other workers: code and design callers are
+/// refused on every verb before any lookup. Design keeps same-project launch
+/// (`workflow dispatch`), and any worker may still stop itself.
+#[tokio::test]
+async fn worker_port_non_manual_caller_is_denied_every_verb() {
+    use ur_rpc::proto::core::{WorkerListRequest, WorkerStopRequest};
+
+    let (mut client, fake, _db) = worker_port_with_peers().await;
+
+    for caller in [CODE, DESIGN] {
+        let err = client
+            .worker_list(as_worker(caller, WorkerListRequest {}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied, "{caller} list");
+        assert!(err.message().contains("only manual workers"), "{err:?}");
+
+        for target in [PEER, OTHER_PROJECT] {
+            let results = every_targeted_verb(&mut client, caller, target).await;
+            results
+                .into_iter()
+                .for_each(|(verb, result)| assert_non_manual_outcome(caller, target, verb, result));
+        }
+    }
+    assert!(fake.routed_ids.lock().unwrap().is_empty());
+
+    // Self-stop (workerd's exit sink) passes the policy; the unreachable
+    // builderd then fails it.
+    let err = client
+        .worker_stop(as_worker(
+            CODE,
+            WorkerStopRequest {
+                worker_id: CODE.into(),
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Internal, "{err:?}");
+}
+
+/// A caller with no worker row (or no header) is unauthenticated.
+#[tokio::test]
+async fn worker_port_unknown_caller_is_unauthenticated() {
+    use ur_rpc::proto::core::WorkerListRequest;
+
+    let (mut client, _fake, _db) = worker_port_with_peers().await;
+    let err = client
+        .worker_list(as_worker("ur-ghost-a1", WorkerListRequest {}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    let err = client
+        .worker_list(tonic::Request::new(WorkerListRequest {}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Unauthenticated);
 }

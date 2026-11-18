@@ -6,6 +6,7 @@ pub mod builder_pool_client;
 pub mod config;
 pub mod grpc;
 pub mod grpc_hostexec;
+mod grpc_peer;
 pub mod grpc_remote_repo;
 pub mod grpc_server;
 mod grpc_session;

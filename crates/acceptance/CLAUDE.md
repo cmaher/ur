@@ -19,7 +19,7 @@ and nothing else:
 |---|---|
 | `scenario_workspace_mount` | `-w` with no project: `{basename}-man-0`, fallback image at `UR_IMAGE_TAG`, `workspace_brain_dir` rw |
 | `scenario_pool_launch` | `-p` code mode (claude): clone, model, git/gh transforms, real `git push`, `--no-verify` blocked, squid, global skills, `.agent-shared/`, `agent_type` |
-| `scenario_manual_worker` | `-m manual -p`: process ID, no branch, `git checkout`, `[worker_models]` override |
+| `scenario_manual_worker` | `-m manual -p`: process ID, no branch, `git checkout`, `[worker_models]` override, `ur-workertools worker list` / `read --screen` on itself (worker-port session control) |
 | `scenario_custom_design_mode` | design-based custom mode: shared slot + custom `model` |
 | `scenario_failing_startup_hook` | sync startup-hook failure fails the launch and removes the container |
 | `scenario_local_project` | `local = true`: manual `-w` launch, image, script allowlist, no pool dir |

@@ -64,8 +64,9 @@ grpc_session.rs shared verb bodies (same validation/defaults as the host path)
 target workerd (container) / builderd routing to the local worker's daemon
 ```
 
-Every failure is a gRPC `Status` that `ur-workertools` prints (`worker <verb>: <message>`)
-with a non-zero exit; a timed-out wait exits 10 like `ur worker`.
+Every failure is a gRPC `Status` that `ur-workertools` prints (`worker: <message>`, or the
+`ur` JSON error envelope with `--output json`) with `ur`'s non-zero exit codes; a timed-out
+wait exits 10.
 
 ## Proto changes
 

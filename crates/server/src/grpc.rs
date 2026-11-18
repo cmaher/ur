@@ -24,6 +24,7 @@ use workflow_db::model::AgentStatus;
 
 use workflow_db::WorkerRepo;
 
+use crate::grpc_peer::PeerVerb;
 use crate::{ProjectRegistry, RepoPoolManager, WorkerId, WorkerManager};
 
 #[derive(Debug, thiserror::Error)]
@@ -479,7 +480,7 @@ impl LaunchManager {
     /// If `req.project_key` is set, use it directly. Otherwise attempt to
     /// extract the project prefix from `req.worker_id` (e.g. `"ur"` from
     /// `"ur-abc12"`) and verify it against the registry.
-    fn resolve_effective_project_key(&self, req: &WorkerLaunchRequest) -> String {
+    pub(crate) fn resolve_effective_project_key(&self, req: &WorkerLaunchRequest) -> String {
         effective_project_key(req, &self.project_registry)
     }
 
@@ -1012,6 +1013,68 @@ impl LaunchManager {
     }
 }
 
+/// `WorkerSummary` rows for `WorkerList`: each running worker enriched with its
+/// ticket's lifecycle status and PR URL and its workflow's state. Shared by
+/// the host port and the worker port (which passes only same-project rows).
+pub(crate) async fn worker_summaries(
+    summaries: Vec<crate::worker::WorkerSummary>,
+    ticket_repo: &TicketRepo,
+    workflow_repo: &WorkflowRepo,
+) -> Vec<WorkerSummary> {
+    let mut workers = Vec::with_capacity(summaries.len());
+    for s in summaries {
+        let ticket = ticket_repo.get_ticket(&s.process_id).await.ok().flatten();
+        let lifecycle_status = ticket
+            .as_ref()
+            .map(|t| t.lifecycle_status.to_string())
+            .unwrap_or_default();
+        let pr_url = if ticket.is_some() {
+            let mut meta = ticket_repo
+                .get_meta(&s.process_id, "ticket")
+                .await
+                .unwrap_or_default();
+            meta.remove("pr_url").unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let workflow = workflow_repo
+            .get_workflow_by_ticket(&s.process_id)
+            .await
+            .ok()
+            .flatten();
+        let workflow_stalled = workflow.as_ref().map(|w| w.stalled).unwrap_or(false);
+        let workflow_stall_reason = workflow
+            .as_ref()
+            .map(|w| w.stall_reason.clone())
+            .unwrap_or_default();
+        let stall_reason = workflow_stall_reason.clone();
+        let (workflow_id, workflow_status) = workflow
+            .map(|w| (w.id, w.status.to_string()))
+            .unwrap_or_default();
+        workers.push(WorkerSummary {
+            worker_id: s.process_id,
+            worker_id_full: s.worker_id,
+            container_id: s.container_id,
+            project_key: s.project_key,
+            mode: s.mode,
+            grpc_port: 0,
+            directory: s.directory,
+            container_status: s.container_status,
+            agent_status: s.agent_status,
+            lifecycle_status,
+            stall_reason,
+            pr_url,
+            workflow_id,
+            workflow_status,
+            workflow_stalled,
+            workflow_stall_reason,
+            agent_type: s.agent_type,
+            runtime: s.runtime.as_str().to_owned(),
+        });
+    }
+    workers
+}
+
 /// gRPC implementation of the CoreService.
 #[derive(Clone)]
 pub struct CoreServiceHandler {
@@ -1100,64 +1163,7 @@ impl CoreService for CoreServiceHandler {
     ) -> Result<Response<WorkerListResponse>, Status> {
         info!("worker_list request received");
         let summaries = self.worker_manager.list().await;
-        let mut workers = Vec::with_capacity(summaries.len());
-        for s in summaries {
-            let ticket = self
-                .ticket_repo
-                .get_ticket(&s.process_id)
-                .await
-                .ok()
-                .flatten();
-            let lifecycle_status = ticket
-                .as_ref()
-                .map(|t| t.lifecycle_status.to_string())
-                .unwrap_or_default();
-            let pr_url = if ticket.is_some() {
-                let mut meta = self
-                    .ticket_repo
-                    .get_meta(&s.process_id, "ticket")
-                    .await
-                    .unwrap_or_default();
-                meta.remove("pr_url").unwrap_or_default()
-            } else {
-                String::new()
-            };
-            let workflow = self
-                .workflow_repo
-                .get_workflow_by_ticket(&s.process_id)
-                .await
-                .ok()
-                .flatten();
-            let workflow_stalled = workflow.as_ref().map(|w| w.stalled).unwrap_or(false);
-            let workflow_stall_reason = workflow
-                .as_ref()
-                .map(|w| w.stall_reason.clone())
-                .unwrap_or_default();
-            let stall_reason = workflow_stall_reason.clone();
-            let (workflow_id, workflow_status) = workflow
-                .map(|w| (w.id, w.status.to_string()))
-                .unwrap_or_default();
-            workers.push(WorkerSummary {
-                worker_id: s.process_id,
-                worker_id_full: s.worker_id,
-                container_id: s.container_id,
-                project_key: s.project_key,
-                mode: s.mode,
-                grpc_port: 0,
-                directory: s.directory,
-                container_status: s.container_status,
-                agent_status: s.agent_status,
-                lifecycle_status,
-                stall_reason,
-                pr_url,
-                workflow_id,
-                workflow_status,
-                workflow_stalled,
-                workflow_stall_reason,
-                agent_type: s.agent_type,
-                runtime: s.runtime.as_str().to_owned(),
-            });
-        }
+        let workers = worker_summaries(summaries, &self.ticket_repo, &self.workflow_repo).await;
         Ok(Response::new(WorkerListResponse { workers }))
     }
 
@@ -1207,7 +1213,7 @@ impl CoreService for CoreServiceHandler {
         req: Request<CaptureWorkerPaneRequest>,
     ) -> Result<Response<CaptureWorkerPaneResponse>, Status> {
         Ok(Response::new(
-            self.capture_worker_pane_impl(req.into_inner()).await?,
+            crate::grpc_session::capture_worker_pane(self, req.into_inner()).await?,
         ))
     }
 
@@ -1216,7 +1222,7 @@ impl CoreService for CoreServiceHandler {
         req: Request<ReadWorkerTranscriptRequest>,
     ) -> Result<Response<ReadWorkerTranscriptResponse>, Status> {
         Ok(Response::new(
-            self.read_worker_transcript_impl(req.into_inner()).await?,
+            crate::grpc_session::read_worker_transcript(self, req.into_inner()).await?,
         ))
     }
 
@@ -1224,7 +1230,7 @@ impl CoreService for CoreServiceHandler {
         &self,
         req: Request<SendWorkerKeysRequest>,
     ) -> Result<Response<SendWorkerKeysResponse>, Status> {
-        self.send_worker_keys_impl(req.into_inner()).await?;
+        crate::grpc_session::send_worker_keys(self, req.into_inner()).await?;
         Ok(Response::new(SendWorkerKeysResponse {}))
     }
 
@@ -1232,7 +1238,7 @@ impl CoreService for CoreServiceHandler {
         &self,
         req: Request<InterruptWorkerRequest>,
     ) -> Result<Response<InterruptWorkerResponse>, Status> {
-        self.interrupt_worker_impl(req.into_inner()).await?;
+        crate::grpc_session::interrupt_worker(self, req.into_inner()).await?;
         Ok(Response::new(InterruptWorkerResponse {}))
     }
 
@@ -1241,7 +1247,7 @@ impl CoreService for CoreServiceHandler {
         req: Request<WaitWorkerIdleRequest>,
     ) -> Result<Response<WaitWorkerIdleResponse>, Status> {
         Ok(Response::new(
-            self.wait_worker_idle_impl(req.into_inner()).await?,
+            crate::grpc_session::wait_worker_idle(self, req.into_inner()).await?,
         ))
     }
 
@@ -1306,8 +1312,10 @@ impl CoreService for CoreServiceHandler {
 ///
 /// Implements `Ping` (health check), `UpdateAgentStatus` (worker status
 /// updates), `WorkflowStepComplete` (workerd-driven step completion),
-/// `worker_launch` and `worker_stop` (so design workers can spawn
-/// implementation workers).
+/// `worker_launch` and `worker_stop` (workerd self-stop and design dispatch),
+/// and the worker-callable session-control verbs. Everything that touches
+/// another worker goes through `peer_access` (`grpc_peer.rs`): manual callers
+/// only, same-project targets only.
 #[derive(Clone)]
 pub struct WorkerCoreServiceHandler {
     pub worker_repo: WorkerRepo,
@@ -1375,7 +1383,11 @@ impl CoreService for WorkerCoreServiceHandler {
         &self,
         req: Request<WorkerLaunchRequest>,
     ) -> Result<Response<WorkerLaunchResponse>, Status> {
+        let access = self
+            .peer_access(req.metadata(), PeerVerb::Launch, None)
+            .await?;
         let req = req.into_inner();
+        access.authorize_launch(&req)?;
 
         info!(
             worker_id = req.worker_id,
@@ -1397,12 +1409,16 @@ impl CoreService for WorkerCoreServiceHandler {
         &self,
         req: Request<WorkerStopRequest>,
     ) -> Result<Response<WorkerStopResponse>, Status> {
-        let req = req.into_inner();
+        let target = req.get_ref().worker_id.clone();
+        let access = self
+            .peer_access(req.metadata(), PeerVerb::Stop, Some(&target))
+            .await?;
+        let id = access.stop_target(&target).await?;
         info!(
-            worker_id = req.worker_id,
+            worker_id = id,
             "worker_stop request received (worker server)"
         );
-        self.launch_manager.stop(&req.worker_id).await?;
+        self.launch_manager.stop(&id).await?;
         Ok(Response::new(WorkerStopResponse {}))
     }
 
@@ -1413,55 +1429,90 @@ impl CoreService for WorkerCoreServiceHandler {
         Err(CoreError::Unimplemented.into())
     }
 
+    // Session control: manual callers, same-project targets (grpc_peer.rs).
+
     async fn worker_list(
         &self,
-        _req: Request<WorkerListRequest>,
+        req: Request<WorkerListRequest>,
     ) -> Result<Response<WorkerListResponse>, Status> {
-        Err(CoreError::Unimplemented.into())
+        let access = self
+            .peer_access(req.metadata(), PeerVerb::List, None)
+            .await?;
+        Ok(Response::new(WorkerListResponse {
+            workers: access.peers().await,
+        }))
     }
 
     async fn send_worker_message(
         &self,
-        _req: Request<SendWorkerMessageRequest>,
+        req: Request<SendWorkerMessageRequest>,
     ) -> Result<Response<SendWorkerMessageResponse>, Status> {
-        Err(CoreError::Unimplemented.into())
+        let access = self
+            .peer_access(req.metadata(), PeerVerb::Send, None)
+            .await?;
+        crate::grpc_session::send_worker_message(&access, req.into_inner()).await?;
+        Ok(Response::new(SendWorkerMessageResponse {
+            success: true,
+            error: String::new(),
+        }))
     }
-
-    // Session control is host-only; workers get Unimplemented.
 
     async fn capture_worker_pane(
         &self,
-        _req: Request<CaptureWorkerPaneRequest>,
+        req: Request<CaptureWorkerPaneRequest>,
     ) -> Result<Response<CaptureWorkerPaneResponse>, Status> {
-        Err(CoreError::Unimplemented.into())
+        let access = self
+            .peer_access(req.metadata(), PeerVerb::ReadScreen, None)
+            .await?;
+        Ok(Response::new(
+            crate::grpc_session::capture_worker_pane(&access, req.into_inner()).await?,
+        ))
     }
 
     async fn read_worker_transcript(
         &self,
-        _req: Request<ReadWorkerTranscriptRequest>,
+        req: Request<ReadWorkerTranscriptRequest>,
     ) -> Result<Response<ReadWorkerTranscriptResponse>, Status> {
-        Err(CoreError::Unimplemented.into())
+        let access = self
+            .peer_access(req.metadata(), PeerVerb::ReadTranscript, None)
+            .await?;
+        Ok(Response::new(
+            crate::grpc_session::read_worker_transcript(&access, req.into_inner()).await?,
+        ))
     }
 
     async fn send_worker_keys(
         &self,
-        _req: Request<SendWorkerKeysRequest>,
+        req: Request<SendWorkerKeysRequest>,
     ) -> Result<Response<SendWorkerKeysResponse>, Status> {
-        Err(CoreError::Unimplemented.into())
+        let access = self
+            .peer_access(req.metadata(), PeerVerb::Keys, None)
+            .await?;
+        crate::grpc_session::send_worker_keys(&access, req.into_inner()).await?;
+        Ok(Response::new(SendWorkerKeysResponse {}))
     }
 
     async fn interrupt_worker(
         &self,
-        _req: Request<InterruptWorkerRequest>,
+        req: Request<InterruptWorkerRequest>,
     ) -> Result<Response<InterruptWorkerResponse>, Status> {
-        Err(CoreError::Unimplemented.into())
+        let access = self
+            .peer_access(req.metadata(), PeerVerb::Interrupt, None)
+            .await?;
+        crate::grpc_session::interrupt_worker(&access, req.into_inner()).await?;
+        Ok(Response::new(InterruptWorkerResponse {}))
     }
 
     async fn wait_worker_idle(
         &self,
-        _req: Request<WaitWorkerIdleRequest>,
+        req: Request<WaitWorkerIdleRequest>,
     ) -> Result<Response<WaitWorkerIdleResponse>, Status> {
-        Err(CoreError::Unimplemented.into())
+        let access = self
+            .peer_access(req.metadata(), PeerVerb::WaitIdle, None)
+            .await?;
+        Ok(Response::new(
+            crate::grpc_session::wait_worker_idle(&access, req.into_inner()).await?,
+        ))
     }
 
     async fn workflow_step_complete(

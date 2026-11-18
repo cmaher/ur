@@ -1,6 +1,7 @@
 mod agent;
 mod repo;
 mod status;
+mod worker;
 mod workerd_client;
 mod workflow;
 
@@ -89,6 +90,8 @@ enum Commands {
         #[command(subcommand)]
         command: workflow::WorkflowCommands,
     },
+    /// Drive other workers in this project (manual workers only)
+    Worker(worker::WorkerArgs),
 }
 
 #[tokio::main]
@@ -143,6 +146,9 @@ async fn main() {
         }
         Commands::Workflow { command } => {
             std::process::exit(workflow::run(command).await);
+        }
+        Commands::Worker(args) => {
+            std::process::exit(worker::run(args).await);
         }
     }
 }

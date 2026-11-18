@@ -2470,6 +2470,32 @@ fn manual_verify_git_checkout_allowed(runtime: &str, container: &str) {
     );
 }
 
+/// Worker-callable session control (ur-pkl6j): from inside a manual worker,
+/// `ur-workertools worker list` reaches the worker port and lists the worker
+/// itself (same project), and `worker read --screen` on itself goes
+/// worker → server → the worker's own daemon.
+fn manual_verify_peer_session_control(runtime: &str, container: &str, process_id: &str) {
+    let list = exec_in_container(
+        runtime,
+        container,
+        &["ur-workertools", "worker", "list", "--output", "json"],
+    );
+    assert_exec_success(&list, "ur-workertools worker list --output json");
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        stdout.contains("\"ok\":true")
+            && stdout.contains(&format!("\"worker_id\":\"{process_id}\"")),
+        "worker list should include the manual worker itself.\nGot: {stdout}"
+    );
+
+    let screen = exec_in_container(
+        runtime,
+        container,
+        &["ur-workertools", "worker", "read", process_id, "--screen"],
+    );
+    assert_exec_success(&screen, "ur-workertools worker read <self> --screen");
+}
+
 /// Manual pool worker: `-m manual -p <project>` (no ticket) gets an auto-generated
 /// `{project}-man-{slot}` process ID, stays off any worker-specific branch, may
 /// `git checkout`, shows as mode `manual` in `ur worker list`, picks up the
@@ -2490,6 +2516,7 @@ fn scenario_manual_worker(env: &TestEnv) {
         manual_verify_worker_in_list(&env.ur, &env_slice, &process_id);
         assert_worker_model(&env.runtime, &container_name, "sonnet");
         manual_verify_git_checkout_allowed(&env.runtime, &container_name);
+        manual_verify_peer_session_control(&env.runtime, &container_name, &process_id);
         manual_stop_and_verify_gone(&env.ur, &env_slice, &process_id);
     }));
 
