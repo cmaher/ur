@@ -11,11 +11,12 @@ use tonic::transport::Channel;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::{
     CaptureWorkerPaneRequest, InterruptWorkerRequest, ReadWorkerTranscriptRequest,
-    SendWorkerKeysRequest, SendWorkerMessageRequest, TranscriptTurn, WaitWorkerIdleRequest,
-    WorkerKey, WorkerListRequest, WorkerSummary,
+    SendWorkerKeysRequest, SendWorkerMessageRequest, WaitWorkerIdleRequest, WorkerListRequest,
+    WorkerSummary,
 };
+use ur_rpc::session::{format_turns, parse_key};
 
-use crate::inject_auth;
+use crate::{connect_core, inject_auth};
 
 #[derive(Args)]
 pub struct WorkerArgs {
@@ -180,10 +181,11 @@ async fn execute(command: WorkerCommands) -> Result<Output, Failure> {
         WorkerCommands::Keys { keys, .. } => keys
             .iter()
             .map(|k| parse_key(k))
-            .collect::<Result<Vec<_>, _>>()?,
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Failure::Input)?,
         _ => Vec::new(),
     };
-    let client = &mut connect().await?;
+    let client = &mut connect_core().await.map_err(Failure::Connect)?;
     match command {
         WorkerCommands::List => list(client).await,
         WorkerCommands::Read {
@@ -256,17 +258,6 @@ fn authed<T>(msg: T) -> tonic::Request<T> {
     req
 }
 
-async fn connect() -> Result<CoreServiceClient<Channel>, Failure> {
-    let server_addr = std::env::var(ur_config::UR_SERVER_ADDR_ENV)
-        .map_err(|_| Failure::Connect("UR_SERVER_ADDR is not set".into()))?;
-    let channel = tonic::transport::Endpoint::try_from(format!("http://{server_addr}"))
-        .map_err(|e| Failure::Connect(format!("invalid UR_SERVER_ADDR: {e}")))?
-        .connect()
-        .await
-        .map_err(|e| Failure::Connect(format!("failed to connect to ur server: {e}")))?;
-    Ok(CoreServiceClient::new(channel))
-}
-
 /// `{worker_id, status}` / a one-line message with `{}` replaced by the id.
 fn status(worker_id: &str, status: &str, text: &str) -> Output {
     Output {
@@ -284,7 +275,6 @@ async fn wait_idle(
         .wait_worker_idle(authed(WaitWorkerIdleRequest {
             worker_id: worker_id.to_owned(),
             timeout_secs: timeout.unwrap_or(0),
-            screen_lines: 0,
         }))
         .await?
         .into_inner();
@@ -350,27 +340,6 @@ async fn read_transcript(
     })
 }
 
-/// Parse a key name (case-insensitive) into the allowlisted key, with the
-/// same names and aliases as `ur worker keys`.
-fn parse_key(name: &str) -> Result<WorkerKey, Failure> {
-    let lower = name.to_ascii_lowercase();
-    let canonical = match lower.as_str() {
-        "esc" => "escape".to_owned(),
-        "c-c" | "ctrlc" => "ctrl_c".to_owned(),
-        "return" => "enter".to_owned(),
-        d if d.len() == 1 && d.as_bytes()[0].is_ascii_digit() => format!("digit_{d}"),
-        other => other.replace('-', "_"),
-    };
-    WorkerKey::from_str_name(&format!("WORKER_KEY_{}", canonical.to_ascii_uppercase()))
-        .filter(|k| *k != WorkerKey::Unspecified)
-        .ok_or_else(|| {
-            Failure::Input(format!(
-                "invalid key '{name}': expected one of escape, ctrl-c, enter, up, down, left, \
-                 right, tab, 0-9"
-            ))
-        })
-}
-
 fn format_workers(workers: &[WorkerSummary]) -> String {
     if workers.is_empty() {
         return "No running workers.\n".to_owned();
@@ -396,24 +365,6 @@ fn format_workers(workers: &[WorkerSummary]) -> String {
     out
 }
 
-/// A `[role]` header per turn, its text, then one `  -> tool: summary` line
-/// per tool call (same as `ur worker read`).
-fn format_turns(turns: &[TranscriptTurn]) -> String {
-    let mut out = String::new();
-    for turn in turns {
-        out.push_str(&format!("[{}]\n", turn.role));
-        if !turn.text.is_empty() {
-            out.push_str(&turn.text);
-            out.push('\n');
-        }
-        for call in &turn.tool_calls {
-            out.push_str(&format!("  -> {}: {}\n", call.name, call.summary));
-        }
-        out.push('\n');
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,20 +374,6 @@ mod tests {
     struct TestCli {
         #[command(flatten)]
         worker: WorkerArgs,
-    }
-
-    #[test]
-    fn parse_key_matches_ur_worker_keys() {
-        assert_eq!(parse_key("Esc").unwrap(), WorkerKey::Escape);
-        assert_eq!(parse_key("escape").unwrap(), WorkerKey::Escape);
-        assert_eq!(parse_key("ctrl-c").unwrap(), WorkerKey::CtrlC);
-        assert_eq!(parse_key("C-c").unwrap(), WorkerKey::CtrlC);
-        assert_eq!(parse_key("return").unwrap(), WorkerKey::Enter);
-        assert_eq!(parse_key("Tab").unwrap(), WorkerKey::Tab);
-        assert_eq!(parse_key("7").unwrap(), WorkerKey::Digit7);
-        for bad in ["C-x", "Enter; rm", "unspecified", "12"] {
-            assert!(parse_key(bad).is_err(), "{bad}");
-        }
     }
 
     #[test]
@@ -481,11 +418,5 @@ mod tests {
             status("ur-a", "sent", "Message sent to {}.").text,
             "Message sent to ur-a.\n"
         );
-        let turns = format_turns(&[TranscriptTurn {
-            role: "assistant".into(),
-            text: "Done.".into(),
-            tool_calls: vec![],
-        }]);
-        assert_eq!(turns, "[assistant]\nDone.\n\n");
     }
 }

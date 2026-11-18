@@ -1171,37 +1171,7 @@ impl CoreService for CoreServiceHandler {
         &self,
         req: Request<SendWorkerMessageRequest>,
     ) -> Result<Response<SendWorkerMessageResponse>, Status> {
-        let req = req.into_inner();
-        info!(
-            worker_id = req.worker_id,
-            "send_worker_message request received"
-        );
-
-        // Look up the worker by process_id (the CLI-facing ID).
-        let workers = self
-            .worker_repo
-            .list_workers_by_container_status("running")
-            .await
-            .map_err(|e| CoreError::SendMessageFailed {
-                reason: format!("db error: {e}"),
-            })?;
-        let worker = workers
-            .into_iter()
-            .find(|w| w.process_id == req.worker_id)
-            .ok_or_else(|| CoreError::WorkerNotFound {
-                worker_id: req.worker_id.clone(),
-            })?;
-
-        // Forward the message to the worker's daemon.
-        let workerd_client = self
-            .workerd_resolver
-            .tracked_client_for(&worker, self.worker_repo.clone());
-        workerd_client
-            // Unset means submit — see the field comment in core.proto.
-            .send_message(&req.message, req.submit.unwrap_or(true))
-            .await
-            .map_err(|e| CoreError::SendMessageFailed { reason: e })?;
-
+        crate::grpc_session::send_worker_message(self, req.into_inner()).await?;
         Ok(Response::new(SendWorkerMessageResponse {
             success: true,
             error: String::new(),

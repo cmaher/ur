@@ -43,6 +43,13 @@ pub struct WorkerPaths {
 }
 
 impl WorkerPaths {
+    /// The container's home: `$HOME`, else the known worker home.
+    pub fn container_home() -> PathBuf {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(ur_config::WORKER_HOME))
+    }
+
     /// The paths used inside an agent container for `agent`.
     ///
     /// Home-relative paths follow `$HOME` (falling back to the container's
@@ -51,9 +58,7 @@ impl WorkerPaths {
     /// customization root. Skill sources reference hooks
     /// via `%UR_SKILL_HOOKS%`, rendered from `skill_hooks` at install time.
     pub fn container(agent: AgentType) -> Self {
-        let home = std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(ur_config::WORKER_HOME));
+        let home = Self::container_home();
         let customization_root = home.join(agent.customization_root());
         let settings_dir = home.join(agent.home_subdir());
 

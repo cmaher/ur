@@ -10,9 +10,10 @@ use std::io::Write;
 use clap::{Parser, Subcommand};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::Endpoint;
+use tonic::transport::{Channel, Endpoint};
 
 use ur_rpc::proto::core::command_output::Payload;
+use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::hostexec::host_exec_message::Payload as HostExecPayload;
 use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
 use ur_rpc::proto::hostexec::{HostExecMessage, HostExecRequest};
@@ -35,6 +36,23 @@ pub(crate) fn inject_auth<T>(request: &mut tonic::Request<T>) {
             .metadata_mut()
             .insert(ur_config::WORKER_SECRET_HEADER, val);
     }
+}
+
+/// A channel to ur-server at `$UR_SERVER_ADDR`. The error is the message to
+/// print after the caller's prefix.
+pub(crate) async fn server_channel() -> Result<Channel, String> {
+    let server_addr =
+        std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
+    Endpoint::try_from(format!("http://{server_addr}"))
+        .unwrap()
+        .connect()
+        .await
+        .map_err(|e| format!("failed to connect to ur server: {e}"))
+}
+
+/// A `CoreService` client on [`server_channel`].
+pub(crate) async fn connect_core() -> Result<CoreServiceClient<Channel>, String> {
+    server_channel().await.map(CoreServiceClient::new)
 }
 
 #[derive(Parser)]
@@ -198,14 +216,10 @@ async fn run_host_exec_script(script_path: &str, args: Vec<String>) -> i32 {
 }
 
 async fn exec_host_request(display_name: &str, req: HostExecRequest, bidi: bool) -> i32 {
-    let server_addr =
-        std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
-    let addr = format!("http://{server_addr}");
-
-    let channel = match Endpoint::try_from(addr).unwrap().connect().await {
+    let channel = match server_channel().await {
         Ok(ch) => ch,
         Err(e) => {
-            eprintln!("{display_name}: failed to connect to ur server: {e}");
+            eprintln!("{display_name}: {e}");
             return 1;
         }
     };

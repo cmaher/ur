@@ -1084,7 +1084,7 @@ async fn handle_worker(
             message,
             no_submit,
             wait,
-        } => handle_worker_send(port, output, worker_id, message, !no_submit, wait.wait()).await,
+        } => handle_worker_send(port, output, worker_id, message, !no_submit, wait).await,
         WorkerCommands::Read(args) => worker_session::read(port, output, args).await,
         WorkerCommands::Keys { worker_id, keys } => {
             worker_session::keys(port, output, &worker_id, &keys).await
@@ -1228,7 +1228,7 @@ async fn handle_worker_send(
     worker_id: String,
     message: String,
     submit: bool,
-    wait: Option<worker_session::WaitIdle>,
+    wait: worker_session::WaitIdleArgs,
 ) -> Result<()> {
     input::validate_id(&worker_id, "worker_id")?;
     let mut client = connect(port).await?;
@@ -1240,8 +1240,8 @@ async fn handle_worker_send(
             submit: Some(submit),
         })
         .await?;
-    if let Some(wait) = wait {
-        worker_session::wait_idle(&mut client, &worker_id, wait).await?;
+    if wait.wait_idle {
+        worker_session::wait_idle(&mut client, &worker_id, wait.timeout).await?;
         if output.is_json() {
             output.print_text(&format!(
                 "{{\"worker_id\":\"{worker_id}\",\"status\":\"idle\"}}"

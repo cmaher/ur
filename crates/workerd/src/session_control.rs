@@ -25,16 +25,17 @@ pub const INTERRUPT_GRACE: Duration = Duration::from_secs(10);
 
 /// Busy/idle state of the agent's turn. Idle is the agent's `Stop` hook
 /// (`NotifyIdle`); a submitted message or dispatched command makes it busy.
-/// Starts idle: a freshly launched agent sits at its prompt.
+/// Starts idle: a freshly launched agent sits at its prompt. Clones share
+/// one channel.
 #[derive(Clone)]
 pub struct IdleTracker {
-    idle: Arc<tokio::sync::watch::Sender<bool>>,
+    idle: tokio::sync::watch::Sender<bool>,
 }
 
 impl Default for IdleTracker {
     fn default() -> Self {
         IdleTracker {
-            idle: Arc::new(tokio::sync::watch::Sender::new(true)),
+            idle: tokio::sync::watch::Sender::new(true),
         }
     }
 }

@@ -1,10 +1,8 @@
 use clap::Subcommand;
-use tonic::transport::Channel;
 
 use ur_rpc::proto::core::UpdateAgentStatusRequest;
-use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 
-use crate::inject_auth;
+use crate::{connect_core, inject_auth};
 
 #[derive(Subcommand)]
 pub enum AgentCommands {
@@ -15,30 +13,13 @@ pub enum AgentCommands {
     },
 }
 
-async fn connect() -> Result<CoreServiceClient<Channel>, i32> {
-    let server_addr =
-        std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
-    let addr = format!("http://{server_addr}");
-
-    let channel = match tonic::transport::Endpoint::try_from(addr)
-        .unwrap()
-        .connect()
-        .await
-    {
-        Ok(ch) => ch,
-        Err(e) => {
-            eprintln!("agent: failed to connect to ur server: {e}");
-            return Err(1);
-        }
-    };
-
-    Ok(CoreServiceClient::new(channel))
-}
-
 pub async fn run(command: AgentCommands) -> i32 {
-    let mut client = match connect().await {
+    let mut client = match connect_core().await {
         Ok(c) => c,
-        Err(code) => return code,
+        Err(e) => {
+            eprintln!("agent: {e}");
+            return 1;
+        }
     };
 
     let worker_id = std::env::var(ur_config::UR_WORKER_ID_ENV).unwrap_or_default();

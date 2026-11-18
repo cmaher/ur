@@ -2,14 +2,13 @@ use clap::Subcommand;
 use tonic::transport::Channel;
 
 use ur_rpc::proto::core::LinkCommentTicketRequest;
-use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::remote_repo::remote_repo_service_client::RemoteRepoServiceClient;
 use ur_rpc::proto::remote_repo::{
     CreatePrRequest, GetCheckRunsRequest, GetConversationCommentsRequest, GetFailedRunLogsRequest,
     GetPrRequest, GetReviewCommentsRequest, ReplyToCommentRequest,
 };
 
-use crate::inject_auth;
+use crate::{connect_core, inject_auth, server_channel};
 
 #[derive(Subcommand)]
 pub enum RepoCommands {
@@ -112,44 +111,14 @@ fn get_gh_repo() -> Result<String, String> {
         .map_err(|_| "UR_GH_REPO environment variable is not set. Workers must have project context to use repo commands.".to_owned())
 }
 
-async fn connect_core() -> Result<CoreServiceClient<Channel>, i32> {
-    let server_addr =
-        std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
-    let addr = format!("http://{server_addr}");
-
-    let channel = match tonic::transport::Endpoint::try_from(addr)
-        .unwrap()
-        .connect()
-        .await
-    {
-        Ok(ch) => ch,
-        Err(e) => {
-            eprintln!("repo: failed to connect to ur server: {e}");
-            return Err(1);
-        }
-    };
-
-    Ok(CoreServiceClient::new(channel))
-}
-
 async fn connect() -> Result<RemoteRepoServiceClient<Channel>, i32> {
-    let server_addr =
-        std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
-    let addr = format!("http://{server_addr}");
-
-    let channel = match tonic::transport::Endpoint::try_from(addr)
-        .unwrap()
-        .connect()
-        .await
-    {
-        Ok(ch) => ch,
+    match server_channel().await {
+        Ok(ch) => Ok(RemoteRepoServiceClient::new(ch)),
         Err(e) => {
-            eprintln!("repo: failed to connect to ur server: {e}");
-            return Err(1);
+            eprintln!("repo: {e}");
+            Err(1)
         }
-    };
-
-    Ok(RemoteRepoServiceClient::new(channel))
+    }
 }
 
 fn print_json<T: serde::Serialize>(value: &T) {
@@ -330,7 +299,10 @@ async fn run_comments(
 async fn run_link_comment_ticket(pr_number: i64, comment_id: i64, ticket_id: &str) -> i32 {
     let mut core_client = match connect_core().await {
         Ok(c) => c,
-        Err(code) => return code,
+        Err(e) => {
+            eprintln!("repo: {e}");
+            return 1;
+        }
     };
 
     let mut request = tonic::Request::new(LinkCommentTicketRequest {

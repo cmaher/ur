@@ -100,10 +100,10 @@ pub fn read_transcript(
         })?;
     let (path, parse): (PathBuf, fn(&Value) -> Option<Entry>) = match &location {
         TranscriptLocation::ClaudeProjectDir { dir } => {
-            (newest_claude_log(dir, not_before)?, claude_entry)
+            (newest_log(dir, false, None, not_before)?, claude_entry)
         }
         TranscriptLocation::CodexSessions { root, cwd } => {
-            (newest_codex_log(root, cwd, not_before)?, codex_entry)
+            (newest_log(root, true, Some(cwd), not_before)?, codex_entry)
         }
     };
     let content = std::fs::read_to_string(&path).map_err(|e| TranscriptError::Io {
@@ -302,61 +302,45 @@ fn str_field(v: &Value, key: &str) -> String {
         .to_owned()
 }
 
-/// The newest-mtime `*.jsonl` directly in `dir`, written at or after `not_before`.
-fn newest_claude_log(dir: &Path, not_before: SystemTime) -> Result<PathBuf, TranscriptError> {
-    let entries = std::fs::read_dir(dir).map_err(|e| TranscriptError::NotFound {
-        reason: format!("{}: {e}", dir.display()),
-    })?;
-    entries
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|ext| ext == "jsonl"))
-        .filter_map(|p| Some((mtime(&p)?, p)))
-        .filter(|(t, _)| *t >= not_before)
-        .max_by_key(|(t, _)| *t)
-        .map(|(_, p)| p)
-        .ok_or_else(|| TranscriptError::NotFound {
-            reason: format!(
-                "no *.jsonl session log in {} written since this worker started",
-                dir.display()
-            ),
-        })
-}
-
-/// The newest-mtime rollout under `root` whose `session_meta` names `cwd`,
-/// written at or after `not_before`.
-fn newest_codex_log(
-    root: &Path,
-    cwd: &Path,
+/// The newest-mtime `*.jsonl` in `dir` (also in subdirectories when
+/// `recursive`) written at or after `not_before`, and, when `cwd` is given,
+/// whose `session_meta` names it (among the newest [`CODEX_MAX_CANDIDATES`]).
+fn newest_log(
+    dir: &Path,
+    recursive: bool,
+    cwd: Option<&Path>,
     not_before: SystemTime,
 ) -> Result<PathBuf, TranscriptError> {
     let mut files = Vec::new();
-    collect_jsonl(root, &mut files);
+    collect_jsonl(dir, recursive, &mut files);
     files.retain(|(t, _)| *t >= not_before);
     files.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
     files
         .into_iter()
         .take(CODEX_MAX_CANDIDATES)
         .map(|(_, p)| p)
-        .find(|p| codex_session_cwd(p).as_deref() == Some(cwd))
+        .find(|p| cwd.is_none_or(|cwd| codex_session_cwd(p).as_deref() == Some(cwd)))
         .ok_or_else(|| TranscriptError::NotFound {
             reason: format!(
-                "no codex rollout under {} for cwd {} written since this worker started",
-                root.display(),
-                cwd.display()
+                "no *.jsonl session log under {}{} written since this worker started",
+                dir.display(),
+                cwd.map(|c| format!(" for cwd {}", c.display()))
+                    .unwrap_or_default()
             ),
         })
 }
 
-/// Every `*.jsonl` under `dir` (recursive) with its mtime. Unreadable
-/// directories contribute nothing.
-fn collect_jsonl(dir: &Path, out: &mut Vec<(SystemTime, PathBuf)>) {
+/// Every `*.jsonl` in `dir` (and below it when `recursive`) with its mtime.
+/// Unreadable directories contribute nothing.
+fn collect_jsonl(dir: &Path, recursive: bool, out: &mut Vec<(SystemTime, PathBuf)>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for path in entries.filter_map(Result::ok).map(|e| e.path()) {
         if path.is_dir() {
-            collect_jsonl(&path, out);
+            if recursive {
+                collect_jsonl(&path, recursive, out);
+            }
         } else if path.extension().is_some_and(|ext| ext == "jsonl")
             && let Some(t) = mtime(&path)
         {

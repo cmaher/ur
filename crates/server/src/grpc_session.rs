@@ -1,6 +1,6 @@
 //! Session-control verb bodies (`CaptureWorkerPane`, `ReadWorkerTranscript`,
-//! `SendWorkerKeys`, `InterruptWorker`, `WaitWorkerIdle`, and the worker
-//! port's `SendWorkerMessage`), shared by both servers.
+//! `SendWorkerKeys`, `InterruptWorker`, `WaitWorkerIdle`, `SendWorkerMessage`),
+//! shared by both servers.
 //!
 //! Each body validates the request, asks a [`SessionTargets`] for the named
 //! worker's daemon client, and keeps the daemon's gRPC code (prefixed with the
@@ -25,7 +25,7 @@ pub const DEFAULT_TRANSCRIPT_TURNS: u32 = 10;
 pub const DEFAULT_WAIT_IDLE_SECS: u32 = 600;
 /// Longest accepted wait.
 pub const MAX_WAIT_IDLE_SECS: u32 = 3600;
-/// Screen lines returned on a timed-out wait when the request asks for 0.
+/// Screen lines returned on a timed-out wait.
 pub const DEFAULT_SCREEN_TAIL_LINES: u32 = 40;
 /// Most scrollback lines a capture may ask for.
 pub const MAX_CAPTURE_LINES: u32 = 50_000;
@@ -167,13 +167,9 @@ pub(crate) async fn wait_worker_idle(
         0 => DEFAULT_WAIT_IDLE_SECS,
         t => t,
     };
-    let lines = match req.screen_lines {
-        0 => DEFAULT_SCREEN_TAIL_LINES,
-        n => n,
-    };
     let client = targets.target_client(&req.worker_id).await?;
     let resp = client
-        .wait_idle(timeout, lines)
+        .wait_idle(timeout, DEFAULT_SCREEN_TAIL_LINES)
         .await
         .map_err(|s| daemon_status("wait for idle", &req.worker_id, s))?;
     Ok(WaitWorkerIdleResponse {
@@ -182,8 +178,6 @@ pub(crate) async fn wait_worker_idle(
     })
 }
 
-/// Worker-port `SendWorkerMessage`. (The host handler keeps its own body in
-/// `grpc.rs`, which reports lookup failures as `SendMessageFailed`.)
 pub(crate) async fn send_worker_message(
     targets: &impl SessionTargets,
     req: SendWorkerMessageRequest,

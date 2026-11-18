@@ -808,7 +808,6 @@ async fn session_control_routes_to_worker_daemon() {
         .wait_worker_idle(WaitWorkerIdleRequest {
             worker_id: "ur-sc1".into(),
             timeout_secs: 0,
-            screen_lines: 0,
         })
         .await
         .unwrap()
@@ -1013,7 +1012,6 @@ async fn session_verbs(client: &mut WorkerPortClient, caller: &str, target: &str
                     WaitWorkerIdleRequest {
                         worker_id: id(),
                         timeout_secs: 1,
-                        screen_lines: 1,
                     },
                 ))
                 .await

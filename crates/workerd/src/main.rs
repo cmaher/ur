@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -210,13 +210,10 @@ async fn run_daemon_only(agent: ur_config::AgentType, inputs: &WorkerInitInputs)
     .with_interrupt_grace(interrupt_grace.clone())
     .spawn();
 
-    let home = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(ur_config::WORKER_HOME));
     let control = SessionControlManager::new(
         session.clone(),
         agent,
-        home,
+        WorkerPaths::container_home(),
         started_at,
         IdleTracker::default(),
         interrupt_grace,

@@ -343,7 +343,8 @@ impl Session {
         let out = run_tmux_stdout(&self.capture_agent_pane_args(history))
             .await
             .with_context(|| format!("failed to capture pane for tmux session '{}'", self.name))?;
-        Ok(trim_trailing_blank_lines(&out))
+        // Drop the blank lines tmux pads a capture with below the last output.
+        Ok(out.trim_end().to_owned())
     }
 
     /// The working directory of the original agent pane's foreground process
@@ -705,15 +706,6 @@ fn submit_probe(text: &str) -> String {
         .collect::<String>()
 }
 
-/// Drop the blank lines tmux pads a capture with below the last output line.
-fn trim_trailing_blank_lines(text: &str) -> String {
-    let mut lines: Vec<&str> = text.lines().collect();
-    while lines.last().is_some_and(|l| l.trim().is_empty()) {
-        lines.pop();
-    }
-    lines.join("\n")
-}
-
 /// `show-environment` output → `(name, value)`, skipping removed (`-NAME`) entries.
 fn parse_environment(stdout: &str) -> Vec<(String, String)> {
     stdout
@@ -893,12 +885,6 @@ pub async fn exec_interactive(args: &[impl AsRef<str>]) -> Result<ExitStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn trim_trailing_blank_lines_keeps_interior_blanks() {
-        assert_eq!(trim_trailing_blank_lines("a\n\nb\n  \n\n"), "a\n\nb");
-        assert_eq!(trim_trailing_blank_lines("\n\n"), "");
-    }
 
     #[test]
     fn stat_ppid_skips_comm_with_spaces_and_parens() {

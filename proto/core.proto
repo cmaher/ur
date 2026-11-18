@@ -199,8 +199,7 @@ message WaitWorkerIdleRequest {
   string worker_id = 1;
   // Seconds to wait before giving up; 0 means the server default.
   uint32 timeout_secs = 2;
-  // Screen lines to return when the wait times out; 0 means the default.
-  uint32 screen_lines = 3;
+  reserved 3;
 }
 
 message WaitWorkerIdleResponse {
