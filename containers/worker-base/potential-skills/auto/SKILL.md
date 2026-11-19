@@ -28,7 +28,7 @@ There are exactly two legal ways to end the run:
 
 | Situation | Required action |
 | --- | --- |
-| Every unit is done and the Subtraction pass is verified | `ur-workertools status step-complete` |
+| Every unit is done and the Trim pass is verified | `ur-workertools status step-complete` |
 | A Hard stop (below), after all other work is finished | `ur-workertools status request-human "<reason>"` |
 
 - **Run until every unit is done.** Do not end your turn with a status update, a "next I'll...", a question, or a menu
@@ -49,6 +49,7 @@ There are exactly two legal ways to end the run:
 | Implement a unit / apply fix batches | `implement` | Implementer subagent |
 | Review pass (one lens per pass) | `code-review` | Reviewer subagent |
 | Triage reviewer findings | `receiving-code-review` | You |
+| End-of-run trim pass | `trim` | Reviewer subagent |
 
 Every subagent prompt names the skill to invoke explicitly ("Invoke the `implement` skill on ticket `<id>`"). Do not
 paraphrase a skill's instructions into the prompt; the skill is the source of truth. The prompt adds only what the
@@ -72,7 +73,7 @@ advance lifecycle status yourself.
 1. **Error recovery.** `ur ticket --output json show <id> --activity-author workflow` on the ticket you were given.
    If the most recent workflow activities report a failure (verification, CI, merge) that isn't addressed yet, the
    first unit is fixing it: write a contract for the fix and run it through the loop.
-2. **Record the run base:** `git rev-parse HEAD`, for the end-of-run Subtraction pass.
+2. **Record the run base:** `git rev-parse HEAD`, for the end-of-run Trim pass.
 
 ## The unit and its ticket
 
@@ -182,7 +183,7 @@ State the tier in your report. A Critical unit whose first pass is minor is done
 
 ### Verification hooks
 
-Run these in step 6 and after the Subtraction pass. If a hook file is absent, fall back to the build, test and lint
+Run these in step 6 and after the Trim pass. If a hook file is absent, fall back to the build, test and lint
 commands the project's CLAUDE.md documents.
 
 @%UR_SKILL_HOOKS%/implement/subtask-verifications.md
@@ -191,16 +192,15 @@ Before `step-complete`, also run:
 
 @%UR_SKILL_HOOKS%/implement/final-verifications.md
 
-## End of run: one Subtraction pass
+## End of run: one Trim pass
 
-No per-unit Subtraction passes. Run it **once**, after the last unit closes and before the final report.
+No per-unit Trim passes. Run it **once**, after the last unit closes and before the final report.
 
-1. **Reviewer subagent → `code-review`** on `<run-base>..HEAD` with the Subtraction lens and every unit's contract.
-   Its only job is to find code to delete: anything the platform already does, guards compensating for one root
-   cause, config knobs nobody needs, abstractions with one implementation, duplication between units.
+1. **Reviewer subagent → `trim`** on `<run-base>..HEAD`, report only (no `apply`), with every unit's contract.
+   The `trim` skill defines what to look for, including existing code the run duplicated.
 2. **Triage** as in step 4. Send the accepted batch to the most recent implementer via SendMessage. If it's gone,
    start a fresh implementer with the `implement` skill on a cleanup ticket (`ur ticket create` under the epic).
-3. **Verify** as in step 6 and commit. Subtraction findings never trigger another review pass.
+3. **Verify** as in step 6 and commit. Trim findings never trigger another review pass.
 4. **Finish:** set `pr_summary` on the ticket you were given
    (`ur ticket set-meta <id> pr_summary "<summary of all units>" --output json`), record the final report on it with
    `ur ticket add-activity`, then run `ur-workertools status step-complete`.
@@ -220,7 +220,6 @@ availability attacks).
 | Real dependency / real browser | Drive the real service or browser end to end; record actual headers and behavior |
 | Availability / DoS | Outages, slow peers, floods, connection and memory bounds, recovery. Only if the contract includes it |
 | Fresh read | Whole unit top to bottom by someone who saw no prior pass |
-| Subtraction | Once per run, over the whole run's diff. See "End of run" |
 
 ## Scope drift: automatic course corrections
 
@@ -281,7 +280,7 @@ running agents immediately, then continue.
 | "It's real, so it needs code" | A documented known limit is a valid resolution |
 | "One more pass will get it clean" | A minor pass ends review. Hard cap is 3. Past that, file follow-ups and move on |
 | "Critical means passes until two come back clean" | Only a major pass earns another; fix test gaps and nits, then stop |
-| "Keep hardening this 900-line custom piece" | You're past budget; subtract down to the platform-native minimum |
+| "Keep hardening this 900-line custom piece" | You're past budget; trim down to the platform-native minimum |
 | "Add one more guard" | Look for the single root cause the guards are compensating for |
 | "I should check with the user before continuing" | Unless it's a Hard stop: decide, record on the ticket, continue |
 | "I'll give a progress update and end my turn" | Ending the turn without `step-complete` or `request-human` stalls the workflow |
@@ -289,7 +288,7 @@ running agents immediately, then continue.
 | "The `design` skill says to explore with the user first" | The tickets are already designed. Don't re-run `design` mid-run |
 | "A driven skill says stop and ask" | See Unattended overrides: you answer for the user |
 | "Hit the review cap / budget, so I'll stop and report" | Course-correct per the table, file follow-ups, move to the next unit |
-| "Run a Subtraction pass after this ticket" | Once per run, at the end, over the whole diff |
+| "Run a Trim pass after this ticket" | Once per run, at the end, over the whole diff, with the `trim` skill |
 | "Let's run every lens to be safe" | Lenses outside the threat model only manufacture scope |
 | "I'll remember the batch" | Write it to disk |
 | "I'll push / open the PR when done" | The workflow does that after `step-complete` |
