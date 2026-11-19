@@ -495,6 +495,14 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "    environment:").unwrap();
     writeln!(out, "      - UR_CONFIG=/config").unwrap();
     writeln!(out, "      - UR_HOST_CONFIG=${{UR_CONFIG:-${{HOME}}/.ur}}").unwrap();
+    // `%HOME%` config paths expand against this inside the server. Empty when the
+    // host has no HOME; the server then rejects any `%HOME%` path naming its field.
+    writeln!(
+        out,
+        "      - {home}=${{{home}:-}}",
+        home = ur_config::UR_HOST_HOME_ENV
+    )
+    .unwrap();
     writeln!(
         out,
         "      - UR_HOST_WORKSPACE=${{UR_WORKSPACE:-${{HOME}}/.ur/workspace}}"
@@ -594,7 +602,7 @@ fn write_networks(out: &mut String, params: &ComposeParams) {
 /// Build a `ComposeManager` from the resolved ur config.
 ///
 /// Forwards `UR_CONFIG`, `UR_WORKSPACE`, `UR_SERVER_PORT`, `UR_WORKER_PORT`, `UR_BUILDERD_PORT`,
-/// `UR_MACHINE_ID`, and optionally `UR_IMAGE_TAG` and `UR_CONTAINER` as environment variables
+/// `UR_MACHINE_ID`, `UR_HOST_HOME` (from `HOME`), and optionally `UR_IMAGE_TAG` and `UR_CONTAINER` as environment variables
 /// so the compose file's variable interpolation picks them up.
 #[instrument(skip(config), fields(compose_file = %config.compose_file.display()))]
 pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager {
@@ -618,6 +626,14 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
             config.machine.id.clone(),
         ),
     ];
+
+    // The server resolves `%HOME%` config paths against the host's home, not its own.
+    if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+        env_vars.push((
+            ur_config::UR_HOST_HOME_ENV.to_string(),
+            home.to_string_lossy().into_owned(),
+        ));
+    }
 
     // Forward UR_CONTAINER if set so compose can potentially use it
     if let Ok(val) = std::env::var("UR_CONTAINER") {
@@ -838,6 +854,35 @@ mod tests {
             server_section.contains(
                 "      - UR_MACHINE_ID=${UR_MACHINE_ID:?UR_MACHINE_ID must be set by ur start}"
             ),
+            "{generated}"
+        );
+    }
+
+    /// The host's HOME reaches ur-server as UR_HOST_HOME for `%HOME%` config paths.
+    #[test]
+    fn compose_passes_host_home_to_server() {
+        let config = test_config_for_compose();
+        let manager = compose_manager_from_config(&config);
+        let expected = std::env::var("HOME").ok().filter(|home| !home.is_empty());
+        let forwarded = manager
+            .env_vars
+            .iter()
+            .find(|(key, _)| key == ur_config::UR_HOST_HOME_ENV)
+            .map(|(_, value)| value.clone());
+        assert_eq!(forwarded, expected);
+        let generated = generate_compose(
+            &config.network,
+            &config.proxy,
+            &config.ticket_db,
+            &config.workflow_db,
+            &config.config_dir,
+        );
+        let server_section = generated
+            .split("  ur-server:")
+            .nth(1)
+            .expect("ur-server service present");
+        assert!(
+            server_section.contains("      - UR_HOST_HOME=${UR_HOST_HOME:-}"),
             "{generated}"
         );
     }

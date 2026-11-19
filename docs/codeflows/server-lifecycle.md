@@ -86,6 +86,7 @@ Environment variables passed to `docker compose`:
 - `UR_WORKSPACE` — host workspace directory (mounted as `/workspace` in server)
 - `UR_SERVER_PORT` — gRPC listen port for ur-server
 - `UR_BUILDERD_PORT` — builderd port (server uses this to build `UR_BUILDERD_ADDR`)
+- `UR_HOST_HOME` — the `HOME` of `ur start`, so `%HOME%` config paths expand to the host's home inside the server (see [config.md](config.md#template-variables)). Interpolated as `${UR_HOST_HOME:-}`; empty is treated as unset, and only configs that use `%HOME%` then fail to load
 - `UR_MACHINE_ID` — this host's machine id (`[machine] id`, default normalized short hostname), resolved on the host by `ur start` and set in the server's environment. Interpolated as `${UR_MACHINE_ID:?...}` so compose fails instead of passing an empty id if it is unset
 - `DATABASE_URL` — Postgres connection URL for ur-server (e.g., `postgres://ur:ur@ur-postgres:5432/ur`)
 

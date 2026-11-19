@@ -203,6 +203,13 @@ concern.
 `Config.machine` reflects the *container's* hostname — server code reads `UR_MACHINE_ID`
 (set by compose from the host's resolution) instead. See `docs/codeflows/config.md`.
 
+## Template Paths (`src/template_path.rs`)
+
+`%PROJECT%`, `%URCONFIG%`, `%HOME%` prefixes or absolute paths. `%HOME%` reads `TemplateHome::from_env()`:
+`HOME` on the host, `UR_HOST_HOME` when `UR_HOST_CONFIG` is set (server container). Unset/empty home
+is an error from both `validate_template_str` (load time, callers prefix the field) and
+`resolve_template_path`. Tests use the `_with_home` variants or a subprocess instead of mutating env.
+
 ## Other Config
 
 - Proxy constants: `DEFAULT_PROXY_HOSTNAME` ("ur-squid"), `SQUID_PORT` (3128); `hostname` replaces the old `port` field

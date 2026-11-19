@@ -18,7 +18,7 @@ Loaded by `Config::load()` / `Config::load_from()` in `crates/ur_config/src/lib.
 | `server_port` | u16 | 12321 | TCP port for ur→server gRPC |
 | `builderd_port` | u16 | `server_port + 2` | TCP port for builderd |
 | `compose_file` | path | `<config_dir>/docker-compose.yml` | Docker Compose file path |
-| `workspace_brain_dir` | template path | — | Brain directory mounted read-write at `/brain` for workers launched **without a project** (`-w` workspace mode). `%URCONFIG%/...` or absolute path; `%PROJECT%` rejected. No convention fallback — unset means no `/brain` for project-less workers. See [project-file-mounting.md](project-file-mounting.md) |
+| `workspace_brain_dir` | template path | — | Brain directory mounted read-write at `/brain` for workers launched **without a project** (`-w` workspace mode). `%URCONFIG%/...`, `%HOME%/...` or absolute path; `%PROJECT%` rejected. No convention fallback — unset means no `/brain` for project-less workers. See [project-file-mounting.md](project-file-mounting.md) |
 
 ## `[skills]` Section
 
@@ -32,7 +32,7 @@ Three sub-tables are supported:
 | `[skills.code]` | `code`-strategy modes only |
 | `[skills.design]` | `design`-strategy modes only |
 
-Each key is the skill name as it will appear in `potential-skills/`; the value is the host path to the skill directory. Paths support `%URCONFIG%/...` (resolves to `<config_dir>/...`) or absolute paths.
+Each key is the skill name as it will appear in `potential-skills/`; the value is the host path to the skill directory. Paths support `%URCONFIG%/...` (resolves to `<config_dir>/...`), `%HOME%/...` (host home, see [Template Variables](#template-variables)) or absolute paths.
 
 **Visibility caveat**: paths must be accessible from the server process. Use `%URCONFIG%/...` to ensure the path is within the already-mounted config directory when the server runs inside a container.
 
@@ -122,7 +122,7 @@ Each project is a TOML table keyed by a short identifier (e.g., `[projects.ur]`)
 | `hostexec_deny` | string[] | `[]` | no | Commands denied to this project (e.g. `["gh"]`). Must not overlap with `hostexec` |
 | `mounts` | string[] | `[]` | no | Volume mounts in `"source:destination"` format |
 | `runtime` | string | — | no | Per-project worker runtime (`"container"` or `"local"`); unset defers to the top-level `runtime`. See [Runtime Precedence](#runtime-precedence) |
-| `brain_dir` | template path | — | no | Per-project brain directory, mounted read-write at `/brain`. `%URCONFIG%/...` or absolute path; `%PROJECT%` rejected (brain must be project-stable). Convention fallback: `<config_dir>/projects/<key>/brain/` when unset. See [project-file-mounting.md](project-file-mounting.md) |
+| `brain_dir` | template path | — | no | Per-project brain directory, mounted read-write at `/brain`. `%URCONFIG%/...`, `%HOME%/...` or absolute path; `%PROJECT%` rejected (brain must be project-stable). Convention fallback: `<config_dir>/projects/<key>/brain/` when unset. See [project-file-mounting.md](project-file-mounting.md) |
 
 ### Per-Project Tooling & Gitea Setup
 
@@ -185,12 +185,46 @@ Only `-m manual` **with** `-w <dir>` is supported. Everything else about the pro
 
 Mounts use `"source:destination"` format where:
 
-- **Source** (host side): `%URCONFIG%/...` or absolute path. `%PROJECT%` is **not** supported — project-relative paths are already accessible via the workspace mount.
+- **Source** (host side): `%URCONFIG%/...`, `%HOME%/...` or absolute path. `%PROJECT%` is **not** supported — project-relative paths are already accessible via the workspace mount.
 - **Destination** (container side): absolute path (must start with `/`).
 
 Parsed at config load time into `MountConfig { source, destination }`. Source is resolved at use time via `resolve_template_path`.
 
 Example: `"/Users/me/projects/ur/.tickets:/workspace/.tickets"` mounts a host directory into the container's workspace.
+
+### Template Variables
+
+Host-path fields (`mounts` sources, `instruction_md`, `memory_dir`, `brain_dir`,
+`workspace_brain_dir`, `[skills]` paths) accept:
+
+| Variable | Expands to |
+|----------|-----------|
+| `%PROJECT%/...` | Project-relative path (only where a field allows it: `instruction_md`) |
+| `%URCONFIG%/...` | `<config_dir>/...` (host config dir; `UR_HOST_CONFIG` in the server) |
+| `%HOME%/...` | The host user's home directory (ur-i3qy4) |
+| `/absolute/...` | As written |
+
+`%HOME%` is a prefix like `%URCONFIG%` (`$HOME` and `~` are not supported). It expands to the
+`HOME` of the process doing the resolving — the CLI and builderd on the host. The server runs
+in a container whose `HOME` is not the host's, so there (detected by `UR_HOST_CONFIG` being
+set) it expands against `UR_HOST_HOME`, which `ur start` passes through compose from its own
+`HOME`. An unset or empty home is a config-load error prefixed with the field name (e.g.
+`project 'ur': brain_dir: %HOME% cannot be expanded: UR_HOST_HOME is not set ...`), never an
+empty expansion.
+
+`resolve_template_path` call sites, by where they run:
+
+| Site | Side |
+|------|------|
+| `crates/ur/src/main.rs` `prepare_project_mounts` | host (CLI) |
+| `ProjectConfig::brain_path` (`crates/ur/src/project.rs`, `crates/ur/src/dream/mod.rs`) | host (CLI) |
+| `resolve_skill_section` (config load) | both — whichever process loads `ur.toml` |
+| `crates/server/src/worker.rs` `brain_host_path` | server |
+| `crates/server/src/run_opts_builder.rs` instruction_md, `resolve_mount_source`, `prepare_host_dir` | server |
+| `crates/server/src/local_launch.rs` instruction_md | server |
+
+Every server-side site goes through `resolve_template_path`, which picks `UR_HOST_HOME` there,
+and every field it resolves was already validated (including home availability) at config load.
 
 ### Template Resolution Semantics
 
@@ -198,7 +232,7 @@ How each resolved variant maps to container behavior:
 
 - **`ProjectRelative(rel_path)`**: The path exists inside the already-mounted workspace. No additional volume mount is created. The container path is `/workspace/<rel_path>`. Works for both `-w` workspace mode (user's checkout) and `-p` pool mode (pool slot's clone) — but only if the path exists in the repo checkout.
 
-- **`HostPath(host_path)`**: A host-side directory is volume-mounted into the container at the specified destination. Used for files that live outside the project repo (e.g., `%URCONFIG%/...` or `/opt/...`). Used by `mounts` and `instruction_md`.
+- **`HostPath(host_path)`**: A host-side directory is volume-mounted into the container at the specified destination. Used for files that live outside the project repo (e.g., `%URCONFIG%/...`, `%HOME%/...` or `/opt/...`). Used by `mounts` and `instruction_md`.
 
 ## Agent Default Precedence
 

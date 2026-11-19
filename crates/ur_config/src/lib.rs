@@ -16,12 +16,13 @@ pub use machine::{
 use machine::{RawMachineConfig, resolve_machine};
 pub use runtime::{WorkerRuntime, resolve_worker_runtime};
 pub use template_path::{
-    ResolvedTemplatePath, WORKSPACE_TEMPLATE, resolve_template_path, resolve_workspace_content,
+    ResolvedTemplatePath, TemplateHome, UR_HOST_HOME_ENV, WORKSPACE_TEMPLATE,
+    resolve_template_path, resolve_template_path_with_home, resolve_workspace_content,
 };
 
 /// A parsed mount configuration entry: host source -> container destination.
 ///
-/// Source supports `%URCONFIG%/...` template variables or absolute paths.
+/// Source supports `%URCONFIG%/...` or `%HOME%/...` template variables or absolute paths.
 /// `%PROJECT%` is not supported for mount sources — mounts are for paths
 /// outside the project repo (project-relative paths are already accessible
 /// via the workspace mount).
@@ -533,11 +534,11 @@ struct RawProjectConfig {
     /// Exit code the verify hook returns to signal "push again" without penalizing the implement cycle count.
     push_again_exit_code: Option<i32>,
     /// Optional template path to the Claude auto-memory directory for this project.
-    /// Supports `%URCONFIG%/...` template variables or absolute paths.
+    /// Supports `%URCONFIG%/...` or `%HOME%/...` template variables, or absolute paths.
     /// `%PROJECT%/...` is rejected — memory must be project-stable, not workspace-relative.
     memory_dir: Option<String>,
     /// Optional template path to the per-project brain directory for this project.
-    /// Supports `%URCONFIG%/...` template variables or absolute paths.
+    /// Supports `%URCONFIG%/...` or `%HOME%/...` template variables, or absolute paths.
     /// `%PROJECT%/...` is rejected — the brain must be project-stable, not workspace-relative.
     brain_dir: Option<String>,
     /// Optional forge platform override ("github" or "gitea").
@@ -1174,7 +1175,7 @@ pub struct ContainerConfig {
     pub image: String,
     /// Additional volume mounts for this project.
     /// Each entry maps a host-side source to a container-side destination.
-    /// Source supports `%URCONFIG%/...` or absolute paths (not `%PROJECT%`).
+    /// Source supports `%URCONFIG%/...`, `%HOME%/...` or absolute paths (not `%PROJECT%`).
     /// Parsed from `"source:destination"` strings in TOML.
     pub mounts: Vec<MountConfig>,
     /// Port mappings for this project's containers.
@@ -1220,7 +1221,7 @@ pub struct ProjectConfig {
     /// Can remove built-in defaults such as `gh`.
     pub hostexec_deny: Vec<String>,
     /// Optional template path to a project-level instruction file (e.g. CLAUDE.md).
-    /// Supports `%PROJECT%/...`, `%URCONFIG%/...` template variables, or absolute paths.
+    /// Supports `%PROJECT%/...`, `%URCONFIG%/...`, `%HOME%/...` template variables, or absolute paths.
     /// Resolve with [`resolve_template_path`] at use time.
     /// When None, the server falls back to `<config_dir>/projects/<key>/CLAUDE.md`.
     pub instruction_md: Option<String>,
@@ -1248,12 +1249,12 @@ pub struct ProjectConfig {
     /// Default: 200.
     pub push_again_exit_code: i32,
     /// Optional template path to the Claude auto-memory directory for this project.
-    /// Supports `%URCONFIG%/...` template variables or absolute paths.
+    /// Supports `%URCONFIG%/...` or `%HOME%/...` template variables, or absolute paths.
     /// `%PROJECT%/...` is rejected — memory must be project-stable, not workspace-relative.
     /// When `None`, the server-side convention fallback applies (separate ticket).
     pub memory_dir: Option<String>,
     /// Optional template path to the per-project brain directory for this project.
-    /// Supports `%URCONFIG%/...` template variables or absolute paths.
+    /// Supports `%URCONFIG%/...` or `%HOME%/...` template variables, or absolute paths.
     /// `%PROJECT%/...` is rejected — the brain must be project-stable, not workspace-relative.
     /// When `None`, the server-side convention fallback applies (separate ticket).
     pub brain_dir: Option<String>,
@@ -2268,7 +2269,7 @@ fn resolve_skill_section(
         if path_template.starts_with("%PROJECT%") {
             anyhow::bail!(
                 "skills.{section}.{name}: %PROJECT% is not allowed for skill paths — \
-                 use %URCONFIG% or an absolute path"
+                 use %URCONFIG%, %HOME% or an absolute path"
             );
         }
         let resolved = template_path::resolve_template_path(&path_template, config_dir)
@@ -3455,6 +3456,109 @@ image = "ur-worker"
         assert_eq!(
             cfg.projects["abs"].brain_path(dir),
             Some(PathBuf::from("/some/abs/brain"))
+        );
+    }
+
+    const HOME_FIELDS_TOML: &str = r#"
+workspace_brain_dir = "%HOME%/ws-brain"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+brain_dir = "%HOME%/brains/ur"
+memory_dir = "%HOME%/memory/ur"
+instruction_md = "%HOME%/notes/CLAUDE.md"
+[projects.ur.container]
+image = "ur-worker"
+mounts = ["%HOME%/data:/var/data"]
+"#;
+
+    #[test]
+    fn home_template_accepted_in_every_host_path_field() {
+        let cfg = Config::from_toml_str(HOME_FIELDS_TOML, Path::new("/cfg")).unwrap();
+        let home = PathBuf::from(std::env::var_os("HOME").expect("tests need HOME"));
+        let project = &cfg.projects["ur"];
+        assert_eq!(
+            project.brain_path(Path::new("/cfg")),
+            Some(home.join("brains/ur"))
+        );
+        assert_eq!(project.container.mounts[0].source, "%HOME%/data");
+        assert_eq!(
+            resolve_template_path(&project.container.mounts[0].source, Path::new("/cfg")).unwrap(),
+            ResolvedTemplatePath::HostPath(home.join("data"))
+        );
+        assert_eq!(cfg.workspace_brain_dir.as_deref(), Some("%HOME%/ws-brain"));
+    }
+
+    /// Env var selecting the server-container child mode of
+    /// [`home_template_in_server_child`].
+    const HOME_CHILD_ENV: &str = "UR_CONFIG_TEST_HOME_CHILD";
+
+    /// Re-run [`home_template_in_server_child`] in a subprocess with a server-container
+    /// environment, so the test never mutates this process's env.
+    fn run_server_home_child(mode: &str, host_home: Option<&str>) {
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--exact",
+            "tests::home_template_in_server_child",
+            "--nocapture",
+        ])
+        .env(HOME_CHILD_ENV, mode)
+        .env(UR_HOST_CONFIG_ENV, "/host/config")
+        .env("HOME", "/container/home")
+        .env_remove(UR_HOST_HOME_ENV);
+        if let Some(home) = host_home {
+            cmd.env(UR_HOST_HOME_ENV, home);
+        }
+        let output = cmd.output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(stdout.contains("1 passed"), "{stdout}");
+    }
+
+    #[test]
+    fn home_template_in_server_child() {
+        let Ok(mode) = std::env::var(HOME_CHILD_ENV) else {
+            return;
+        };
+        let result = Config::from_toml_str(HOME_FIELDS_TOML, Path::new("/config"));
+        match mode.as_str() {
+            "resolve" => {
+                let cfg = result.unwrap();
+                assert_eq!(
+                    cfg.projects["ur"].brain_path(Path::new("/config")),
+                    Some(PathBuf::from("/host/home/brains/ur"))
+                );
+            }
+            "missing" => {
+                let msg = format!("{:#}", result.unwrap_err());
+                assert!(msg.contains(UR_HOST_HOME_ENV), "{msg}");
+                assert!(msg.contains("project 'ur': instruction_md"), "{msg}");
+            }
+            other => panic!("unknown child mode {other}"),
+        }
+    }
+
+    #[test]
+    fn home_template_resolves_against_ur_host_home_in_server() {
+        run_server_home_child("resolve", Some("/host/home"));
+    }
+
+    #[test]
+    fn home_template_without_ur_host_home_in_server_names_the_field() {
+        run_server_home_child("missing", None);
+        run_server_home_child("missing", Some(""));
+    }
+
+    #[test]
+    fn home_template_rejects_project_var_rules_unchanged() {
+        let err = Config::from_toml_str(
+            "workspace_brain_dir = \"%PROJECT%/brain\"\n",
+            Path::new("/cfg"),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("%PROJECT% is not allowed"),
+            "{err}"
         );
     }
 

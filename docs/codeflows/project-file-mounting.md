@@ -14,9 +14,12 @@ All project file paths in `ur.toml` use a template string format, resolved at la
 |---|---|---|
 | `%PROJECT%/...` | `%PROJECT%/.git-hooks` | `ProjectRelative(".git-hooks")` — no extra mount, accessed at `/workspace/.git-hooks` |
 | `%URCONFIG%/...` | `%URCONFIG%/projects/ur/CLAUDE.md` | `HostPath("<config_dir>/projects/ur/CLAUDE.md")` — volume-mounted from host |
+| `%HOME%/...` | `%HOME%/notes/CLAUDE.md` | `HostPath("<host home>/notes/CLAUDE.md")` — volume-mounted from host |
 | `/absolute/path` | `/opt/hooks/ur` | `HostPath("/opt/hooks/ur")` — volume-mounted from host |
 
-**Validation**: `validate_template_str()` runs at config load time (`Config::load()`), rejecting unrecognized `%VAR%` patterns immediately.
+**Validation**: `validate_template_str()` runs at config load time (`Config::load()`), rejecting unrecognized `%VAR%` patterns immediately, and rejecting a `%HOME%` path (error prefixed with the field) when the home directory is unknown.
+
+**`%HOME%` (ur-i3qy4)**: expands to the *host* user's home. Host processes (CLI, builderd) read `HOME`; inside the server container (detected by `UR_HOST_CONFIG` being set) it reads `UR_HOST_HOME`, which compose sets from the `HOME` of `ur start`. Unset or empty is an error, never an empty expansion (`TemplateHome` in `template_path.rs`).
 
 **Resolution**: `resolve_template_path()` runs at container launch time, producing a `ResolvedTemplatePath` enum:
 - `ProjectRelative(rel_path)` — env var points to `/workspace/<rel_path>`, no mount added
@@ -167,7 +170,7 @@ Source: `resolve_transcripts_dir()` in `crates/server/src/worker.rs`, `add_trans
 
 **Brain skills** (`brain`, `brain:init`, `brain:dream`, `brain:dream-init`, one copy each in `containers/worker-base/potential-skills/`) resolve the brain root as `$UR_BRAIN`, falling back on the host to the `brain` field of `ur project list --output json` (`ProjectConfig::brain_path`: `brain_dir` resolved, else the convention path), so host and workers agree on projects that override `brain_dir`. `brain:init` makes the brain its own git repository; `brain:dream` consolidates it (lint, harvest agent transcripts and memory, reconcile-then-promote finished streams, merge, reindex, scheduled review of durable docs), editing the brain directly and committing each run with a changelog report in `<brain>/.dream/reports/`; git history is the checkpoint. Its mechanical work is the `ur dream` CLI, which reads the TOML config block in `<brain>/DREAM.md` and writes only `.dream/state.json` (ref checks, harvest cursors, review log with adaptive intervals). Workers run brain git through hostexec with a `/brain` working directory, which maps to the worker's host brain path for `git` only (see [host-exec-flow.md](host-exec-flow.md)). `brain:dream` and `brain:dream-init` are installed for the Manual strategy only. On the host, install them by symlinking each skill directory into `~/.claude/skills/` under the same bare name (no `ur:` prefix) so cross-references resolve. Everything project-specific lives in `<brain>/DREAM.md`; the skills carry no project content and their examples are placeholders only.
 
-**Template restriction**: like `memory_dir`, `%PROJECT%` is rejected for `brain_dir` at config validation time — the brain must be project-stable, not workspace-relative. Only `%URCONFIG%/...` and absolute paths are valid.
+**Template restriction**: like `memory_dir`, `%PROJECT%` is rejected for `brain_dir` at config validation time — the brain must be project-stable, not workspace-relative. Only `%URCONFIG%/...`, `%HOME%/...` and absolute paths are valid.
 
 **No-project rule**: the per-project `brain_dir` and its convention fallback only apply when a project key is associated with the worker. Workers launched without a project fall back to the top-level `workspace_brain_dir` instead (see below).
 
@@ -199,7 +202,7 @@ Consequences of that ordering:
 - `-w <path> -p <project>` is a project worker (`project_key` is non-empty), so it uses the project rules.
 - There is **no convention fallback** for `workspace_brain_dir`: it must be set explicitly, so upgrading never starts mounting a brain nobody configured. The configured directory itself is auto-created (and chowned) on first launch.
 
-**Template restriction**: `%PROJECT%` is rejected at config load time — a workspace-mode worker has no project to resolve against. Only `%URCONFIG%/...` and absolute paths are valid.
+**Template restriction**: `%PROJECT%` is rejected at config load time — a workspace-mode worker has no project to resolve against. Only `%URCONFIG%/...`, `%HOME%/...` and absolute paths are valid.
 
 **Plumbing**: `LaunchManager.workspace_brain_dir` (from `Config::workspace_brain_dir`) is copied onto `WorkerConfig.workspace_brain_dir` in `build_worker_config()`, and consumed by `resolve_brain_dir()` — the single place the decision is made.
 
@@ -207,7 +210,7 @@ Source: `Config::workspace_brain_dir` in `crates/ur_config/src/lib.rs`, `LaunchM
 
 ## Container Mounts
 
-`container.mounts` uses `"source:destination"` format with a restriction: `%PROJECT%` is **not allowed** as a mount source. Project-relative paths are already accessible through the workspace mount, so an explicit mount would be redundant. Only `%URCONFIG%/...` and absolute paths are valid sources.
+`container.mounts` uses `"source:destination"` format with a restriction: `%PROJECT%` is **not allowed** as a mount source. Project-relative paths are already accessible through the workspace mount, so an explicit mount would be redundant. Only `%URCONFIG%/...`, `%HOME%/...` and absolute paths are valid sources.
 
 Source: `parse_mount_entry()` in `crates/ur_config/src/lib.rs`
 
