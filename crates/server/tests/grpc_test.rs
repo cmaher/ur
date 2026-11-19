@@ -171,7 +171,11 @@ async fn make_grpc_handler(
         config_dir: workspace.clone(),
         worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
         workerd_resolver: ur_server::WorkerdAddressResolver::new(
-            String::new(),
+            ur_server::MachineRegistryManager::new(
+                "test-machine".into(),
+                "http://127.0.0.1:1".into(),
+            )
+            .unwrap(),
             ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
         ),
     };
@@ -186,10 +190,13 @@ async fn make_grpc_handler(
         ticket_repo,
         workflow_repo,
         network_config,
-        builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_SERVER_PORT + 2),
         config_dir: workspace,
         workerd_resolver: ur_server::WorkerdAddressResolver::new(
-            String::new(),
+            ur_server::MachineRegistryManager::new(
+                "test-machine".into(),
+                "http://127.0.0.1:1".into(),
+            )
+            .unwrap(),
             ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
         ),
     };
@@ -310,7 +317,11 @@ async fn make_worker_handler() -> (
         config_dir: workspace.clone(),
         worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
         workerd_resolver: ur_server::WorkerdAddressResolver::new(
-            String::new(),
+            ur_server::MachineRegistryManager::new(
+                "test-machine".into(),
+                "http://127.0.0.1:1".into(),
+            )
+            .unwrap(),
             ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
         ),
     };
@@ -714,7 +725,11 @@ async fn fake_workerd_resolver(fake: &FakeWorkerd) -> ur_server::WorkerdAddressR
             .unwrap();
     });
     ur_server::WorkerdAddressResolver::new(
-        format!("http://{fake_addr}"),
+        ur_server::MachineRegistryManager::new(
+            "test-machine".into(),
+            format!("http://{fake_addr}"),
+        )
+        .unwrap(),
         ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
     )
 }

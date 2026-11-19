@@ -244,6 +244,14 @@ mod tests {
         (test_db, repo, workflow_repo, worker_repo)
     }
 
+    fn test_resolver() -> crate::WorkerdAddressResolver {
+        crate::WorkerdAddressResolver::new(
+            crate::MachineRegistryManager::new("test-machine".into(), "http://127.0.0.1:1".into())
+                .unwrap(),
+            ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+        )
+    }
+
     fn dummy_builderd_client() -> ur_rpc::proto::builder::BuilderdClient {
         let channel =
             tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
@@ -430,10 +438,7 @@ mod tests {
             repo.clone(),
             workflow_repo.clone(),
             worker_repo.clone(),
-            crate::WorkerdAddressResolver::new(
-                String::new(),
-                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
-            ),
+            test_resolver(),
             dummy_builderd_client(),
             dummy_config(),
             vec![(
@@ -504,10 +509,7 @@ mod tests {
             repo.clone(),
             workflow_repo.clone(),
             worker_repo.clone(),
-            crate::WorkerdAddressResolver::new(
-                String::new(),
-                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
-            ),
+            test_resolver(),
             dummy_builderd_client(),
             dummy_config(),
             vec![(
@@ -585,10 +587,7 @@ mod tests {
             repo.clone(),
             workflow_repo.clone(),
             worker_repo.clone(),
-            crate::WorkerdAddressResolver::new(
-                String::new(),
-                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
-            ),
+            test_resolver(),
             dummy_builderd_client(),
             dummy_config(),
             vec![(
@@ -657,10 +656,7 @@ mod tests {
             repo.clone(),
             workflow_repo.clone(),
             worker_repo.clone(),
-            crate::WorkerdAddressResolver::new(
-                String::new(),
-                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
-            ),
+            test_resolver(),
             dummy_builderd_client(),
             dummy_config(),
             vec![(
@@ -702,10 +698,7 @@ mod tests {
             repo.clone(),
             workflow_repo.clone(),
             worker_repo.clone(),
-            crate::WorkerdAddressResolver::new(
-                String::new(),
-                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
-            ),
+            test_resolver(),
             dummy_builderd_client(),
             dummy_config(),
             vec![(
@@ -771,10 +764,7 @@ mod tests {
             repo.clone(),
             workflow_repo.clone(),
             worker_repo.clone(),
-            crate::WorkerdAddressResolver::new(
-                String::new(),
-                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
-            ),
+            test_resolver(),
             dummy_builderd_client(),
             dummy_config(),
             vec![],

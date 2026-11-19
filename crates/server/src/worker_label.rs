@@ -54,7 +54,7 @@ pub async fn push(deps: &WorkerLabelDeps, worker_id: &str) -> anyhow::Result<()>
         .await?
         .ok_or_else(|| anyhow::anyhow!("worker {worker_id} not found in database"))?;
 
-    let workerd_client = deps.workerd_resolver.client_for(&worker);
+    let workerd_client = deps.workerd_resolver.client_for(&worker)?;
     workerd_client
         .set_status_left(&label, 50)
         .await

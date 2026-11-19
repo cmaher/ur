@@ -17,8 +17,8 @@ use ur_server::builder_container_client::BuilderContainerClient;
 use ur_server::worker::WorkerModesConfig;
 use ur_server::workflow::handlers::build_handlers;
 use ur_server::{
-    BackupTaskManager, Config, GithubPollerManager, LogCleanupManager, ProjectRegistry,
-    RepoPoolManager, WorkerManager, WorkflowEngine,
+    BackupTaskManager, Config, GithubPollerManager, LogCleanupManager, MachineRegistryManager,
+    ProjectRegistry, RepoPoolManager, WorkerManager, WorkflowEngine,
 };
 use workflow_db::{WorkerRepo, WorkflowRepo};
 
@@ -79,6 +79,20 @@ async fn open_pool(url: &str, label: &str) -> anyhow::Result<PgPool> {
         "failed to open {label} database after 10 attempts: {}",
         last_err.unwrap()
     ))
+}
+
+/// The machine registry: this server's machine (`[machine] id`, read from
+/// `UR_MACHINE_ID` in the server process) and its builderd at
+/// `UR_BUILDERD_ADDR` (default `http://host.docker.internal:<builderd_port>`).
+/// The only place the builderd address is read; every builderd channel
+/// comes from the registry.
+fn build_machine_registry(cfg: &Config) -> anyhow::Result<MachineRegistryManager> {
+    let builderd_addr = std::env::var(ur_config::BUILDERD_ADDR_ENV)
+        .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.builderd_port));
+    let registry = MachineRegistryManager::new(cfg.machine.id.clone(), builderd_addr.clone())
+        .map_err(|e| anyhow::anyhow!("failed to build machine registry: {e}"))?;
+    info!(machine_id = registry.local_id(), builderd_addr = %builderd_addr, "machine registry built");
+    Ok(registry)
 }
 
 /// Open both pools and migrate them. `machine_id` (this server's machine)
@@ -199,6 +213,7 @@ fn init_log_cleanup(
 async fn reconcile_slots(
     worker_repo: &WorkerRepo,
     cfg: &Config,
+    machine_id: &str,
     local_workspace: &std::path::Path,
     host_workspace: &std::path::Path,
 ) -> anyhow::Result<()> {
@@ -210,7 +225,7 @@ async fn reconcile_slots(
         .collect();
     let slot_result = worker_repo
         .reconcile_slots(
-            &cfg.machine.id,
+            machine_id,
             &project_pool_dirs,
             local_workspace,
             host_workspace,
@@ -233,7 +248,7 @@ async fn init_and_serve(
     worker_manager: WorkerManager,
     repo_pool_manager: RepoPoolManager,
     worker_repo: WorkerRepo,
-    builderd_addr: String,
+    machine_registry: MachineRegistryManager,
     host_workspace: PathBuf,
     project_registry: ProjectRegistry,
 ) -> anyhow::Result<()> {
@@ -256,7 +271,7 @@ async fn init_and_serve(
     );
 
     let workerd_resolver = ur_server::WorkerdAddressResolver::new(
-        builderd_addr.clone(),
+        machine_registry.clone(),
         cfg.network.worker_prefix.clone(),
     );
 
@@ -298,7 +313,6 @@ async fn init_and_serve(
         ticket_repo: ticket_repo.clone(),
         workflow_repo: workflow_repo.clone(),
         network_config: cfg.network.clone(),
-        builderd_addr: builderd_addr.clone(),
         config_dir: cfg.config_dir.clone(),
         workerd_resolver: workerd_resolver.clone(),
     };
@@ -314,7 +328,7 @@ async fn init_and_serve(
         worker_repo,
         ticket_repo,
         workflow_repo,
-        builderd_addr,
+        machine_registry,
         host_workspace,
         Arc::new(cfg.clone()),
         ui_event_poller,
@@ -336,22 +350,18 @@ struct WorkflowServices {
 
 /// Reconciles worker rows against builderd (startup, then every 15s).
 fn worker_reconcile_manager(
-    builderd_addr: &str,
+    machine_registry: &MachineRegistryManager,
     worker_manager: &WorkerManager,
     worker_repo: &WorkerRepo,
-) -> anyhow::Result<ur_server::worker_reconcile::WorkerReconcileManager> {
-    let channel =
-        ur_rpc::retry::RetryChannel::new(builderd_addr, ur_rpc::retry::RetryConfig::default())
-            .map_err(|e| anyhow::anyhow!("failed to create builderd retry channel: {e}"))?;
-    Ok(ur_server::worker_reconcile::WorkerReconcileManager::new(
+) -> ur_server::worker_reconcile::WorkerReconcileManager {
+    let channel = machine_registry.local_builderd_channel();
+    ur_server::worker_reconcile::WorkerReconcileManager::new(
         worker_manager.clone(),
         worker_repo.clone(),
-        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
-            channel.channel().clone(),
-        ),
-        BuilderContainerClient::new(channel.channel().clone()),
+        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(channel.clone()),
+        BuilderContainerClient::new(channel),
         ur_server::worker_reconcile::DEFAULT_RECONCILE_INTERVAL,
-    ))
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -362,17 +372,14 @@ fn spawn_workflow_services(
     worker_repo: &WorkerRepo,
     worker_manager: &WorkerManager,
     ticket_handler: &ur_server::grpc_ticket::TicketServiceHandler,
-    builderd_addr: &str,
+    machine_registry: &MachineRegistryManager,
     config: &Arc<ur_config::Config>,
     ui_event_poller: ur_server::UiEventPoller,
 ) -> WorkflowServices {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let workflow_retry_channel =
-        ur_rpc::retry::RetryChannel::new(builderd_addr, ur_rpc::retry::RetryConfig::default())
-            .expect("failed to create builderd retry channel for workflow engine");
     let workflow_builderd_client =
-        ur_rpc::proto::builder::BuilderdClient::new(workflow_retry_channel.channel().clone());
+        ur_rpc::proto::builder::BuilderdClient::new(machine_registry.local_builderd_channel());
 
     let workflow_ticket_client =
         ur_server::workflow::ticket_client::TicketClient::new(ticket_handler.clone());
@@ -521,7 +528,7 @@ async fn serve_grpc_servers(
     worker_repo: WorkerRepo,
     ticket_repo: TicketRepo,
     workflow_repo: WorkflowRepo,
-    builderd_addr: String,
+    machine_registry: MachineRegistryManager,
     host_workspace: PathBuf,
     config: Arc<ur_config::Config>,
     ui_event_poller: ur_server::UiEventPoller,
@@ -538,7 +545,7 @@ async fn serve_grpc_servers(
         &worker_repo,
         &worker_manager,
         &ticket_handler,
-        &builderd_addr,
+        &machine_registry,
         &config,
         ui_event_poller,
     );
@@ -548,19 +555,16 @@ async fn serve_grpc_servers(
 
     // The startup pass already ran in `main`; this is the periodic loop.
     let worker_reconcile_handle =
-        worker_reconcile_manager(&builderd_addr, &worker_manager, &worker_repo)?
+        worker_reconcile_manager(&machine_registry, &worker_manager, &worker_repo)
             .spawn(wf.shutdown_tx.subscribe());
 
     let host_server =
         ur_server::grpc_server::serve_grpc(host_addr, grpc_handler, ticket_handler.clone());
 
-    let remote_repo_handler = {
-        let retry_channel =
-            ur_rpc::retry::RetryChannel::new(&builderd_addr, ur_rpc::retry::RetryConfig::default())
-                .expect("failed to create builderd retry channel for remote_repo service");
-        let builderd_client =
-            ur_rpc::proto::builder::BuilderdClient::new(retry_channel.channel().clone());
-        ur_server::grpc_remote_repo::RemoteRepoServiceHandler { builderd_client }
+    let remote_repo_handler = ur_server::grpc_remote_repo::RemoteRepoServiceHandler {
+        builderd_client: ur_rpc::proto::builder::BuilderdClient::new(
+            machine_registry.local_builderd_channel(),
+        ),
     };
 
     let mut worker_ticket_handler = ticket_handler;
@@ -580,7 +584,7 @@ async fn serve_grpc_servers(
         workflow_repo,
         network_prefix,
         project_registry,
-        builderd_addr,
+        machine_registry.local_builderd_channel(),
         host_workspace,
         config.git_branch_prefix.clone(),
         worker_ticket_handler,
@@ -615,6 +619,7 @@ async fn serve_grpc_servers(
 #[allow(clippy::too_many_arguments)]
 async fn init_managers(
     cfg: &Config,
+    machine_registry: &MachineRegistryManager,
     workflow_pool: &PgPool,
     local_workspace: &Path,
     host_workspace: &Path,
@@ -622,27 +627,26 @@ async fn init_managers(
     logs_dir: &Path,
     worker_modes: WorkerModesConfig,
 ) -> anyhow::Result<(
-    String,
     WorkerRepo,
     RepoPoolManager,
     WorkerManager,
     ProjectRegistry,
     BuilderContainerClient,
 )> {
-    let builderd_addr = std::env::var(ur_config::BUILDERD_ADDR_ENV)
-        .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.builderd_port));
-
-    let builderd_retry_channel =
-        ur_rpc::retry::RetryChannel::new(&builderd_addr, ur_rpc::retry::RetryConfig::default())
-            .map_err(|e| anyhow::anyhow!("failed to create builderd retry channel: {e}"))?;
-    let builder_container_client = ur_server::builder_container_client::BuilderContainerClient::new(
-        builderd_retry_channel.channel().clone(),
-    );
-    let builder_pool_client =
-        ur_server::BuilderPoolClient::new(builderd_retry_channel.channel().clone());
+    let builderd_channel = machine_registry.local_builderd_channel();
+    let builder_container_client =
+        ur_server::builder_container_client::BuilderContainerClient::new(builderd_channel.clone());
+    let builder_pool_client = ur_server::BuilderPoolClient::new(builderd_channel.clone());
     let worker_repo = WorkerRepo::new(workflow_pool.clone());
 
-    reconcile_slots(&worker_repo, cfg, local_workspace, host_workspace).await?;
+    reconcile_slots(
+        &worker_repo,
+        cfg,
+        machine_registry.local_id(),
+        local_workspace,
+        host_workspace,
+    )
+    .await?;
 
     hostexec::materialize_shim(&cfg.config_dir)
         .map_err(|e| anyhow::anyhow!("failed to materialize hostexec script shim: {e}"))?;
@@ -680,14 +684,11 @@ async fn init_managers(
         worker_repo.clone(),
         cfg.global_skills.clone(),
         builder_container_client.clone(),
-        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
-            builderd_retry_channel.channel().clone(),
-        ),
-        cfg.machine.id.clone(),
+        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(builderd_channel),
+        machine_registry.local_id().to_owned(),
     );
 
     Ok((
-        builderd_addr,
         worker_repo,
         repo_pool_manager,
         worker_manager,
@@ -732,13 +733,13 @@ async fn main() -> anyhow::Result<()> {
     info!(host_config_dir = %host_config_dir.display(), "host config resolved");
 
     let worker_modes = load_worker_modes(&cfg)?;
-    let pools = init_databases(&cfg, &cfg.machine.id).await?;
+    let machine_registry = build_machine_registry(&cfg)?;
+    let pools = init_databases(&cfg, machine_registry.local_id()).await?;
     let backup_handles = init_backups(&cfg)?;
 
     let (log_cleanup_shutdown_tx, log_cleanup_handle) = init_log_cleanup(&logs_dir);
 
     let (
-        builderd_addr,
         worker_repo,
         repo_pool_manager,
         worker_manager,
@@ -746,6 +747,7 @@ async fn main() -> anyhow::Result<()> {
         _builder_container_client,
     ) = init_managers(
         &cfg,
+        &machine_registry,
         &pools.workflow_pool,
         &local_workspace,
         &host_workspace,
@@ -758,7 +760,7 @@ async fn main() -> anyhow::Result<()> {
     // Before anything serves or dispatches: no launch is in flight, so
     // leftover `provisioning` rows are stale and held for a stop, and a
     // `stopped` row's live container is stopped (see `worker_reconcile`).
-    worker_reconcile_manager(&builderd_addr, &worker_manager, &worker_repo)?
+    worker_reconcile_manager(&machine_registry, &worker_manager, &worker_repo)
         .startup()
         .await
         .map_err(|e| anyhow::anyhow!("worker startup reconciliation failed: {e}"))?;
@@ -782,7 +784,7 @@ async fn main() -> anyhow::Result<()> {
         worker_manager,
         repo_pool_manager,
         worker_repo,
-        builderd_addr,
+        machine_registry,
         host_workspace,
         project_registry,
     )

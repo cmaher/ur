@@ -609,7 +609,11 @@ mod tests {
             workflow_repo,
             worker_repo,
             workerd_resolver: crate::WorkerdAddressResolver::new(
-                String::new(),
+                crate::MachineRegistryManager::new(
+                    "test-machine".into(),
+                    "http://127.0.0.1:1".into(),
+                )
+                .unwrap(),
                 ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
             ),
             builderd_client: dummy_builderd_client(),

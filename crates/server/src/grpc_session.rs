@@ -53,7 +53,7 @@ impl SessionTargets for CoreServiceHandler {
             })?;
         Ok(self
             .workerd_resolver
-            .tracked_client_for(&worker, self.worker_repo.clone()))
+            .tracked_client_for(&worker, self.worker_repo.clone())?)
     }
 }
 

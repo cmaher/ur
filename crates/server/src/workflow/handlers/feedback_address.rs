@@ -107,7 +107,7 @@ impl WorkflowHandler for FeedbackAddressHandler {
             }
 
             // 5. Derive workerd gRPC address and send AddressFeedbackTickets RPC.
-            let workerd_addr = ctx.workerd_resolver.address_for(&worker);
+            let workerd_addr = ctx.workerd_resolver.address_for(&worker)?;
 
             info!(
                 ticket_id = %ticket_id,
@@ -119,7 +119,7 @@ impl WorkflowHandler for FeedbackAddressHandler {
 
             let workerd_client = ctx
                 .workerd_resolver
-                .tracked_client_for(&worker, ctx.worker_repo.clone());
+                .tracked_client_for(&worker, ctx.worker_repo.clone())?;
             workerd_client
                 .address_feedback_tickets(&ticket_id, pr_number, handled_comment_ids)
                 .await

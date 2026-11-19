@@ -87,8 +87,9 @@ The `shared` slot is a special non-numeric slot for read-only multi-worker mount
 ### Client in the Server
 
 `BuilderPoolClient` (`crates/server/src/builder_pool_client.rs`) is the thin
-clone-able wrapper used by `RepoPoolManager`. It connects to builderd via the same
-`UR_BUILDERD_ADDR` used by the other builderd clients.
+clone-able wrapper used by `RepoPoolManager`. Its channel is the local machine's
+builderd channel from `MachineRegistryManager` (see Connection Path), shared with
+the other builderd clients.
 
 Proto: `proto/builder_pool.proto` (`ur.builder_pool` package).
 
@@ -132,8 +133,8 @@ through its row.
 ### Client in the Server
 
 `BuilderContainerClient` (`crates/server/src/builder_container_client.rs`) is the thin
-clone-able wrapper used by the server. It connects to builderd via the same
-`UR_BUILDERD_ADDR` used by `BuilderdClient`.
+clone-able wrapper used by the server. Its channel comes from `MachineRegistryManager`,
+like every other builderd client (see Connection Path).
 
 Proto: `proto/builder_container.proto` (`ur.builder_container` package).
 
@@ -370,10 +371,23 @@ service BuilderLocalWorkerService {
 
 ```
 ur-server container
-  → UR_BUILDERD_ADDR env var (e.g., http://host.docker.internal:12323)
-    → Docker host gateway resolves to host IP
-      → builderd listening on 127.0.0.1:<builderd_port>
+  → MachineRegistryManager (crates/server/src/machine_registry.rs), built once in main.rs
+    → local machine: id = Config.machine.id (UR_MACHINE_ID), address = UR_BUILDERD_ADDR
+      (default http://host.docker.internal:<builderd_port>), one lazy RetryChannel
+      → Docker host gateway resolves to host IP
+        → builderd listening on 127.0.0.1:<builderd_port>
 ```
+
+`MachineRegistryManager` is the server's only source of builderd connections:
+`main.rs` reads `UR_BUILDERD_ADDR` only to construct it, and every builderd client
+it builds (`BuilderContainerClient`, `BuilderPoolClient`, `BuilderLocalWorkerClient`,
+the reconciler's clients, the workflow/hostexec/remote-repo `BuilderdClient`s) clones
+`local_builderd_channel()`. Code that reaches builderd for a worker or slot row asks
+`builderd_channel(&row.machine_id)`; an id the registry does not hold is
+`MachineRegistryError::UnknownMachine`, surfaced as `failed_precondition` naming the id
+— never treated as local. `WorkerdAddressResolver` resolves a local-runtime worker's
+daemon this way (and refuses a container worker whose machine is unknown). For now
+the registry holds exactly one machine, the server's own.
 
 ## Key Files
 

@@ -21,8 +21,8 @@ use workflow_db::model::AgentStatus;
 /// update the worker's agent status to `Working`.
 #[derive(Clone)]
 pub struct WorkerdClient {
-    /// Lazy retry channel for connecting to the workerd daemon.
-    retry_channel: RetryChannel,
+    /// Lazy channel to the daemon (or to the builderd hosting it).
+    channel: tonic::transport::Channel,
     /// Optional worker repo + ID for automatic agent status updates.
     status_tracking: Option<StatusTracking>,
     /// When set, sent as `ur-worker-id` metadata on every call (local workers).
@@ -39,8 +39,14 @@ impl WorkerdClient {
     pub fn new(addr: String) -> Self {
         let retry_channel =
             RetryChannel::new(&addr, RetryConfig::default()).expect("invalid workerd address");
+        Self::from_channel(retry_channel.channel().clone())
+    }
+
+    /// A client over an existing channel (a machine's builderd, which hosts
+    /// its local workers' daemons).
+    pub fn from_channel(channel: tonic::transport::Channel) -> Self {
         Self {
-            retry_channel,
+            channel,
             status_tracking: None,
             routing_worker_id: None,
         }
@@ -67,19 +73,14 @@ impl WorkerdClient {
         Ok(request)
     }
 
-    /// Create a client that automatically sets agent status to Working after
-    /// each successful dispatch.
-    pub fn with_status_tracking(addr: String, worker_repo: WorkerRepo, worker_id: String) -> Self {
-        let retry_channel =
-            RetryChannel::new(&addr, RetryConfig::default()).expect("invalid workerd address");
-        Self {
-            retry_channel,
-            status_tracking: Some(StatusTracking {
-                worker_repo,
-                worker_id,
-            }),
-            routing_worker_id: None,
-        }
+    /// Automatically set the worker's agent status to Working after each
+    /// successful dispatch.
+    pub fn with_status_tracking(mut self, worker_repo: WorkerRepo, worker_id: String) -> Self {
+        self.status_tracking = Some(StatusTracking {
+            worker_repo,
+            worker_id,
+        });
+        self
     }
 
     /// Mark the worker as Working after a successful dispatch.
@@ -104,7 +105,7 @@ impl WorkerdClient {
     /// Returns `Ok(())` on success, or `Err(reason)` if workerd reports failure
     /// or is unreachable.
     pub async fn send_message(&self, message: &str, submit: bool) -> Result<(), String> {
-        let mut client = WorkerDaemonServiceClient::new(self.retry_channel.channel().clone());
+        let mut client = WorkerDaemonServiceClient::new(self.channel.clone());
 
         let req = SendMessageRequest {
             message: message.to_string(),
@@ -127,7 +128,7 @@ impl WorkerdClient {
 
     /// Fire-and-forget: send an /implement skill invocation to the worker.
     pub async fn implement(&self, ticket_id: &str) -> Result<(), String> {
-        let mut client = WorkerDaemonServiceClient::new(self.retry_channel.channel().clone());
+        let mut client = WorkerDaemonServiceClient::new(self.channel.clone());
 
         let req = ImplementRequest {
             ticket_id: ticket_id.to_string(),
@@ -144,7 +145,7 @@ impl WorkerdClient {
 
     /// Fire-and-forget: send a /design skill invocation to the worker.
     pub async fn design(&self, ticket_id: &str) -> Result<(), String> {
-        let mut client = WorkerDaemonServiceClient::new(self.retry_channel.channel().clone());
+        let mut client = WorkerDaemonServiceClient::new(self.channel.clone());
 
         let req = DesignRequest {
             ticket_id: ticket_id.to_string(),
@@ -168,7 +169,7 @@ impl WorkerdClient {
         status_left: &str,
         status_left_length: u32,
     ) -> Result<(), String> {
-        let mut client = WorkerDaemonServiceClient::new(self.retry_channel.channel().clone());
+        let mut client = WorkerDaemonServiceClient::new(self.channel.clone());
 
         let req = SetStatusLeftRequest {
             status_left: status_left.to_string(),
@@ -198,7 +199,7 @@ impl WorkerdClient {
         pr_number: u32,
         handled_comment_ids: Vec<String>,
     ) -> Result<(), String> {
-        let mut client = WorkerDaemonServiceClient::new(self.retry_channel.channel().clone());
+        let mut client = WorkerDaemonServiceClient::new(self.channel.clone());
 
         let req = AddressFeedbackRequest {
             ticket_id: ticket_id.to_string(),
@@ -219,7 +220,7 @@ impl WorkerdClient {
     // the CLI sees e.g. FailedPrecondition for an agent with no transcript.
 
     fn client(&self) -> WorkerDaemonServiceClient<tonic::transport::Channel> {
-        WorkerDaemonServiceClient::new(self.retry_channel.channel().clone())
+        WorkerDaemonServiceClient::new(self.channel.clone())
     }
 
     fn status_request<T>(&self, message: T) -> Result<tonic::Request<T>, tonic::Status> {

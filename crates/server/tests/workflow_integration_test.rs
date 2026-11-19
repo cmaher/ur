@@ -150,7 +150,11 @@ impl TestHarness {
             workflow_repo: workflow_repo.clone(),
             worker_repo: worker_repo.clone(),
             workerd_resolver: ur_server::WorkerdAddressResolver::new(
-                String::new(),
+                ur_server::MachineRegistryManager::new(
+                    "test-machine".into(),
+                    "http://127.0.0.1:1".into(),
+                )
+                .unwrap(),
                 ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
             ),
             builderd_client: dummy_builderd_client(),
@@ -407,7 +411,11 @@ fn dummy_launch_manager(
         config_dir: config.config_dir.clone(),
         worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
         workerd_resolver: ur_server::WorkerdAddressResolver::new(
-            String::new(),
+            ur_server::MachineRegistryManager::new(
+                "test-machine".into(),
+                "http://127.0.0.1:1".into(),
+            )
+            .unwrap(),
             ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
         ),
     }
@@ -743,7 +751,11 @@ async fn per_project_cycle_limit_overrides_server_default() {
         workflow_repo: workflow_repo.clone(),
         worker_repo: worker_repo.clone(),
         workerd_resolver: ur_server::WorkerdAddressResolver::new(
-            String::new(),
+            ur_server::MachineRegistryManager::new(
+                "test-machine".into(),
+                "http://127.0.0.1:1".into(),
+            )
+            .unwrap(),
             ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
         ),
         builderd_client: dummy_builderd_client(),

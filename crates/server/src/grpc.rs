@@ -1089,7 +1089,6 @@ pub struct CoreServiceHandler {
     pub ticket_repo: TicketRepo,
     pub workflow_repo: WorkflowRepo,
     pub network_config: ur_config::NetworkConfig,
-    pub builderd_addr: String,
     pub config_dir: PathBuf,
     /// Resolves a worker row to its daemon address (`send_worker_message`).
     pub workerd_resolver: crate::WorkerdAddressResolver,
@@ -1957,11 +1956,11 @@ async fn dispatch_design_on_ready(
 
     info!(
         process_id = %process_id,
-        workerd_addr = %workerd_resolver.address_for(&worker),
+        workerd_addr = %workerd_resolver.address_for(&worker)?,
         "design worker ready — dispatching design command"
     );
 
-    let workerd_client = workerd_resolver.tracked_client_for(&worker, worker_repo.clone());
+    let workerd_client = workerd_resolver.tracked_client_for(&worker, worker_repo.clone())?;
     workerd_client
         .design(process_id)
         .await

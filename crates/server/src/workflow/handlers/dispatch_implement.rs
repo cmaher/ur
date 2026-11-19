@@ -82,7 +82,7 @@ async fn dispatch_implement(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::R
     let branch = ensure_ticket_branch(ctx, &ticket, ticket_id, worker_id).await?;
 
     // 4. Derive workerd gRPC address and send Implement RPC.
-    let workerd_addr = ctx.workerd_resolver.address_for(&worker);
+    let workerd_addr = ctx.workerd_resolver.address_for(&worker)?;
 
     info!(
         ticket_id = %ticket_id,
@@ -94,7 +94,7 @@ async fn dispatch_implement(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::R
 
     let workerd_client = ctx
         .workerd_resolver
-        .tracked_client_for(&worker, ctx.worker_repo.clone());
+        .tracked_client_for(&worker, ctx.worker_repo.clone())?;
     workerd_client
         .implement(ticket_id)
         .await

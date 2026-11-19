@@ -266,7 +266,7 @@ impl SessionTargets for PeerAccess<'_> {
             .handler
             .launch_manager
             .workerd_resolver
-            .tracked_client_for(&target, self.handler.worker_repo.clone()))
+            .tracked_client_for(&target, self.handler.worker_repo.clone())?)
     }
 }
 

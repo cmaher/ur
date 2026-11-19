@@ -5,6 +5,7 @@ use workflow_db::WorkerRepo;
 use workflow_db::model::{Worker, WorkerRuntime};
 
 use crate::WorkerdClient;
+use crate::machine_registry::{MachineRegistryError, MachineRegistryManager};
 
 /// Resolves a worker row to the address (and routing metadata) of its daemon.
 ///
@@ -12,58 +13,72 @@ use crate::WorkerdClient;
 ///   `http://<worker_prefix><worker_id>:WORKERD_GRPC_PORT` (a container from
 ///   before ur-ezhdb keeps its `<worker_prefix><process_id>` name).
 /// - `local`: builderd hosts every local worker's daemon on its own port, so
-///   the client dials `builderd_addr` and sends `ur-worker-id` on every call.
+///   the client uses the builderd channel of the row's `machine_id` (from the
+///   [`MachineRegistryManager`]) and sends `ur-worker-id` on every call.
+///
+/// A row whose `machine_id` the registry does not know is an error for
+/// either runtime (`failed_precondition` naming the id), never treated as
+/// local.
 ///
 /// Injected from `main`; never construct one inside a handler.
 #[derive(Clone)]
 pub struct WorkerdAddressResolver {
-    builderd_addr: String,
+    machine_registry: MachineRegistryManager,
     worker_prefix: String,
 }
 
 impl WorkerdAddressResolver {
-    pub fn new(builderd_addr: String, worker_prefix: String) -> Self {
+    pub fn new(machine_registry: MachineRegistryManager, worker_prefix: String) -> Self {
         Self {
-            builderd_addr,
+            machine_registry,
             worker_prefix,
         }
     }
 
-    /// The gRPC address of `worker`'s daemon.
-    pub fn address_for(&self, worker: &Worker) -> String {
+    /// The gRPC address of `worker`'s daemon (for a local worker, its
+    /// machine's builderd).
+    pub fn address_for(&self, worker: &Worker) -> Result<String, MachineRegistryError> {
         match worker.runtime {
-            WorkerRuntime::Container => {
-                // Pre-ur-ezhdb containers kept their process-id name.
-                let name = match crate::worker::legacy_container_id(&self.worker_prefix, worker) {
-                    Some(_) => format!("{}{}", self.worker_prefix, worker.process_id),
-                    None => format!("{}{}", self.worker_prefix, worker.worker_id),
-                };
-                format!("http://{name}:{}", ur_config::WORKERD_GRPC_PORT)
-            }
-            WorkerRuntime::Local => self.builderd_addr.clone(),
+            WorkerRuntime::Container => self.container_address(worker),
+            WorkerRuntime::Local => self
+                .machine_registry
+                .builderd_addr(&worker.machine_id)
+                .map(str::to_owned),
         }
     }
 
     /// A client for `worker`'s daemon with no agent-status tracking.
-    pub fn client_for(&self, worker: &Worker) -> WorkerdClient {
-        self.with_routing(worker, WorkerdClient::new(self.address_for(worker)))
+    pub fn client_for(&self, worker: &Worker) -> Result<WorkerdClient, MachineRegistryError> {
+        match worker.runtime {
+            WorkerRuntime::Container => Ok(WorkerdClient::new(self.container_address(worker)?)),
+            WorkerRuntime::Local => Ok(WorkerdClient::from_channel(
+                self.machine_registry.builderd_channel(&worker.machine_id)?,
+            )
+            .with_routing_worker_id(worker.worker_id.clone())),
+        }
     }
 
     /// A client that marks `worker` Working after each successful dispatch.
-    pub fn tracked_client_for(&self, worker: &Worker, worker_repo: WorkerRepo) -> WorkerdClient {
-        let client = WorkerdClient::with_status_tracking(
-            self.address_for(worker),
-            worker_repo,
-            worker.worker_id.clone(),
-        );
-        self.with_routing(worker, client)
+    pub fn tracked_client_for(
+        &self,
+        worker: &Worker,
+        worker_repo: WorkerRepo,
+    ) -> Result<WorkerdClient, MachineRegistryError> {
+        Ok(self
+            .client_for(worker)?
+            .with_status_tracking(worker_repo, worker.worker_id.clone()))
     }
 
-    fn with_routing(&self, worker: &Worker, client: WorkerdClient) -> WorkerdClient {
-        match worker.runtime {
-            WorkerRuntime::Container => client,
-            WorkerRuntime::Local => client.with_routing_worker_id(worker.worker_id.clone()),
-        }
+    /// Docker DNS address of a container worker's daemon. The machine must
+    /// be registered: the name only resolves on that machine's network.
+    fn container_address(&self, worker: &Worker) -> Result<String, MachineRegistryError> {
+        self.machine_registry.builderd_addr(&worker.machine_id)?;
+        // Pre-ur-ezhdb containers kept their process-id name.
+        let name = match crate::worker::legacy_container_id(&self.worker_prefix, worker) {
+            Some(_) => format!("{}{}", self.worker_prefix, worker.process_id),
+            None => format!("{}{}", self.worker_prefix, worker.worker_id),
+        };
+        Ok(format!("http://{name}:{}", ur_config::WORKERD_GRPC_PORT))
     }
 }
 
@@ -94,7 +109,11 @@ mod tests {
 
     fn resolver() -> WorkerdAddressResolver {
         WorkerdAddressResolver::new(
-            "http://host.docker.internal:12323".into(),
+            MachineRegistryManager::new(
+                "test-machine".into(),
+                "http://host.docker.internal:12323".into(),
+            )
+            .unwrap(),
             ur_config::DEFAULT_WORKER_PREFIX.into(),
         )
     }
@@ -106,7 +125,7 @@ mod tests {
     async fn container_worker_dials_its_container_without_routing_header() {
         let w = worker(WorkerRuntime::Container);
         assert_eq!(
-            resolver().address_for(&w),
+            resolver().address_for(&w).unwrap(),
             format!(
                 "http://{}ur-abc12-x1y2:{}",
                 ur_config::DEFAULT_WORKER_PREFIX,
@@ -118,14 +137,14 @@ mod tests {
             ..worker(WorkerRuntime::Container)
         };
         assert_eq!(
-            resolver().address_for(&legacy),
+            resolver().address_for(&legacy).unwrap(),
             format!(
                 "http://{}ur-abc12:{}",
                 ur_config::DEFAULT_WORKER_PREFIX,
                 ur_config::WORKERD_GRPC_PORT
             )
         );
-        let request = resolver().client_for(&w).request(()).unwrap();
+        let request = resolver().client_for(&w).unwrap().request(()).unwrap();
         assert!(
             request
                 .metadata()
@@ -138,10 +157,10 @@ mod tests {
     async fn local_worker_dials_builderd_with_worker_id_header() {
         let w = worker(WorkerRuntime::Local);
         assert_eq!(
-            resolver().address_for(&w),
+            resolver().address_for(&w).unwrap(),
             "http://host.docker.internal:12323"
         );
-        let request = resolver().client_for(&w).request(()).unwrap();
+        let request = resolver().client_for(&w).unwrap().request(()).unwrap();
         assert_eq!(
             request.metadata().get(ur_config::WORKER_ID_HEADER).unwrap(),
             "ur-abc12-x1y2"
@@ -152,11 +171,33 @@ mod tests {
     async fn tracked_local_client_also_sends_worker_id_header() {
         let pool = sqlx::PgPool::connect_lazy("postgres://ur:ur@localhost:1/none").unwrap();
         let w = worker(WorkerRuntime::Local);
-        let client = resolver().tracked_client_for(&w, WorkerRepo::new(pool));
+        let client = resolver()
+            .tracked_client_for(&w, WorkerRepo::new(pool))
+            .unwrap();
         let request = client.request(()).unwrap();
         assert_eq!(
             request.metadata().get(ur_config::WORKER_ID_HEADER).unwrap(),
             "ur-abc12-x1y2"
         );
+    }
+
+    /// A worker (either runtime) on a machine the registry does not know is
+    /// an error naming the machine, never treated as local.
+    #[tokio::test]
+    async fn worker_on_unknown_machine_is_failed_precondition() {
+        for runtime in [WorkerRuntime::Local, WorkerRuntime::Container] {
+            let w = Worker {
+                machine_id: "studio".into(),
+                ..worker(runtime)
+            };
+            assert_names_studio(resolver().address_for(&w).unwrap_err());
+            assert_names_studio(resolver().client_for(&w).err().unwrap());
+        }
+    }
+
+    fn assert_names_studio(err: MachineRegistryError) {
+        let status = tonic::Status::from(err);
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(status.message().contains("studio"), "{}", status.message());
     }
 }

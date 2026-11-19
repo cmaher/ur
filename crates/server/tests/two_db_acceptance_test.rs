@@ -262,7 +262,11 @@ async fn two_db_split_events_arrive_on_merged_stream() {
         worker_manager: None,
         worker_repo: None,
         workerd_resolver: ur_server::WorkerdAddressResolver::new(
-            String::new(),
+            ur_server::MachineRegistryManager::new(
+                "test-machine".into(),
+                "http://127.0.0.1:1".into(),
+            )
+            .unwrap(),
             ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
         ),
     };

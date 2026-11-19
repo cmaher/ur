@@ -46,7 +46,7 @@ pub async fn serve_worker_grpc(
     workflow_repo: WorkflowRepo,
     worker_prefix: String,
     project_registry: ProjectRegistry,
-    builderd_addr: String,
+    builderd_channel: tonic::transport::Channel,
     host_workspace: std::path::PathBuf,
     git_branch_prefix: String,
     ticket_handler: crate::grpc_ticket::TicketServiceHandler,
@@ -76,11 +76,8 @@ pub async fn serve_worker_grpc(
     ));
 
     {
-        let hostexec_retry_channel =
-            ur_rpc::retry::RetryChannel::new(&builderd_addr, ur_rpc::retry::RetryConfig::default())
-                .expect("failed to create builderd retry channel for hostexec");
         let hostexec_builderd_client =
-            ur_rpc::proto::builder::BuilderdClient::new(hostexec_retry_channel.channel().clone());
+            ur_rpc::proto::builder::BuilderdClient::new(builderd_channel);
         let script_registry = hostexec::ScriptRegistry::from_projects(&project_registry.projects());
         let hostexec_handler = crate::grpc_hostexec::HostExecServiceHandler {
             project_registry,

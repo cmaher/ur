@@ -192,7 +192,11 @@ mod tests {
             worker_manager: None,
             worker_repo: None,
             workerd_resolver: crate::WorkerdAddressResolver::new(
-                String::new(),
+                crate::MachineRegistryManager::new(
+                    "test-machine".into(),
+                    "http://127.0.0.1:1".into(),
+                )
+                .unwrap(),
                 ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
             ),
         };
