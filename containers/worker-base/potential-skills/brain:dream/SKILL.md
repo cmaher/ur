@@ -218,8 +218,8 @@ Gaps this run noticed but could not fill: questions to investigate, sources to l
 2. Stage only the paths this run changed plus `.dream/` (`git add <paths> .dream`), and commit
    once: `git commit -m "brain:dream: YYYY-MM-DD"`. Never stage paths you didn't change.
 3. Sync exactly as the "Syncing" section of `<brain>/CLAUDE.md` says; if it has no such section,
-   the commit is the end (no pull, no push). A checkpoint commit made before the run goes out with
-   it. If a sync step fails (a rebase conflict, a refused push), stop, leave the conflict for the
+   the commit is the end (no pull, no push). If the Syncing section
+   pushes, a checkpoint commit made before the run goes out with it. If a sync step fails (a rebase conflict, a refused push), stop, leave the conflict for the
    user, and report it under "Needs a human"; don't work around it.
 4. Tell the user what changed (from "Changes"), the commit hash, whether and how it was synced, and the
    "Needs a human" items.
