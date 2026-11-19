@@ -1,6 +1,7 @@
 mod agent;
 pub mod backup;
 pub mod forge;
+mod machine;
 mod runtime;
 mod template_path;
 
@@ -9,6 +10,10 @@ pub use agent::{
     TranscriptLocation, UnknownAliasError, credentials_file_is_seeded,
 };
 pub use forge::{ForgeType, UR_WORKER_FORGE_ENV, parse_forge_from_url};
+pub use machine::{
+    MachineConfig, UR_MACHINE_ID_ENV, machine_id_from_hostname, validate_machine_id,
+};
+use machine::{RawMachineConfig, resolve_machine};
 pub use runtime::{WorkerRuntime, resolve_worker_runtime};
 pub use template_path::{
     ResolvedTemplatePath, WORKSPACE_TEMPLATE, resolve_template_path, resolve_workspace_content,
@@ -374,6 +379,7 @@ struct RawConfig {
     ticket_db: Option<RawTicketDbConfig>,
     workflow_db: Option<RawWorkflowDbConfig>,
     server: Option<RawServerConfig>,
+    machine: Option<RawMachineConfig>,
     logs_dir: Option<PathBuf>,
     tui: Option<RawTuiConfig>,
     /// Brain directory mounted for workers launched without a project (`-w` workspace mode).
@@ -1366,6 +1372,8 @@ pub struct Config {
     /// against. Unset means workspace-mode workers get no `/brain` mount, and there is
     /// no convention fallback — the path must be configured explicitly.
     pub workspace_brain_dir: Option<String>,
+    /// This host's identity from `[machine]` (default id: normalized short hostname).
+    pub machine: MachineConfig,
 }
 
 impl Config {
@@ -1442,6 +1450,7 @@ impl Config {
         let workflow_db = resolve_workflow_db(raw.workflow_db);
         let server = resolve_server(raw.server);
         let tui = resolve_tui(raw.tui);
+        let machine = resolve_machine(raw.machine)?;
 
         let server_max_implement_cycles = server.max_implement_cycles;
         let projects = raw
@@ -1485,6 +1494,7 @@ impl Config {
             projects,
             global_skills,
             workspace_brain_dir,
+            machine,
         })
     }
 }
@@ -2376,6 +2386,27 @@ mod tests {
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
         assert_eq!(cfg.server_port, DEFAULT_SERVER_PORT);
         assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
+    }
+
+    #[test]
+    fn machine_id_parses_from_machine_section() {
+        let cfg = Config::from_toml_str("[machine]\nid = \"mbp\"\n", Path::new("/cfg")).unwrap();
+        assert_eq!(cfg.machine.id, "mbp");
+    }
+
+    #[test]
+    fn machine_id_invalid_is_config_error() {
+        let err =
+            Config::from_toml_str("[machine]\nid = \"My Mac\"\n", Path::new("/cfg")).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("[machine] id"), "{msg}");
+    }
+
+    #[test]
+    fn machine_id_defaults_to_normalized_hostname() {
+        let cfg = Config::from_toml_str("", Path::new("/cfg")).unwrap();
+        let expected = machine_id_from_hostname(&whoami::hostname().unwrap()).unwrap();
+        assert_eq!(cfg.machine.id, expected);
     }
 
     #[test]

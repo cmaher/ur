@@ -533,6 +533,14 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
         "      - UR_BUILDERD_ADDR=http://host.docker.internal:${{UR_BUILDERD_PORT:-12323}}"
     )
     .unwrap();
+    // Resolved on the host by `ur start`; the container's own hostname is not the
+    // host's, so a missing value must fail compose rather than run with an empty id.
+    writeln!(
+        out,
+        "      - {id}=${{{id}:?{id} must be set by ur start}}",
+        id = ur_config::UR_MACHINE_ID_ENV
+    )
+    .unwrap();
     writeln!(out, "      - GH_TOKEN=${{GH_TOKEN:-}}").unwrap();
     writeln!(out, "      - GITHUB_TOKEN=${{GITHUB_TOKEN:-}}").unwrap();
 
@@ -586,7 +594,7 @@ fn write_networks(out: &mut String, params: &ComposeParams) {
 /// Build a `ComposeManager` from the resolved ur config.
 ///
 /// Forwards `UR_CONFIG`, `UR_WORKSPACE`, `UR_SERVER_PORT`, `UR_WORKER_PORT`, `UR_BUILDERD_PORT`,
-/// and optionally `UR_IMAGE_TAG` and `UR_CONTAINER` as environment variables
+/// `UR_MACHINE_ID`, and optionally `UR_IMAGE_TAG` and `UR_CONTAINER` as environment variables
 /// so the compose file's variable interpolation picks them up.
 #[instrument(skip(config), fields(compose_file = %config.compose_file.display()))]
 pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager {
@@ -604,6 +612,10 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
         (
             "UR_BUILDERD_PORT".to_string(),
             config.builderd_port.to_string(),
+        ),
+        (
+            ur_config::UR_MACHINE_ID_ENV.to_string(),
+            config.machine.id.clone(),
         ),
     ];
 
@@ -726,6 +738,9 @@ mod tests {
             tui: ur_config::TuiConfig::default(),
             global_skills: ur_config::GlobalSkillsConfig::default(),
             workspace_brain_dir: None,
+            machine: ur_config::MachineConfig {
+                id: "test-machine".into(),
+            },
         }
     }
 
@@ -796,6 +811,35 @@ mod tests {
                 retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
             },
         }
+    }
+
+    /// The host-resolved machine id reaches ur-server, and compose refuses to
+    /// interpolate an unset value instead of passing an empty id.
+    #[test]
+    fn compose_passes_machine_id_to_server() {
+        let config = test_config_for_compose();
+        let manager = compose_manager_from_config(&config);
+        assert!(manager.env_vars.contains(&(
+            ur_config::UR_MACHINE_ID_ENV.to_string(),
+            "test-machine".to_string()
+        )));
+        let generated = generate_compose(
+            &config.network,
+            &config.proxy,
+            &config.ticket_db,
+            &config.workflow_db,
+            &config.config_dir,
+        );
+        let server_section = generated
+            .split("  ur-server:")
+            .nth(1)
+            .expect("ur-server service present");
+        assert!(
+            server_section.contains(
+                "      - UR_MACHINE_ID=${UR_MACHINE_ID:?UR_MACHINE_ID must be set by ur start}"
+            ),
+            "{generated}"
+        );
     }
 
     /// Host-local workers reach the worker server on loopback only.
@@ -1397,6 +1441,9 @@ mod tests {
             tui: ur_config::TuiConfig::default(),
             global_skills: ur_config::GlobalSkillsConfig::default(),
             workspace_brain_dir: None,
+            machine: ur_config::MachineConfig {
+                id: "test-machine".into(),
+            },
         };
 
         let manager = compose_manager_from_config(&config);

@@ -344,6 +344,9 @@ mod tests {
             projects: std::collections::HashMap::new(),
             global_skills: ur_config::GlobalSkillsConfig::default(),
             workspace_brain_dir: None,
+            machine: ur_config::MachineConfig {
+                id: "test-machine".into(),
+            },
         }
     }
 

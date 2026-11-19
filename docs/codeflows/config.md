@@ -83,6 +83,30 @@ Server runtime configuration. Replaces hard-coded constants and the `UR_CONTAINE
 | `poll_interval_ms` | u64 | 500 | Background polling loop interval (ms) |
 | `github_scan_interval_secs` | u64 | 30 | GitHub poller scan interval (seconds) |
 
+## `[machine]` Section
+
+Identity of the host this `ur.toml` belongs to (ur-qqmfh).
+
+```toml
+[machine]
+id = "mbp"
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `id` | string | normalized short hostname | Machine name, a plain string (not a UUID). Must match `^[a-z0-9][a-z0-9-]{0,62}$`; an explicit value is used as written and rejected if invalid |
+
+Default when `[machine]` or `id` is absent: the host's hostname (read with the `whoami`
+crate) up to the first `.`, lowercased, with `_` replaced by `-` (`Chris_MBP.local` →
+`chris-mbp`). If the hostname can't be read or still isn't a valid id, config loading fails
+telling the user to set `[machine] id`. Resolved into `Config.machine: MachineConfig`
+(`crates/ur_config/src/machine.rs`).
+
+The server runs in a container whose hostname is not the host's, so `ur start` resolves the
+id on the host and compose passes it to `ur-server` as `UR_MACHINE_ID`
+(`ur_config::UR_MACHINE_ID_ENV`); see [server-lifecycle.md](server-lifecycle.md#compose-generation).
+Server code must read `UR_MACHINE_ID`, not its own parse of `[machine]`.
+
 ## `[projects.<key>]` Section
 
 Each project is a TOML table keyed by a short identifier (e.g., `[projects.ur]`).

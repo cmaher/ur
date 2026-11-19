@@ -195,6 +195,14 @@ curating the CLI's current model/effort matrix. AGY validates unsupported combin
 surfaces its own error, consistent with ur treating model-specific restrictions as an agent
 concern.
 
+## Machine Identity (`[machine]`)
+
+`src/machine.rs`: `MachineConfig { id }`, `UR_MACHINE_ID_ENV`, `validate_machine_id`,
+`machine_id_from_hostname`. Unset id defaults to the normalized short hostname via
+`whoami::hostname()`; an invalid id or hostname is a load error. Inside the server container
+`Config.machine` reflects the *container's* hostname — server code reads `UR_MACHINE_ID`
+(set by compose from the host's resolution) instead. See `docs/codeflows/config.md`.
+
 ## Other Config
 
 - Proxy constants: `DEFAULT_PROXY_HOSTNAME` ("ur-squid"), `SQUID_PORT` (3128); `hostname` replaces the old `port` field

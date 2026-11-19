@@ -345,6 +345,9 @@ fn config_with_projects(
         tui: ur_config::TuiConfig::default(),
         global_skills: ur_config::GlobalSkillsConfig::default(),
         workspace_brain_dir: None,
+        machine: ur_config::MachineConfig {
+            id: "test-machine".into(),
+        },
     })
 }
 
