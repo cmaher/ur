@@ -654,11 +654,12 @@ esac
         );
     }
 
+    /// Generous deadline: under the pre-push run's parallel load, spawning the
+    /// fake docker script can take seconds.
     async fn wait_for_container(docker: &FakeDocker, name: &str) {
-        for _ in 0..200 {
-            if docker.state(name).is_some() {
-                return;
-            }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while docker.state(name).is_none() {
+            assert!(Instant::now() < deadline, "container {name} never appeared");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
