@@ -3,6 +3,7 @@
 #   - every skill in ./skills/
 #   - the brain skills from containers/worker-base/potential-skills/, under their bare
 #     names so their cross-references (/brain:init, /brain:dream-init, ...) resolve.
+#   - the host-usable worker skills auto, trim and drive-workers from the same directory.
 #     Workers get the same single copy installed by workerd.
 set -euo pipefail
 
@@ -24,6 +25,7 @@ for skill in "${REPO_DIR}"/skills/*/; do
     link "${skill}"
 done
 
-for skill in "${POTENTIAL_DIR}"/brain/ "${POTENTIAL_DIR}"/brain:*/; do
+for skill in "${POTENTIAL_DIR}"/brain/ "${POTENTIAL_DIR}"/brain:*/ \
+    "${POTENTIAL_DIR}"/auto/ "${POTENTIAL_DIR}"/trim/ "${POTENTIAL_DIR}"/drive-workers/; do
     link "${skill}"
 done
