@@ -11,6 +11,7 @@ Cargo workspace:
 - `crates/builderd/` - Host-side builder daemon (`builderd`: host exec, pool slot git ops, worker containers, and host-local workers in tmux with their in-process worker daemons; see `docs/codeflows/local-workers.md`)
 - `crates/workerd/` - Worker daemon library + container binary (init managers, `WorkerDaemonService`, exit watcher; builderd reuses the library for local workers)
 - `crates/ur-workertools/` - `ur-workertools` binary used by agent hooks, skills and hostexec shims, in containers and on the host
+- `crates/hostexec/` - Hostexec policy library (allowlists, Lua transforms, path mapping, builderd forwarding; used by the server)
 - `crates/tmux/` - Typed tmux CLI wrapper (sessions, send-keys, attach; dedicated `ur` socket for local workers)
 - `crates/ticket_db/` - Postgres ticket database (tickets, edges, activities, metadata; `ur_tickets` DB)
 - `crates/workflow_db/` - Postgres workflow database (workflow state, events, intents, comments, worker/slot lifecycle; `ur_workflow` DB)
