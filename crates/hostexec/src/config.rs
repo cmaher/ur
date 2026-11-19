@@ -266,7 +266,7 @@ impl HostExecConfigManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hostexec::lua_transform::{LuaTransformManager, WorkerContext};
+    use crate::lua_transform::{LuaTransformManager, WorkerContext};
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;

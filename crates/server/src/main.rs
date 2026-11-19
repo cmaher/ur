@@ -629,14 +629,13 @@ async fn init_managers(
 
     reconcile_slots(&worker_repo, cfg, local_workspace, host_workspace).await?;
 
-    ur_server::hostexec::materialize_shim(&cfg.config_dir)
+    hostexec::materialize_shim(&cfg.config_dir)
         .map_err(|e| anyhow::anyhow!("failed to materialize hostexec script shim: {e}"))?;
 
-    let hostexec_discovery = ur_server::hostexec::LuaDiscoveryManager::new(
-        ur_server::hostexec::LuaTransformManager::new(),
-    );
+    let hostexec_discovery =
+        hostexec::LuaDiscoveryManager::new(hostexec::LuaTransformManager::new());
     let hostexec_config =
-        ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir, &hostexec_discovery)
+        hostexec::HostExecConfigManager::load(&cfg.config_dir, &hostexec_discovery)
             .expect("failed to load hostexec config");
     let project_registry = ProjectRegistry::new(cfg.projects.clone(), hostexec_config);
 

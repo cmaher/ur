@@ -1386,7 +1386,7 @@ fn assert_git_hostexec(runtime: &str, container: &str) {
 fn write_git_hostexec_override(config_path: &Path) {
     let hostexec_dir = config_path.join("hostexec");
     std::fs::create_dir_all(&hostexec_dir).expect("failed to create hostexec directory");
-    let default_git = include_str!("../../server/src/hostexec/default_scripts/git.lua");
+    let default_git = include_str!("../../hostexec/src/default_scripts/git.lua");
     let override_script = format!(
         r#"{default_git}
 local default_transform = transform

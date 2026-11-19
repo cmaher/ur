@@ -1,4 +1,4 @@
--- crates/server/src/hostexec/default_scripts/gh.lua
+-- crates/hostexec/src/default_scripts/gh.lua
 -- Default gh argument transform: allow read-only operations, collaborative
 -- actions (commenting, PR editing), and PR creation. Block destructive
 -- operations. Destructive operations (PR merge, close, delete) are

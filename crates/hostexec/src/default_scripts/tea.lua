@@ -1,4 +1,4 @@
--- crates/server/src/hostexec/default_scripts/tea.lua
+-- crates/hostexec/src/default_scripts/tea.lua
 -- Default tea argument transform: allow non-interactive Gitea pull-request
 -- inspection, creation, editing, comments, reviews, thread replies/resolution,
 -- approval or change requests, CI inspection, and explicit-strategy merges.

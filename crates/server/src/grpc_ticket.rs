@@ -1662,7 +1662,7 @@ mod tests {
         let workflow_repo = WorkflowRepo::new(workflow_pool);
         let project_registry = crate::ProjectRegistry::new(
             std::collections::HashMap::new(),
-            crate::hostexec::HostExecConfigManager::empty(),
+            hostexec::HostExecConfigManager::empty(),
         );
         let handler = TicketServiceHandler {
             ticket_repo,

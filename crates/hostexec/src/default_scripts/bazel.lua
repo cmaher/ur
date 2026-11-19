@@ -1,4 +1,4 @@
--- crates/server/src/hostexec/default_scripts/bazel.lua
+-- crates/hostexec/src/default_scripts/bazel.lua
 -- Default bazel argument transform: blocks host-state-mutating startup options,
 -- dangerous commands, and dangerous command options.
 --

@@ -1,4 +1,4 @@
--- crates/server/src/hostexec/default_scripts/pnpm.lua
+-- crates/hostexec/src/default_scripts/pnpm.lua
 -- Default pnpm argument transform: blocks dangerous subcommands,
 -- rewrites -C/--dir for workers, blocks path-escape flags.
 

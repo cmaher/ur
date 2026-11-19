@@ -970,6 +970,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hostexec"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mlua",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-types",
+ "ur_config",
+ "ur_rpc",
+]
+
+[[package]]
 name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3264,8 +3280,8 @@ dependencies = [
  "container",
  "db_events",
  "futures",
+ "hostexec",
  "local_repo",
- "mlua",
  "prost",
  "rand 0.9.2",
  "remote_repo",

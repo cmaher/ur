@@ -404,7 +404,7 @@ mod tests {
             tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
         let builder_pool_client = BuilderPoolClient::new(channel);
         let project_registry =
-            ProjectRegistry::new(projects, crate::hostexec::HostExecConfigManager::empty());
+            ProjectRegistry::new(projects, hostexec::HostExecConfigManager::empty());
 
         // Build a minimal Config to pass to RepoPoolManager::new
         let config = minimal_test_config(tmp);
@@ -648,11 +648,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         // Reload re-reads hostexec config, so the registry needs a real
         // discovery-backed manager rather than `HostExecConfigManager::empty()`.
-        let discovery =
-            crate::hostexec::LuaDiscoveryManager::new(crate::hostexec::LuaTransformManager::new());
+        let discovery = hostexec::LuaDiscoveryManager::new(hostexec::LuaTransformManager::new());
         let project_registry = ProjectRegistry::new(
             HashMap::new(),
-            crate::hostexec::HostExecConfigManager::load(tmp.path(), &discovery).unwrap(),
+            hostexec::HostExecConfigManager::load(tmp.path(), &discovery).unwrap(),
         );
         let (worker_repo, _test_db) = test_worker_repo().await;
         let channel =

@@ -5,6 +5,7 @@ members = [
     "crates/container",
     "crates/builderd",
     "crates/db_events",
+    "crates/hostexec",
     "crates/local_repo",
     "crates/remote_repo",
     "crates/ticket_db",
@@ -27,6 +28,7 @@ members = [
 default-members = [
     "crates/container",
     "crates/builderd",
+    "crates/hostexec",
     "crates/local_repo",
     "crates/remote_repo",
     "crates/ur",

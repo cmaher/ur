@@ -1,4 +1,4 @@
--- crates/server/src/hostexec/default_scripts/tsc.lua
+-- crates/hostexec/src/default_scripts/tsc.lua
 -- Default tsc argument transform: blocks dangerous flags,
 -- rewrites --project/-p for workers, blocks watch and build modes.
 

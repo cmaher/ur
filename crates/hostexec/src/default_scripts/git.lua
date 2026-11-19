@@ -1,4 +1,4 @@
--- crates/server/src/hostexec/default_scripts/git.lua
+-- crates/hostexec/src/default_scripts/git.lua
 -- Default git argument transform: blocks sandbox-escape flags, rewrites -C for workers
 
 -- Help block appended to every rejection so the caller sees what is restricted

@@ -66,7 +66,7 @@ exec ur-workertools host-exec
 3. `ScriptRegistry::allows(project_key, rel_path)` — built from `ProjectRegistry` at server start, refreshed on `ur.toml` reload.  On miss → `PermissionDenied`, error code `SCRIPT_NOT_ALLOWED`, metadata `{script, project}`.
 4. Map `rel_path` to `%WORKSPACE%/<rel_path>` via the same `map_working_dir` logic (prepends the slot-relative prefix in pool mode).
 5. Build `BuilderExecRequest { command: <template>, args: passthrough, working_dir: <CWD mapping>, env: empty, long_lived: false }`.
-6. Forward via `forward_to_builderd`.
+6. Forward via `forward_to_builderd` (`crates/hostexec/src/forward.rs`).
 
 No Lua transform runs and no command allowlist is consulted — the `hostexec_scripts` registry is the sole gate.
 
@@ -179,7 +179,7 @@ after `ur.toml` reload.
 
 `tea` is an optional built-in command designed for Gitea forge collaboration:
 - **Host-managed credentials**: `tea` executes on the host through builderd and discovers repository context from the mapped working directory (`-C`). Authentication is configured on the host (e.g. `tea login`).
-- **Restrictive Lua transform**: `crates/server/src/hostexec/default_scripts/tea.lua` strictly enforces safety invariants:
+- **Restrictive Lua transform**: `crates/hostexec/src/default_scripts/tea.lua` strictly enforces safety invariants:
   - Blocks authentication changes (`tea login`, `tea logout`, `tea auth`).
   - Blocks administrative, user, or destructive repo operations (`tea admin`, `tea repo`, `tea org`, `tea migrate`).
   - Blocks git-checkout mutations (`tea pr checkout`, `tea pr clean`, `tea clone`); repository operations must use `git`.
@@ -214,9 +214,8 @@ operator to delete the section after placing transforms at
 ## Key Files
 
 - Proto: proto/hostexec.proto, proto/builder.proto
-- Server handler: crates/server/src/grpc_hostexec.rs
-- Script registry: crates/server/src/hostexec/script_registry.rs
-- Config: crates/server/src/hostexec/
+- Server handler: crates/server/src/grpc_hostexec.rs (`HostExecServiceHandler`, request-context resolution)
+- Policy library: crates/hostexec/ (config, Lua transforms, default scripts, discovery, shim, script registry, CWD/script path mapping, `HostExecError`, `forward_to_builderd`)
 - Run opts builder: crates/server/src/run_opts_builder.rs
 - Builder daemon: crates/builderd/
 - Worker tools: crates/ur-workertools/, crates/workerd/

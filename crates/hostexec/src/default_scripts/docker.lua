@@ -1,4 +1,4 @@
--- crates/server/src/hostexec/default_scripts/docker.lua
+-- crates/hostexec/src/default_scripts/docker.lua
 -- Default docker argument transform: allowlist-only readonly commands.
 -- Workers may inspect container/image/network/volume state but cannot
 -- create, modify, or destroy resources on the host Docker daemon.

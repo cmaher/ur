@@ -2248,10 +2248,7 @@ mod tests {
             std::path::Path::new("/tmp/ur-test-config"),
         )
         .unwrap();
-        ProjectRegistry::new(
-            config.projects,
-            crate::hostexec::HostExecConfigManager::empty(),
-        )
+        ProjectRegistry::new(config.projects, hostexec::HostExecConfigManager::empty())
     }
 
     fn launch_request(worker_id: &str, project_key: &str) -> WorkerLaunchRequest {

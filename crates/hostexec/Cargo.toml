@@ -1,0 +1,21 @@
+[package]
+name = "hostexec"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1"
+mlua = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+ur_config = { path = "../ur_config" }
+ur_rpc = { path = "../ur_rpc", features = ["error"] }
+
+[dev-dependencies]
+tempfile = "3"
+tonic-types = { workspace = true }
+
+[lints]
+workspace = true

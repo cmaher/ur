@@ -1,4 +1,4 @@
--- crates/server/src/hostexec/default_scripts/make.lua
+-- crates/hostexec/src/default_scripts/make.lua
 -- Default make argument transform: blocks sandbox-escape path flags, rewrites -C for workers
 
 function transform(command, args, working_dir, worker_context)

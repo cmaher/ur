@@ -1,4 +1,4 @@
--- crates/server/src/hostexec/default_scripts/go.lua
+-- crates/hostexec/src/default_scripts/go.lua
 -- Default go argument transform: blocks host-mutating subcommands and dangerous flags,
 -- rewrites -C for workers.
 

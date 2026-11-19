@@ -1,4 +1,4 @@
--- crates/server/src/hostexec/default_scripts/cargo.lua
+-- crates/hostexec/src/default_scripts/cargo.lua
 -- Default cargo argument transform: blocks subcommands that escape the project
 -- directory or interact with the global crate registry.
 

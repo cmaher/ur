@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use anyhow::Result;
 use ur_config::ProjectConfig;
 
-use crate::hostexec::HostExecConfigManager;
+use hostexec::HostExecConfigManager;
 
 /// Report of what changed during a reload.
 pub struct ReloadReport {
@@ -123,8 +123,7 @@ mod tests {
     }
 
     fn load_hostexec(dir: &Path) -> HostExecConfigManager {
-        let discovery =
-            crate::hostexec::LuaDiscoveryManager::new(crate::hostexec::LuaTransformManager::new());
+        let discovery = hostexec::LuaDiscoveryManager::new(hostexec::LuaTransformManager::new());
         HostExecConfigManager::load(dir, &discovery).unwrap()
     }
 

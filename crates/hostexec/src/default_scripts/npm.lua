@@ -1,4 +1,4 @@
--- crates/server/src/hostexec/default_scripts/npm.lua
+-- crates/hostexec/src/default_scripts/npm.lua
 -- Default npm argument transform: blocks dangerous subcommands,
 -- rewrites --prefix/--cwd for workers, blocks path-escape flags.
 

@@ -180,7 +180,7 @@ mod tests {
 
         let project_registry = crate::ProjectRegistry::new(
             std::collections::HashMap::new(),
-            crate::hostexec::HostExecConfigManager::empty(),
+            hostexec::HostExecConfigManager::empty(),
         );
         let handler = TicketServiceHandler {
             ticket_repo: repo.clone(),

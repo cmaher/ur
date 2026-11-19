@@ -1,4 +1,4 @@
--- crates/server/src/hostexec/default_scripts/ur.lua
+-- crates/hostexec/src/default_scripts/ur.lua
 -- Default ur argument transform: whitelist-only.
 -- Workers may use all ticket subcommands and readonly query commands.
 -- Mutating commands (start, stop, worker launch/attach/stop/kill, etc.) are blocked.
