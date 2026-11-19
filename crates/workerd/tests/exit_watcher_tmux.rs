@@ -62,7 +62,10 @@ fn is_python(cmd: &str) -> bool {
 impl Agent {
     /// A code-worker watcher polling every `poll` on a fresh `zsh` pane whose
     /// `.zshrc` is `rc`, with `python3 -c <script>` typed ahead into it (as a
-    /// launch does). Returns once the agent has been foreground for a few polls.
+    /// launch does). The agent signals that it started with a marker file and
+    /// holds before `script` until released, so a loaded machine can't make
+    /// the setup miss a short-lived agent. Returns once the agent has been
+    /// running for a few polls, releasing it into `script`.
     async fn start(tag: &str, rc_body: &str, poll: Duration, script: &str) -> Agent {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -86,8 +89,15 @@ impl Agent {
         let sink = Arc::new(RecordingSink::default());
         let watcher =
             ExitWatcherManager::new(Arc::new(session.clone()), sink.clone(), true, poll).spawn();
+        let started = rc.path().join("agent-started");
+        let release = rc.path().join("agent-release");
+        let hold = format!(
+            r#"import os, time; open("{}", "w").close(); [time.sleep(0.05) for _ in iter(lambda: os.path.exists("{}"), True)]"#,
+            started.display(),
+            release.display()
+        );
         session
-            .send_keys(&format!("python3 -c '{script}'"))
+            .send_keys(&format!("python3 -c '{hold}; {script}'"))
             .await
             .unwrap();
         let agent = Agent {
@@ -97,8 +107,16 @@ impl Agent {
             _rc: rc,
             _guard: guard,
         };
-        agent.wait_foreground("agent running", is_python).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        while !started.exists() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for agent start"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         tokio::time::sleep(poll * 3).await;
+        std::fs::write(&release, "").unwrap();
         agent
     }
 
