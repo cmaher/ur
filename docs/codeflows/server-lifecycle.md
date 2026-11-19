@@ -79,7 +79,7 @@ This means the server container requires no Docker privilege escalation.
 
 `generate_compose()` in `crates/ur/src/compose.rs` builds YAML programmatically from
 `ur.toml` config (network names, container names, proxy hostname).
-No static template — the compose file is generated fresh on every `ur start`.
+No static template — the compose file is generated fresh on every `ur start` and rewritten before every `ur server redeploy <service>` (`ComposeManager::recreate_service`), so a file left by an older `ur` never reaches docker without the env the current server needs (e.g. `UR_MACHINE_ID`).
 
 Environment variables passed to `docker compose`:
 - `UR_CONFIG` — host config directory (mounted as `/config` in server)
