@@ -44,7 +44,7 @@ yourself. If a command's output looks wrong, say so in the report rather than wo
 
 `<brain>` must be its own git repository (`<brain>/.git` exists). If it isn't, stop and tell the
 user to run `brain:init`. Git history is the checkpoint: there are no snapshot copies. Never add remotes, force-push,
-rewrite history, or pass `--no-gpg-sign`.
+rewrite history, create, switch or rename branches, or pass `--no-gpg-sign`.
 
 ## Before anything
 
@@ -217,16 +217,19 @@ Gaps this run noticed but could not fill: questions to investigate, sources to l
 1. `ur dream lint` once more; fix anything your edits introduced.
 2. Stage only the paths this run changed plus `.dream/` (`git add <paths> .dream`), and commit
    once: `git commit -m "brain:dream: YYYY-MM-DD"`. Never stage paths you didn't change.
-3. If `git remote` lists a remote, push the commit (`git push`); if it lists none, the brain is local-only and the commit is the end. Never add a remote, never force-push. A checkpoint commit made before the run goes out with it. If the push is refused,
-   report the error; don't work around it.
-4. Tell the user what changed (from "Changes"), the commit hash, whether it was pushed, and the
+3. Sync exactly as the "Syncing" section of `<brain>/CLAUDE.md` says; if it has no such section,
+   the commit is the end (no pull, no push). A checkpoint commit made before the run goes out with
+   it. If a sync step fails (a rebase conflict, a refused push), stop, leave the conflict for the
+   user, and report it under "Needs a human"; don't work around it.
+4. Tell the user what changed (from "Changes"), the commit hash, whether and how it was synced, and the
    "Needs a human" items.
 
 ## Red flags — stop
 
 - Running on a brain that isn't a git work tree, or running git with `-C` or outside `<brain>`.
 - Editing before uncommitted user edits are checkpointed.
-- Adding a remote, force-pushing, stashing, resetting, or committing paths outside the change you
+- Adding a remote, force-pushing, creating or switching branches, syncing other than as the
+  brain's "Syncing" section says, stashing, resetting, or committing paths outside the change you
   just made.
 - Running a check command yourself instead of `ur dream check`, or editing `.dream/state.json`.
 - Writing a fact into a durable doc without checking it against the current source of truth or

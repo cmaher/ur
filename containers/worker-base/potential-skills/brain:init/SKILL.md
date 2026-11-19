@@ -35,6 +35,8 @@ For each item below, first check whether it already exists. If it exists, **leav
    - `reference/CLAUDE.md` — durable, long-lived knowledge (architecture, decisions, domain facts).
    - `working/CLAUDE.md` — transient, in-progress context (investigations, scratch notes).
 
+   Then add a `## Syncing` heading with one line saying that this section is where the user records how this brain syncs (e.g. which branch, and when to pull or push), and that until they do, brain skills only commit. Do not invent sync rules.
+
 3. **`<brain>/reference/CLAUDE.md`** (only if missing) — a table-of-contents stub. Explain that `reference/` holds **durable, long-lived** knowledge, and that this file is an index following the one-line-pointer convention (one `- [Title](file.md) — one-line hook` per sibling file, added as content grows). Leave the index empty for now.
 
 4. **`<brain>/working/CLAUDE.md`** (only if missing) — a table-of-contents stub. Explain that `working/` holds **transient, in-progress** context, and that this file is an index following the same one-line-pointer convention. Leave the index empty for now.
@@ -45,7 +47,7 @@ For each item below, first check whether it already exists. If it exists, **leav
    - If `<brain>/.git` exists, leave it alone and record "already present". Never re-initialize, change branches, or rewrite history.
    - Otherwise, from inside `<brain>`: `git init`, and create `.gitignore` (only if missing) ignoring OS and editor clutter (`.DS_Store`, `*.swp`). Do not ignore `.dream/`.
    - Commit everything present: `git add -A`, then `git commit -m "brain: init"`. Use the user's normal git config; never pass `--no-gpg-sign` or override the author. If a git command fails, stop and show the error.
-   - Never add a remote. If the brain already had one (an existing repository), push the commit.
+   - Then sync exactly as the "Syncing" section of `<brain>/CLAUDE.md` says; if it has no such section, the commit is the end (no pull, no push). Never add a remote, never force-push, never create or switch branches.
 
 ## After scaffolding
 
