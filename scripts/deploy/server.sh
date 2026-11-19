@@ -23,12 +23,6 @@ $RUNTIME build -t ur-server:latest -f containers/server/Dockerfile containers/se
 
 echo ""
 echo "=== Recreating ur-server container ==="
-# docker compose up -d will recreate only containers whose image changed
-COMPOSE_FILE="${COMPOSE_FILE:-$HOME/.ur/docker-compose.yml}"
-if [ -f "$COMPOSE_FILE" ]; then
-    $RUNTIME compose -f "$COMPOSE_FILE" up -d ur-server
-    echo "ur-server container recreated"
-else
-    echo "No compose file at $COMPOSE_FILE — run 'ur start' to generate it"
-    exit 1
-fi
+# Recreate through ur rather than raw `docker compose`: ur supplies the
+# the host-resolved UR_MACHINE_ID and UR_HOST_HOME the server needs.
+ur server redeploy server

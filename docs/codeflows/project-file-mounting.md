@@ -19,7 +19,7 @@ All project file paths in `ur.toml` use a template string format, resolved at la
 
 **Validation**: `validate_template_str()` runs at config load time (`Config::load()`), rejecting unrecognized `%VAR%` patterns immediately, and rejecting a `%HOME%` path (error prefixed with the field) when the home directory is unknown.
 
-**`%HOME%` (ur-i3qy4)**: expands to the *host* user's home. Host processes (CLI, builderd) read `HOME`; inside the server container (detected by `UR_HOST_CONFIG` being set) it reads `UR_HOST_HOME`, which compose sets from the `HOME` of `ur start`. Unset or empty is an error, never an empty expansion (`TemplateHome` in `template_path.rs`).
+**`%HOME%` (ur-i3qy4)**: expands to the *host* user's home. Host processes (the `ur` CLI) read `HOME`; inside the server container (detected by `UR_HOST_CONFIG` being set) it reads `UR_HOST_HOME`, which compose sets from the `HOME` of `ur start`. It must be the leading path component (`%HOME%` or `%HOME%/...`). Unset or empty is an error, never an empty expansion (`TemplateHome` in `template_path.rs`).
 
 **Resolution**: `resolve_template_path()` runs at container launch time, producing a `ResolvedTemplatePath` enum:
 - `ProjectRelative(rel_path)` — env var points to `/workspace/<rel_path>`, no mount added

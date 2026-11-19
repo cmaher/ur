@@ -200,12 +200,13 @@ concern.
 `src/machine.rs`: `MachineConfig { id }`, `UR_MACHINE_ID_ENV`, `validate_machine_id`,
 `machine_id_from_hostname`. Unset id defaults to the normalized short hostname via
 `whoami::hostname()`; an invalid id or hostname is a load error. Inside the server container
-`Config.machine` reflects the *container's* hostname — server code reads `UR_MACHINE_ID`
-(set by compose from the host's resolution) instead. See `docs/codeflows/config.md`.
+(`UR_HOST_CONFIG` set) the id comes only from `UR_MACHINE_ID` (set by compose from the host's
+resolution; missing/empty/invalid is an error, no hostname fallback), so `Config.machine` is the
+host's id in both processes. See `docs/codeflows/config.md`.
 
 ## Template Paths (`src/template_path.rs`)
 
-`%PROJECT%`, `%URCONFIG%`, `%HOME%` prefixes or absolute paths. `%HOME%` reads `TemplateHome::from_env()`:
+`%PROJECT%`, `%URCONFIG%`, `%HOME%` prefixes or absolute paths (`%HOME%` only once, as the leading component). `%HOME%` reads `TemplateHome::from_env()`:
 `HOME` on the host, `UR_HOST_HOME` when `UR_HOST_CONFIG` is set (server container). Unset/empty home
 is an error from both `validate_template_str` (load time, callers prefix the field) and
 `resolve_template_path`. Tests use the `_with_home` variants or a subprocess instead of mutating env.

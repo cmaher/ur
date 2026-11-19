@@ -10,6 +10,7 @@ indexmap = { version = "2", features = ["serde"] }
 serde = { workspace = true }
 toml = "0.8"
 tracing = { workspace = true }
+# whoami's "std" feature is required: without it hostname() returns "localhost".
 whoami = { version = "2.1.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]

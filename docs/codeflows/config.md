@@ -105,7 +105,11 @@ telling the user to set `[machine] id`. Resolved into `Config.machine: MachineCo
 The server runs in a container whose hostname is not the host's, so `ur start` resolves the
 id on the host and compose passes it to `ur-server` as `UR_MACHINE_ID`
 (`ur_config::UR_MACHINE_ID_ENV`); see [server-lifecycle.md](server-lifecycle.md#compose-generation).
-Server code must read `UR_MACHINE_ID`, not its own parse of `[machine]`.
+Inside the server container (`UR_HOST_CONFIG` set) config loading takes the id only from
+`UR_MACHINE_ID`, validated like an explicit id; missing, empty or invalid is a load error naming
+`UR_MACHINE_ID`, and it never falls back to the container's hostname. So `Config.machine` is the
+host's id in both processes. Bring the server up through `ur` (`ur start`, `ur server redeploy
+server`, `scripts/deploy/server.sh`), not raw `docker compose`.
 
 ## `[projects.<key>]` Section
 
@@ -204,8 +208,9 @@ Host-path fields (`mounts` sources, `instruction_md`, `memory_dir`, `brain_dir`,
 | `%HOME%/...` | The host user's home directory (ur-i3qy4) |
 | `/absolute/...` | As written |
 
-`%HOME%` is a prefix like `%URCONFIG%` (`$HOME` and `~` are not supported). It expands to the
-`HOME` of the process doing the resolving — the CLI and builderd on the host. The server runs
+`%HOME%` must be the leading path component — used once, followed by `/` or ending the path
+(`%HOME%foo` and `/b/%HOME%` are config errors naming the field). `$HOME` and `~` are not supported. It expands to the
+`HOME` of the process doing the resolving — the `ur` CLI on the host. The server runs
 in a container whose `HOME` is not the host's, so there (detected by `UR_HOST_CONFIG` being
 set) it expands against `UR_HOST_HOME`, which `ur start` passes through compose from its own
 `HOME`. An unset or empty home is a config-load error prefixed with the field name (e.g.

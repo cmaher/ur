@@ -40,7 +40,7 @@ const HOME_VAR: &str = "%HOME%";
 
 /// The host home directory `%HOME%` expands to, and the env var it came from.
 ///
-/// Host processes (CLI, builderd) read `HOME`. The server container — detected by
+/// Host processes (the `ur` CLI) read `HOME`. The server container — detected by
 /// `UR_HOST_CONFIG` being set, the same signal config loading uses elsewhere —
 /// reads [`UR_HOST_HOME_ENV`], because its own `HOME` is not the host's.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,7 +108,7 @@ pub fn resolve_template_path_with_home(
         Ok(ResolvedTemplatePath::HostPath(
             config_dir.join(strip_slash(suffix)),
         ))
-    } else if let Some(suffix) = template.strip_prefix(HOME_VAR) {
+    } else if let Some(suffix) = home_suffix(template)? {
         Ok(ResolvedTemplatePath::HostPath(
             home.require()?.join(strip_slash(suffix)),
         ))
@@ -118,6 +118,23 @@ pub fn resolve_template_path_with_home(
         anyhow::bail!(
             "template path must start with %PROJECT%, %URCONFIG%, %HOME%, or be an absolute path: {template}"
         );
+    }
+}
+
+/// The part of `template` after a leading `%HOME%`, or `None` when it does not use
+/// `%HOME%`. `%HOME%` is only valid once, as the whole leading path component.
+fn home_suffix(template: &str) -> anyhow::Result<Option<&str>> {
+    let uses = template.matches(HOME_VAR).count();
+    if uses == 0 {
+        return Ok(None);
+    }
+    match template.strip_prefix(HOME_VAR) {
+        Some(suffix) if uses == 1 && (suffix.is_empty() || suffix.starts_with('/')) => {
+            Ok(Some(suffix))
+        }
+        _ => anyhow::bail!(
+            "%HOME% is only allowed once, at the start of the path and followed by '/': {template}"
+        ),
     }
 }
 
@@ -168,7 +185,7 @@ pub fn validate_template_str_with_home(template: &str, home: &TemplateHome) -> a
         anyhow::bail!("template path must not be empty");
     }
 
-    if template.starts_with(HOME_VAR) {
+    if home_suffix(template)?.is_some() {
         home.require()?;
     } else if !template.starts_with(PROJECT_VAR)
         && !template.starts_with(URCONFIG_VAR)
@@ -247,6 +264,23 @@ mod tests {
         let err = validate_template_str_with_home("%HOME%/brains/x", &home(None)).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains(UR_HOST_HOME_ENV), "{msg}");
+    }
+
+    #[test]
+    fn home_must_be_leading_component() {
+        for bad in ["%HOME%foo", "/b/%HOME%", "%HOME%/a/%HOME%"] {
+            let err = validate_template_str_with_home(bad, &home(Some("/h"))).unwrap_err();
+            assert!(
+                err.to_string().contains("%HOME% is only allowed"),
+                "{bad}: {err}"
+            );
+            let err = resolve_template_path_with_home(bad, Path::new("/cfg"), &home(Some("/h")))
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("%HOME% is only allowed"),
+                "{bad}: {err}"
+            );
+        }
     }
 
     #[test]

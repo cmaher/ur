@@ -24,13 +24,21 @@ pub struct MachineConfig {
 
 /// Raw TOML representation for the `[machine]` section.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RawMachineConfig {
     id: Option<String>,
 }
 
 /// Resolve the `[machine]` section: an explicit `id` must be valid as written;
 /// otherwise the id is derived from the host's hostname.
+///
+/// Inside the server container (`UR_HOST_CONFIG` set) the container's hostname is
+/// not the host's, so the id comes only from [`UR_MACHINE_ID_ENV`], which `ur start`
+/// resolved on the host.
 pub(crate) fn resolve_machine(raw: Option<RawMachineConfig>) -> anyhow::Result<MachineConfig> {
+    if std::env::var_os(crate::UR_HOST_CONFIG_ENV).is_some() {
+        return machine_from_server_env(std::env::var_os(UR_MACHINE_ID_ENV));
+    }
     match raw.and_then(|machine| machine.id) {
         Some(id) => {
             validate_machine_id(&id).context("ur.toml: invalid [machine] id")?;
@@ -46,6 +54,22 @@ pub(crate) fn resolve_machine(raw: Option<RawMachineConfig>) -> anyhow::Result<M
             })
         }
     }
+}
+
+/// The server's machine id from the value of [`UR_MACHINE_ID_ENV`]; never falls
+/// back to the container's hostname.
+fn machine_from_server_env(value: Option<std::ffi::OsString>) -> anyhow::Result<MachineConfig> {
+    let id = value
+        .and_then(|value| value.into_string().ok())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{UR_MACHINE_ID_ENV} is not set (or not UTF-8) in the server container; \
+                 `ur start` passes the host's machine id — restart the server with ur"
+            )
+        })?;
+    validate_machine_id(&id).with_context(|| format!("invalid {UR_MACHINE_ID_ENV}"))?;
+    Ok(MachineConfig { id })
 }
 
 /// Derive a machine id from a hostname: the text before the first `.`,
@@ -115,6 +139,19 @@ mod tests {
         assert_eq!(resolve_machine(None).unwrap().id, expected);
         let empty = RawMachineConfig { id: None };
         assert_eq!(resolve_machine(Some(empty)).unwrap().id, expected);
+    }
+
+    #[test]
+    fn server_env_id_is_used_and_validated() {
+        let machine = machine_from_server_env(Some("mbp".into())).unwrap();
+        assert_eq!(machine.id, "mbp");
+        for bad in [None, Some(""), Some("Bad Id")] {
+            let err = format!(
+                "{:#}",
+                machine_from_server_env(bad.map(Into::into)).unwrap_err()
+            );
+            assert!(err.contains(UR_MACHINE_ID_ENV), "{bad:?}: {err}");
+        }
     }
 
     #[test]

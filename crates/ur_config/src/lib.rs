@@ -3488,25 +3488,25 @@ mounts = ["%HOME%/data:/var/data"]
         assert_eq!(cfg.workspace_brain_dir.as_deref(), Some("%HOME%/ws-brain"));
     }
 
-    /// Env var selecting the server-container child mode of
-    /// [`home_template_in_server_child`].
-    const HOME_CHILD_ENV: &str = "UR_CONFIG_TEST_HOME_CHILD";
+    /// Env var selecting the mode of [`server_env_child`].
+    const SERVER_CHILD_ENV: &str = "UR_CONFIG_TEST_SERVER_CHILD";
 
-    /// Re-run [`home_template_in_server_child`] in a subprocess with a server-container
-    /// environment, so the test never mutates this process's env.
-    fn run_server_home_child(mode: &str, host_home: Option<&str>) {
+    /// Re-run [`server_env_child`] in a subprocess with a server-container environment
+    /// (`UR_HOST_CONFIG` set, container `HOME`), so tests never mutate this process's
+    /// env. `vars` are set (`Some`) or removed (`None`) on top of that.
+    fn run_in_server_env(mode: &str, vars: &[(&str, Option<&str>)]) {
         let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
-        cmd.args([
-            "--exact",
-            "tests::home_template_in_server_child",
-            "--nocapture",
-        ])
-        .env(HOME_CHILD_ENV, mode)
-        .env(UR_HOST_CONFIG_ENV, "/host/config")
-        .env("HOME", "/container/home")
-        .env_remove(UR_HOST_HOME_ENV);
-        if let Some(home) = host_home {
-            cmd.env(UR_HOST_HOME_ENV, home);
+        cmd.args(["--exact", "tests::server_env_child", "--nocapture"])
+            .env(SERVER_CHILD_ENV, mode)
+            .env(UR_HOST_CONFIG_ENV, "/host/config")
+            .env("HOME", "/container/home")
+            .env(UR_MACHINE_ID_ENV, "mbp")
+            .env_remove(UR_HOST_HOME_ENV);
+        for (key, value) in vars {
+            match value {
+                Some(value) => cmd.env(key, value),
+                None => cmd.env_remove(key),
+            };
         }
         let output = cmd.output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -3516,23 +3516,32 @@ mounts = ["%HOME%/data:/var/data"]
     }
 
     #[test]
-    fn home_template_in_server_child() {
-        let Ok(mode) = std::env::var(HOME_CHILD_ENV) else {
+    fn server_env_child() {
+        let Ok(mode) = std::env::var(SERVER_CHILD_ENV) else {
             return;
         };
-        let result = Config::from_toml_str(HOME_FIELDS_TOML, Path::new("/config"));
         match mode.as_str() {
-            "resolve" => {
-                let cfg = result.unwrap();
+            "home-resolve" => {
+                let cfg = Config::from_toml_str(HOME_FIELDS_TOML, Path::new("/config")).unwrap();
                 assert_eq!(
                     cfg.projects["ur"].brain_path(Path::new("/config")),
                     Some(PathBuf::from("/host/home/brains/ur"))
                 );
             }
-            "missing" => {
-                let msg = format!("{:#}", result.unwrap_err());
+            "home-missing" => {
+                let err = Config::from_toml_str(HOME_FIELDS_TOML, Path::new("/config"));
+                let msg = format!("{:#}", err.unwrap_err());
                 assert!(msg.contains(UR_HOST_HOME_ENV), "{msg}");
                 assert!(msg.contains("project 'ur': instruction_md"), "{msg}");
+            }
+            "machine-set" => {
+                let cfg = Config::from_toml_str("[machine]\nid = \"other\"\n", Path::new("/c"));
+                assert_eq!(cfg.unwrap().machine.id, "mbp");
+            }
+            "machine-missing" => {
+                let err = Config::from_toml_str("", Path::new("/c")).unwrap_err();
+                let msg = format!("{err:#}");
+                assert!(msg.contains(UR_MACHINE_ID_ENV), "{msg}");
             }
             other => panic!("unknown child mode {other}"),
         }
@@ -3540,13 +3549,48 @@ mounts = ["%HOME%/data:/var/data"]
 
     #[test]
     fn home_template_resolves_against_ur_host_home_in_server() {
-        run_server_home_child("resolve", Some("/host/home"));
+        run_in_server_env("home-resolve", &[(UR_HOST_HOME_ENV, Some("/host/home"))]);
     }
 
     #[test]
     fn home_template_without_ur_host_home_in_server_names_the_field() {
-        run_server_home_child("missing", None);
-        run_server_home_child("missing", Some(""));
+        run_in_server_env("home-missing", &[]);
+        run_in_server_env("home-missing", &[(UR_HOST_HOME_ENV, Some(""))]);
+    }
+
+    #[test]
+    fn server_machine_id_comes_from_ur_machine_id() {
+        run_in_server_env("machine-set", &[]);
+    }
+
+    #[test]
+    fn server_machine_id_missing_or_empty_is_error() {
+        run_in_server_env("machine-missing", &[(UR_MACHINE_ID_ENV, None)]);
+        run_in_server_env("machine-missing", &[(UR_MACHINE_ID_ENV, Some(""))]);
+    }
+
+    #[test]
+    fn machine_section_rejects_unknown_fields() {
+        let err = Config::from_toml_str("[machine]\nname = \"x\"\n", Path::new("/c")).unwrap_err();
+        assert!(err.to_string().contains("unknown field `name`"), "{err}");
+    }
+
+    #[test]
+    fn home_not_leading_prefix_is_error_naming_the_field() {
+        let toml = "[projects.ur]\nrepo = \"git@github.com:cmaher/ur.git\"\n\
+                    brain_dir = \"%HOME%foo\"\n[projects.ur.container]\nimage = \"ur-worker\"\n";
+        let msg = format!(
+            "{:#}",
+            Config::from_toml_str(toml, Path::new("/c")).unwrap_err()
+        );
+        assert!(msg.contains("brain_dir") && msg.contains("%HOME%"), "{msg}");
+        let toml = "[projects.ur]\nrepo = \"git@github.com:cmaher/ur.git\"\n\
+                    [projects.ur.container]\nimage = \"ur-worker\"\nmounts = [\"/b/%HOME%:/x\"]\n";
+        let msg = format!(
+            "{:#}",
+            Config::from_toml_str(toml, Path::new("/c")).unwrap_err()
+        );
+        assert!(msg.contains("mounts[0]") && msg.contains("%HOME%"), "{msg}");
     }
 
     #[test]
