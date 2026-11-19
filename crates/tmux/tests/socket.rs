@@ -293,12 +293,20 @@ async fn named_keys_and_scrollback_capture() {
         .await
         .expect("named Enter");
 
+    // A login shell still starting up under load can drop the Enter, leaving the
+    // typed loop unsubmitted; press it again while no output has appeared.
     let mut screen = String::new();
-    for _ in 0..50 {
+    for attempt in 1..=200 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         screen = session.capture_agent_pane(0).await.expect("capture screen");
         if screen.contains("SCROLL_50") {
             break;
+        }
+        if attempt % 20 == 0 && !screen.contains("SCROLL_1") {
+            session
+                .send_named_keys_to_agent_pane(&["Enter"])
+                .await
+                .expect("re-press Enter");
         }
     }
     assert!(screen.contains("SCROLL_50"), "{screen}");
