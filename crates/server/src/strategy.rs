@@ -123,6 +123,7 @@ fn common_skills() -> Vec<String> {
         "writing-skills".into(),
         "address-feedback".into(),
         "code-review".into(),
+        "trim".into(),
         "brain".into(),
         "brain:init".into(),
     ]
@@ -165,6 +166,7 @@ mod tests {
             assert!(skills.contains(&"writing-skills".to_string()));
             assert!(skills.contains(&"address-feedback".to_string()));
             assert!(skills.contains(&"code-review".to_string()));
+            assert!(skills.contains(&"trim".to_string()));
             assert!(skills.contains(&"brain".to_string()));
             assert!(skills.contains(&"brain:init".to_string()));
         }
