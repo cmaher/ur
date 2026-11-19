@@ -30,6 +30,9 @@ pub struct RepoPoolManager {
     project_registry: ProjectRegistry,
     /// Client for delegating all pool filesystem/git operations to builderd.
     builder_pool_client: BuilderPoolClient,
+    /// Machine whose pool this manager serves (`[machine] id`); scopes every
+    /// slot query and is recorded on new slot rows.
+    machine_id: String,
 }
 
 impl RepoPoolManager {
@@ -44,6 +47,7 @@ impl RepoPoolManager {
             worker_repo,
             project_registry,
             builder_pool_client,
+            machine_id: config.machine.id.clone(),
         }
     }
 
@@ -94,7 +98,7 @@ impl RepoPoolManager {
 
         let candidates = self
             .worker_repo
-            .find_available_slots(project_key)
+            .find_available_slots(&self.machine_id, project_key)
             .await
             .map_err(|e| format!("db error finding available slot: {e}"))?;
         for slot in candidates {
@@ -162,6 +166,7 @@ impl RepoPoolManager {
             host_path: host_path.display().to_string(),
             created_at: now.clone(),
             updated_at: now,
+            machine_id: self.machine_id.clone(),
         };
         self.worker_repo
             .insert_slot(&new_slot)
@@ -226,7 +231,7 @@ impl RepoPoolManager {
     ) -> Result<(), String> {
         let slot = self
             .worker_repo
-            .get_slot_by_host_path(&host_slot_path.display().to_string())
+            .get_slot_by_host_path(&self.machine_id, &host_slot_path.display().to_string())
             .await
             .map_err(|e| format!("db error looking up slot for checkout: {e}"))?
             .ok_or_else(|| {
@@ -270,6 +275,8 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use ur_config::ProjectConfig;
+
+    const TEST_MACHINE: &str = "test-machine";
 
     /// Build a minimal `Config` for use in tests.
     fn minimal_test_config(tmp: &std::path::Path) -> ur_config::Config {
@@ -345,7 +352,7 @@ mod tests {
             global_skills: ur_config::GlobalSkillsConfig::default(),
             workspace_brain_dir: None,
             machine: ur_config::MachineConfig {
-                id: "test-machine".into(),
+                id: TEST_MACHINE.into(),
             },
         }
     }
@@ -441,6 +448,7 @@ mod tests {
             idle_redispatch_count: 0,
             brain_path: None,
             runtime: workflow_db::model::WorkerRuntime::Container,
+            machine_id: TEST_MACHINE.to_owned(),
         }
     }
 
@@ -456,7 +464,7 @@ mod tests {
         assert!(acquire(&mgr, "testproj").await.is_err());
         assert_eq!(
             mgr.worker_repo
-                .find_available_slots("testproj")
+                .find_available_slots(TEST_MACHINE, "testproj")
                 .await
                 .unwrap()
                 .len(),
@@ -488,6 +496,7 @@ mod tests {
             host_path: host_path.display().to_string(),
             created_at: now.clone(),
             updated_at: now,
+            machine_id: TEST_MACHINE.to_owned(),
         };
         worker_repo.insert_slot(&slot).await.unwrap();
         id
@@ -520,6 +529,7 @@ mod tests {
             idle_redispatch_count: 0,
             brain_path: None,
             runtime: workflow_db::model::WorkerRuntime::Container,
+            machine_id: TEST_MACHINE.to_owned(),
         };
         worker_repo.insert_worker(&worker).await.unwrap();
         worker_repo
@@ -611,7 +621,7 @@ mod tests {
         // No DB state may be created for a project that can never have a slot.
         let slots = mgr
             .worker_repo
-            .find_available_slots("testproj")
+            .find_available_slots(TEST_MACHINE, "testproj")
             .await
             .unwrap();
         assert!(
@@ -713,7 +723,7 @@ image = "ur-worker"
         // Initially no worker is linked
         let available = mgr
             .worker_repo
-            .find_available_slots("testproj")
+            .find_available_slots(TEST_MACHINE, "testproj")
             .await
             .unwrap();
         assert!(
@@ -739,6 +749,7 @@ image = "ur-worker"
             idle_redispatch_count: 0,
             brain_path: None,
             runtime: workflow_db::model::WorkerRuntime::Container,
+            machine_id: TEST_MACHINE.to_owned(),
         };
         mgr.worker_repo.insert_worker(&worker).await.unwrap();
         mgr.worker_repo
@@ -749,7 +760,7 @@ image = "ur-worker"
         // Now the slot should not be available
         let available = mgr
             .worker_repo
-            .find_available_slots("testproj")
+            .find_available_slots(TEST_MACHINE, "testproj")
             .await
             .unwrap();
         assert!(
@@ -766,7 +777,7 @@ image = "ur-worker"
         // Slot should be available again
         let available = mgr
             .worker_repo
-            .find_available_slots("testproj")
+            .find_available_slots(TEST_MACHINE, "testproj")
             .await
             .unwrap();
         assert!(
@@ -789,7 +800,7 @@ image = "ur-worker"
 
         let available = mgr
             .worker_repo
-            .find_available_slots("testproj")
+            .find_available_slots(TEST_MACHINE, "testproj")
             .await
             .unwrap();
         assert!(
@@ -804,7 +815,7 @@ image = "ur-worker"
 
         let available = mgr
             .worker_repo
-            .find_available_slots("testproj")
+            .find_available_slots(TEST_MACHINE, "testproj")
             .await
             .unwrap();
         assert_eq!(

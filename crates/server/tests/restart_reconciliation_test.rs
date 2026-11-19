@@ -137,6 +137,7 @@ async fn make_components_with_db(
         ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
             tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
         ),
+        config.machine.id.clone(),
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager: worker_manager.clone(),
@@ -204,6 +205,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         host_path: slot_dir.display().to_string(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
+        machine_id: "test-machine".to_owned(),
     };
     worker_repo1.insert_slot(&slot).await.unwrap();
 
@@ -223,6 +225,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         idle_redispatch_count: 0,
         brain_path: None,
         runtime: workflow_db::model::WorkerRuntime::Container,
+        machine_id: "test-machine".to_owned(),
     };
     worker_repo1.insert_worker(&worker).await.unwrap();
     worker_repo1
@@ -259,7 +262,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
     project_configs.insert("test-proj".to_owned(), pool_dir.clone());
 
     let slot_result = worker_repo2
-        .reconcile_slots(&project_configs, &workspace, &workspace)
+        .reconcile_slots("test-machine", &project_configs, &workspace, &workspace)
         .await
         .unwrap();
 

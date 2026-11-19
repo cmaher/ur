@@ -85,6 +85,7 @@ impl HostExecHarness {
             ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
                 tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
             ),
+            config.machine.id.clone(),
         );
         let handler = ur_server::grpc_hostexec::HostExecServiceHandler {
             script_registry: ur_server::hostexec::ScriptRegistry::from_projects(

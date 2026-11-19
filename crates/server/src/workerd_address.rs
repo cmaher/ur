@@ -88,6 +88,7 @@ mod tests {
             idle_redispatch_count: 0,
             brain_path: None,
             runtime,
+            machine_id: "test-machine".into(),
         }
     }
 

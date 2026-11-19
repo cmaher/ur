@@ -39,6 +39,7 @@ type WorkerRow = (
     i32,
     Option<String>,
     String,
+    String,
 );
 
 /// Convert a SELECTed row into a [`Worker`]. Fails (rather than defaulting) if
@@ -64,18 +65,15 @@ fn worker_from_row(row: WorkerRow) -> Result<Worker, sqlx::Error> {
         idle_redispatch_count: row.12,
         brain_path: row.13,
         runtime,
+        machine_id: row.15,
     })
 }
 
+/// Column tuple type returned by slot SELECT queries.
+type SlotRow = (String, String, String, String, String, String, String);
+
 fn slot_from_row(
-    (id, project_key, slot_name, host_path, created_at, updated_at): (
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-    ),
+    (id, project_key, slot_name, host_path, created_at, updated_at, machine_id): SlotRow,
 ) -> Slot {
     Slot {
         id,
@@ -84,6 +82,7 @@ fn slot_from_row(
         host_path,
         created_at,
         updated_at,
+        machine_id,
     }
 }
 
@@ -101,7 +100,7 @@ impl WorkerRepo {
 
     pub async fn get_worker(&self, worker_id: &str) -> Result<Option<Worker>, sqlx::Error> {
         let row = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime, machine_id
              FROM worker WHERE worker_id = $1",
         )
         .bind(worker_id)
@@ -134,9 +133,26 @@ impl WorkerRepo {
     /// its `worker_slot` link in one transaction. `UNIQUE (slot_id)` makes
     /// the insert the arbiter: `false` means another worker owns the slot
     /// (nothing is written). A link left by a `stopped` worker owns nothing
-    /// and is dropped first.
+    /// and is dropped first. A slot that is missing or on a machine other
+    /// than `worker.machine_id` is an error, never a claim.
     pub async fn claim_slot(&self, worker: &Worker, slot_id: &str) -> Result<bool, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
+        let slot_machine: Option<Option<String>> =
+            sqlx::query_scalar("SELECT machine_id FROM slot WHERE id = $1 FOR SHARE")
+                .bind(slot_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        match slot_machine {
+            None => return Err(sqlx::Error::RowNotFound),
+            Some(m) if m.as_deref() != Some(worker.machine_id.as_str()) => {
+                return Err(sqlx::Error::Protocol(format!(
+                    "slot {slot_id} is on machine {}, not {}",
+                    m.as_deref().unwrap_or("<unset>"),
+                    worker.machine_id
+                )));
+            }
+            Some(_) => {}
+        }
         sqlx::query(
             "DELETE FROM worker_slot WHERE slot_id = $1 AND worker_id IN
                (SELECT worker_id FROM worker WHERE container_status = 'stopped')",
@@ -334,7 +350,7 @@ impl WorkerRepo {
         container_status: &str,
     ) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime, machine_id
              FROM worker WHERE container_status = $1 ORDER BY created_at ASC",
         )
         .bind(container_status)
@@ -362,7 +378,7 @@ impl WorkerRepo {
         workspace_path: &str,
     ) -> Result<Option<Worker>, sqlx::Error> {
         let row = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime, machine_id
              FROM worker WHERE project_key = $1 AND workspace_path = $2",
         )
         .bind(project_key)
@@ -377,8 +393,8 @@ impl WorkerRepo {
 
     pub async fn insert_slot(&self, slot: &Slot) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO slot (id, project_key, slot_name, host_path, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO slot (id, project_key, slot_name, host_path, created_at, updated_at, machine_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(&slot.id)
         .bind(&slot.project_key)
@@ -386,6 +402,7 @@ impl WorkerRepo {
         .bind(&slot.host_path)
         .bind(&slot.created_at)
         .bind(&slot.updated_at)
+        .bind(&slot.machine_id)
         .execute(&self.pool)
         .await?;
 
@@ -393,8 +410,8 @@ impl WorkerRepo {
     }
 
     pub async fn get_slot(&self, id: &str) -> Result<Option<Slot>, sqlx::Error> {
-        let row = sqlx::query_as::<_, (String, String, String, String, String, String)>(
-            "SELECT id, project_key, slot_name, host_path, created_at, updated_at
+        let row = sqlx::query_as::<_, SlotRow>(
+            "SELECT id, project_key, slot_name, host_path, created_at, updated_at, machine_id
              FROM slot WHERE id = $1",
         )
         .bind(id)
@@ -404,14 +421,17 @@ impl WorkerRepo {
         Ok(row.map(slot_from_row))
     }
 
+    /// The slot at `host_path` on `machine_id` (host paths repeat across machines).
     pub async fn get_slot_by_host_path(
         &self,
+        machine_id: &str,
         host_path: &str,
     ) -> Result<Option<Slot>, sqlx::Error> {
-        let row = sqlx::query_as::<_, (String, String, String, String, String, String)>(
-            "SELECT id, project_key, slot_name, host_path, created_at, updated_at
-             FROM slot WHERE host_path = $1",
+        let row = sqlx::query_as::<_, SlotRow>(
+            "SELECT id, project_key, slot_name, host_path, created_at, updated_at, machine_id
+             FROM slot WHERE machine_id = $1 AND host_path = $2",
         )
+        .bind(machine_id)
         .bind(host_path)
         .fetch_optional(&self.pool)
         .await?;
@@ -419,11 +439,17 @@ impl WorkerRepo {
         Ok(row.map(slot_from_row))
     }
 
-    pub async fn list_slots_by_project(&self, project_key: &str) -> Result<Vec<Slot>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, (String, String, String, String, String, String)>(
-            "SELECT id, project_key, slot_name, host_path, created_at, updated_at
-             FROM slot WHERE project_key = $1 ORDER BY created_at ASC",
+    /// Every slot of `project_key` on `machine_id`, oldest first.
+    pub async fn list_slots(
+        &self,
+        machine_id: &str,
+        project_key: &str,
+    ) -> Result<Vec<Slot>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, SlotRow>(
+            "SELECT id, project_key, slot_name, host_path, created_at, updated_at, machine_id
+             FROM slot WHERE machine_id = $1 AND project_key = $2 ORDER BY created_at ASC",
         )
+        .bind(machine_id)
         .bind(project_key)
         .fetch_all(&self.pool)
         .await?;
@@ -431,8 +457,8 @@ impl WorkerRepo {
         Ok(rows.into_iter().map(slot_from_row).collect())
     }
 
-    /// List every available exclusive slot for a project (not linked to an active worker),
-    /// oldest first.
+    /// List every available exclusive slot for a project on `machine_id` (not linked to an
+    /// active worker), oldest first.
     ///
     /// Only returns slots with numeric names (exclusive pool slots like "0", "1", "2").
     /// Shared slots (name = "shared") are excluded — they are managed separately by
@@ -442,11 +468,15 @@ impl WorkerRepo {
     ///
     /// All candidates are returned rather than just the first so callers can skip slots
     /// that are mid-acquisition instead of giving up on the pool entirely.
-    pub async fn find_available_slots(&self, project_key: &str) -> Result<Vec<Slot>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, (String, String, String, String, String, String)>(
-            "SELECT s.id, s.project_key, s.slot_name, s.host_path, s.created_at, s.updated_at
+    pub async fn find_available_slots(
+        &self,
+        machine_id: &str,
+        project_key: &str,
+    ) -> Result<Vec<Slot>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, SlotRow>(
+            "SELECT s.id, s.project_key, s.slot_name, s.host_path, s.created_at, s.updated_at, s.machine_id
              FROM slot s
-             WHERE s.project_key = $1
+             WHERE s.machine_id = $1 AND s.project_key = $2
                AND s.slot_name ~ '^[0-9]+$'
                AND s.id NOT IN (
                  SELECT ws.slot_id FROM worker_slot ws
@@ -455,6 +485,7 @@ impl WorkerRepo {
                )
              ORDER BY s.created_at ASC",
         )
+        .bind(machine_id)
         .bind(project_key)
         .fetch_all(&self.pool)
         .await?;
@@ -462,15 +493,21 @@ impl WorkerRepo {
         Ok(rows.into_iter().map(slot_from_row).collect())
     }
 
-    /// Count slots that have an active worker linked via worker_slot.
-    pub async fn slots_in_use(&self, project_key: &str) -> Result<i32, sqlx::Error> {
+    /// Count slots of `project_key` on `machine_id` that have an active worker linked via
+    /// worker_slot.
+    pub async fn slots_in_use(
+        &self,
+        machine_id: &str,
+        project_key: &str,
+    ) -> Result<i32, sqlx::Error> {
         let count = sqlx::query_scalar::<_, i32>(
             "SELECT COUNT(*)::INT4 FROM slot s
              INNER JOIN worker_slot ws ON ws.slot_id = s.id
              INNER JOIN worker w ON w.worker_id = ws.worker_id
-             WHERE s.project_key = $1
+             WHERE s.machine_id = $1 AND s.project_key = $2
                AND w.container_status IN ('provisioning', 'running', 'stopping')",
         )
+        .bind(machine_id)
         .bind(project_key)
         .fetch_one(&self.pool)
         .await?;
@@ -535,12 +572,46 @@ impl WorkerRepo {
         }))
     }
 
+    /// Fill `machine_id` on every worker and slot row that has none (rows
+    /// written before migration 007) with `machine_id`, this server's own
+    /// machine: before multi-machine support every row was local. Runs at
+    /// startup right after migrations, before any row is decoded. Returns
+    /// the number of rows updated.
+    pub async fn backfill_machine_id(&self, machine_id: &str) -> Result<u64, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let workers = sqlx::query("UPDATE worker SET machine_id = $1 WHERE machine_id IS NULL")
+            .bind(machine_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        let slots = sqlx::query("UPDATE slot SET machine_id = $1 WHERE machine_id IS NULL")
+            .bind(machine_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+        Ok(workers + slots)
+    }
+
     // --- Reconciliation helpers ---
 
-    /// List all slots across all projects.
+    /// Every slot on `machine_id`, across all projects, oldest first.
+    async fn list_machine_slots(&self, machine_id: &str) -> Result<Vec<Slot>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, SlotRow>(
+            "SELECT id, project_key, slot_name, host_path, created_at, updated_at, machine_id
+             FROM slot WHERE machine_id = $1 ORDER BY created_at ASC",
+        )
+        .bind(machine_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(slot_from_row).collect())
+    }
+
+    /// List all slots across all machines and projects.
     pub async fn list_all_slots(&self) -> Result<Vec<Slot>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, (String, String, String, String, String, String)>(
-            "SELECT id, project_key, slot_name, host_path, created_at, updated_at
+        let rows = sqlx::query_as::<_, SlotRow>(
+            "SELECT id, project_key, slot_name, host_path, created_at, updated_at, machine_id
              FROM slot ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
@@ -552,7 +623,7 @@ impl WorkerRepo {
     /// List all workers regardless of container_status.
     pub async fn list_all_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime, machine_id
              FROM worker ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
@@ -565,7 +636,7 @@ impl WorkerRepo {
     /// (provisioning, running, stopping).
     pub async fn list_active_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime, machine_id
              FROM worker WHERE container_status IN ('provisioning', 'running', 'stopping') ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
@@ -588,7 +659,9 @@ impl WorkerRepo {
 
     // --- Reconciliation methods ---
 
-    /// Reconcile slot DB rows with on-disk directories.
+    /// Reconcile `machine_id`'s slot DB rows with that machine's on-disk
+    /// directories. Other machines' rows are never touched: their
+    /// directories are not on this disk.
     ///
     /// `project_configs` maps project_key to the pool directory path for that project
     /// (e.g., `{local_workspace}/pool/{project_key}`).
@@ -601,6 +674,7 @@ impl WorkerRepo {
     /// - Directory on disk but no slot in DB: insert a new slot row.
     pub async fn reconcile_slots(
         &self,
+        machine_id: &str,
         project_configs: &HashMap<String, std::path::PathBuf>,
         local_workspace: &Path,
         host_workspace: &Path,
@@ -610,7 +684,7 @@ impl WorkerRepo {
             inserted_orphaned: Vec::new(),
         };
 
-        let all_slots = self.list_all_slots().await?;
+        let all_slots = self.list_machine_slots(machine_id).await?;
 
         // Index DB slots by (project_key, slot_name) for fast lookup.
         let mut db_slots_by_project: HashMap<String, HashMap<String, Slot>> = HashMap::new();
@@ -634,6 +708,7 @@ impl WorkerRepo {
             self.delete_stale_slots(&db_slots, &disk_slot_names, &mut result)
                 .await?;
             self.insert_orphaned_slots(
+                machine_id,
                 project_key,
                 &host_pool_dir,
                 &db_slots,
@@ -673,6 +748,7 @@ impl WorkerRepo {
     /// Insert slot rows for on-disk directories that have no DB row.
     async fn insert_orphaned_slots(
         &self,
+        machine_id: &str,
         project_key: &str,
         project_pool_dir: &Path,
         db_slots: &HashMap<String, Slot>,
@@ -692,6 +768,7 @@ impl WorkerRepo {
                 host_path: host_path.display().to_string(),
                 created_at: now.clone(),
                 updated_at: now,
+                machine_id: machine_id.to_owned(),
             };
             let slot_id = slot.id.clone();
             self.insert_slot(&slot).await?;
@@ -746,8 +823,8 @@ fn insert_worker_row(
     worker: &Worker,
 ) -> sqlx::query::Query<'_, sqlx::Postgres, sqlx::postgres::PgArguments> {
     sqlx::query(
-        "INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, brain_path, runtime)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+        "INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, brain_path, runtime, machine_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
     )
     .bind(&worker.worker_id)
     .bind(&worker.process_id)
@@ -763,6 +840,7 @@ fn insert_worker_row(
     .bind(&worker.updated_at)
     .bind(&worker.brain_path)
     .bind(worker.runtime.as_str())
+    .bind(&worker.machine_id)
 }
 #[cfg(test)]
 mod tests {
@@ -787,21 +865,29 @@ mod tests {
             idle_redispatch_count: 0,
             brain_path: None,
             runtime: WorkerRuntime::Container,
+            machine_id: MACHINE.to_owned(),
+        }
+    }
+
+    const MACHINE: &str = "mach-a";
+
+    fn slot_on(machine_id: &str, id: &str, slot_name: &str) -> Slot {
+        let now = Utc::now().to_rfc3339();
+        Slot {
+            id: id.to_owned(),
+            project_key: "testproj".to_owned(),
+            slot_name: slot_name.to_owned(),
+            host_path: format!("/pool/testproj/{slot_name}"),
+            created_at: now.clone(),
+            updated_at: now,
+            machine_id: machine_id.to_owned(),
         }
     }
 
     async fn slot_row(repo: &WorkerRepo, id: &str) {
-        let now = Utc::now().to_rfc3339();
-        repo.insert_slot(&Slot {
-            id: id.to_owned(),
-            project_key: "testproj".to_owned(),
-            slot_name: id.trim_start_matches("slot-").to_owned(),
-            host_path: format!("/pool/testproj/{id}"),
-            created_at: now.clone(),
-            updated_at: now,
-        })
-        .await
-        .unwrap();
+        repo.insert_slot(&slot_on(MACHINE, id, id.trim_start_matches("slot-")))
+            .await
+            .unwrap();
     }
 
     fn provisioning(worker_id: &str) -> Worker {
@@ -833,7 +919,7 @@ mod tests {
             "loser's row rolled back"
         );
         assert!(
-            repo.find_available_slots("testproj")
+            repo.find_available_slots(MACHINE, "testproj")
                 .await
                 .unwrap()
                 .is_empty()
@@ -1151,9 +1237,128 @@ mod tests {
         let test_db = TestDb::new().await;
         let repo = WorkerRepo::new(test_db.workflow_pool().clone());
         repo_insert_raw(&test_db, "w-backfill").await;
+        repo.backfill_machine_id(MACHINE).await.unwrap();
 
         let worker = repo.get_worker("w-backfill").await.unwrap().unwrap();
         assert_eq!(worker.agent_type, "claude");
         assert_eq!(worker.runtime, WorkerRuntime::Container);
+    }
+
+    /// One slot name per project per machine: another machine may reuse it.
+    #[tokio::test]
+    async fn slot_names_are_unique_per_machine() {
+        let test_db = TestDb::new().await;
+        let repo = WorkerRepo::new(test_db.workflow_pool().clone());
+        repo.insert_slot(&slot_on("mach-a", "a-3", "3"))
+            .await
+            .unwrap();
+        repo.insert_slot(&slot_on("mach-b", "b-3", "3"))
+            .await
+            .unwrap();
+        let dup = repo.insert_slot(&slot_on("mach-a", "a-3-again", "3")).await;
+        let Err(sqlx::Error::Database(e)) = dup else {
+            panic!("duplicate slot name on one machine must be rejected");
+        };
+        assert_eq!(e.code().as_deref(), Some("23505"));
+    }
+
+    /// Listing, availability, host-path lookup and claims never cross
+    /// machines.
+    #[tokio::test]
+    async fn slot_queries_and_claims_are_machine_scoped() {
+        let test_db = TestDb::new().await;
+        let repo = WorkerRepo::new(test_db.workflow_pool().clone());
+        repo.insert_slot(&slot_on("mach-a", "a-0", "0"))
+            .await
+            .unwrap();
+        repo.insert_slot(&slot_on("mach-b", "b-0", "0"))
+            .await
+            .unwrap();
+
+        let ids = |slots: Vec<Slot>| slots.into_iter().map(|s| s.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(repo.list_slots("mach-a", "testproj").await.unwrap()),
+            ["a-0"]
+        );
+        assert_eq!(
+            ids(repo.list_slots("mach-b", "testproj").await.unwrap()),
+            ["b-0"]
+        );
+        assert_eq!(
+            ids(repo
+                .find_available_slots("mach-b", "testproj")
+                .await
+                .unwrap()),
+            ["b-0"]
+        );
+        let by_path = repo
+            .get_slot_by_host_path("mach-b", "/pool/testproj/0")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(by_path.id, "b-0");
+        assert_eq!(by_path.machine_id, "mach-b");
+
+        // A mach-a worker cannot claim mach-b's slot.
+        let err = repo
+            .claim_slot(&provisioning("w-a"), "b-0")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("mach-b"), "{err}");
+        assert!(
+            repo.get_worker("w-a").await.unwrap().is_none(),
+            "rolled back"
+        );
+
+        assert!(repo.claim_slot(&provisioning("w-a"), "a-0").await.unwrap());
+        assert_eq!(repo.slots_in_use("mach-a", "testproj").await.unwrap(), 1);
+        assert_eq!(repo.slots_in_use("mach-b", "testproj").await.unwrap(), 0);
+        assert!(
+            repo.find_available_slots("mach-a", "testproj")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            ids(repo
+                .find_available_slots("mach-b", "testproj")
+                .await
+                .unwrap()),
+            ["b-0"]
+        );
+        let claimed = repo.get_worker("w-a").await.unwrap().unwrap();
+        assert_eq!(claimed.machine_id, "mach-a");
+    }
+
+    /// Reconciliation only sees its own machine's rows: another machine's
+    /// slot, absent from this disk, survives.
+    #[tokio::test]
+    async fn reconcile_slots_leaves_other_machines_alone() {
+        let test_db = TestDb::new().await;
+        let repo = WorkerRepo::new(test_db.workflow_pool().clone());
+        repo.insert_slot(&slot_on("mach-a", "a-0", "0"))
+            .await
+            .unwrap();
+        repo.insert_slot(&slot_on("mach-b", "b-0", "0"))
+            .await
+            .unwrap();
+        let workspace = std::env::temp_dir().join(format!("wfdb-reconcile-{}", Uuid::new_v4()));
+        let pool_dir = workspace.join("pool").join("testproj");
+        tokio::fs::create_dir_all(pool_dir.join("1")).await.unwrap();
+        let projects = HashMap::from([("testproj".to_owned(), pool_dir.clone())]);
+
+        let result = repo
+            .reconcile_slots("mach-a", &projects, &workspace, &workspace)
+            .await
+            .unwrap();
+        tokio::fs::remove_dir_all(&workspace).await.unwrap();
+
+        assert_eq!(result.deleted_stale, ["a-0"]);
+        assert_eq!(result.inserted_orphaned.len(), 1);
+        assert!(repo.get_slot("b-0").await.unwrap().is_some());
+        let a = repo.list_slots("mach-a", "testproj").await.unwrap();
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].slot_name, "1");
+        assert_eq!(a[0].machine_id, "mach-a");
     }
 }

@@ -126,4 +126,146 @@ mod tests {
 
         admin.close().await;
     }
+
+    async fn create_empty_db(admin: &PgPool) -> (PgPool, String) {
+        let db_name = format!("workflow_db_test_{}", Uuid::new_v4().simple());
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE DATABASE \"{db_name}\""
+        )))
+        .execute(admin)
+        .await
+        .expect("failed to create test database");
+        let options = PgConnectOptions::from_str(&ci_postgres_url(&db_name))
+            .expect("invalid test database connection string");
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .expect("failed to connect to test database");
+        (pool, db_name)
+    }
+
+    async fn slot_constraints(pool: &PgPool) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT conname::TEXT FROM pg_constraint WHERE conrelid = 'slot'::regclass \
+             AND contype = 'u' ORDER BY conname",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    /// Migration 007 on a database that already holds worker/slot rows (as
+    /// a real one does): nothing is lost, rows are NULL until the backfill,
+    /// the backfill fills every NULL once, and the rows then decode.
+    #[tokio::test]
+    async fn machine_id_migration_and_backfill_keep_existing_rows() {
+        let admin = admin_pool().await;
+        let (pool, db_name) = create_empty_db(&admin).await;
+
+        sqlx::migrate!()
+            .run_to(6, &pool)
+            .await
+            .expect("migrations 001-006 failed");
+        assert_eq!(
+            slot_constraints(&pool).await,
+            ["slot_project_key_slot_name_key"],
+            "001's auto-named constraint, which 007 drops by name"
+        );
+        // Rows with the pre-007 schema: a running worker owning slot 0, an
+        // idle slot 1, and a stopped worker with no slot.
+        sqlx::raw_sql(
+            "INSERT INTO slot (id, project_key, slot_name, host_path, created_at, updated_at) VALUES
+               ('s0', 'proj', '0', '/pool/proj/0', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+               ('s1', 'proj', '1', '/pool/proj/1', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z');
+             INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret,
+                 strategy, container_status, agent_status, workspace_path, created_at, updated_at,
+                 agent_type, brain_path, runtime)
+             VALUES
+               ('w-run', 'p-run', 'proj', 'c-run', 'sec', 'code', 'running', 'idle',
+                '/pool/proj/0', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'codex',
+                '/brain', 'local'),
+               ('w-gone', 'p-gone', 'proj', 'c-gone', 'sec', 'code', 'stopped', 'idle',
+                NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'claude', NULL,
+                'container');
+             INSERT INTO worker_slot (worker_id, slot_id, created_at)
+               VALUES ('w-run', 's0', '2026-01-01T00:00:00Z');",
+        )
+        .execute(&pool)
+        .await
+        .expect("seeding pre-007 rows failed");
+
+        migrate(&pool).await.expect("migration 007 failed");
+        assert_eq!(
+            slot_constraints(&pool).await,
+            ["slot_machine_project_slot_name_key"]
+        );
+        let nulls: i64 = sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM worker WHERE machine_id IS NULL) \
+                  + (SELECT COUNT(*) FROM slot WHERE machine_id IS NULL)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(nulls, 4, "existing rows kept, machine_id unset");
+        let dup = sqlx::query(
+            "INSERT INTO slot (id, project_key, slot_name, host_path) \
+             VALUES ('s0-dup', 'proj', '0', '/x')",
+        )
+        .execute(&pool)
+        .await;
+        assert!(
+            dup.is_err(),
+            "un-backfilled rows keep per-project uniqueness"
+        );
+
+        let repo = WorkerRepo::new(pool.clone());
+        assert_eq!(repo.backfill_machine_id("mach-a").await.unwrap(), 4);
+        assert_eq!(
+            repo.backfill_machine_id("mach-b").await.unwrap(),
+            0,
+            "idempotent"
+        );
+
+        let w = repo.get_worker("w-run").await.unwrap().unwrap();
+        assert_eq!(w.machine_id, "mach-a");
+        assert_eq!(
+            (
+                w.agent_type.as_str(),
+                w.brain_path.as_deref(),
+                w.container_status.as_str()
+            ),
+            ("codex", Some("/brain"), "running")
+        );
+        assert_eq!(w.runtime, model::WorkerRuntime::Local);
+        assert_eq!(repo.list_all_workers().await.unwrap().len(), 2);
+        assert_eq!(
+            repo.get_worker_slot("w-run")
+                .await
+                .unwrap()
+                .unwrap()
+                .slot_id,
+            "s0"
+        );
+        let slots = repo.list_slots("mach-a", "proj").await.unwrap();
+        let names: Vec<_> = slots
+            .iter()
+            .map(|s| (s.id.as_str(), s.machine_id.as_str()))
+            .collect();
+        assert_eq!(names, [("s0", "mach-a"), ("s1", "mach-a")]);
+        let free = repo.find_available_slots("mach-a", "proj").await.unwrap();
+        assert_eq!(
+            free.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["s1"]
+        );
+
+        pool.close().await;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)"
+        )))
+        .execute(&admin)
+        .await
+        .expect("failed to drop test database");
+        admin.close().await;
+    }
 }

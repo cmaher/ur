@@ -261,6 +261,7 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
         ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
             tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
         ),
+        config.machine.id.clone(),
     )
 }
 
@@ -391,6 +392,7 @@ fn dummy_launch_manager(
         ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
             tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
         ),
+        config.machine.id.clone(),
     );
     ur_server::grpc::LaunchManager {
         worker_manager,
@@ -492,6 +494,7 @@ async fn seed_ticket_and_worker(
         idle_redispatch_count: 0,
         brain_path: None,
         runtime: workflow_db::model::WorkerRuntime::Container,
+        machine_id: "test-machine".to_owned(),
     };
     worker_repo.insert_worker(&worker).await.unwrap();
 
@@ -818,6 +821,7 @@ async fn seed_ticket_and_worker_for_project(
         idle_redispatch_count: 0,
         brain_path: None,
         runtime: workflow_db::model::WorkerRuntime::Container,
+        machine_id: "test-machine".to_owned(),
     };
     worker_repo.insert_worker(&worker).await.unwrap();
     workflow_repo

@@ -57,6 +57,7 @@ On startup (`crates/server/src/main.rs`), each database goes through the same in
 1. `DatabaseManager::open(url)` creates an sqlx `PgPool`
 2. `sqlx::migrate!().run(&pool)` applies pending migrations from the crate's `migrations/` directory
 3. Migrations are embedded at compile time via the `sqlx::migrate!()` macro
+4. Workflow DB only: `WorkerRepo::backfill_machine_id(<this server's machine id>)` runs immediately after the workflow migrations, inside `init_databases`, before any manager is built or any worker/slot row is read (see "Machine ids" below)
 
 Each crate owns its own migration history:
 
@@ -93,13 +94,21 @@ workflow_event    (id PK, ticket_id, old_lifecycle_status, new_lifecycle_status,
 workflow_intent   (id PK, ticket_id, target_status, created_at)
 workflow_comments (ticket_id, comment_id) — PK: (ticket_id, comment_id)
 workflow_events   (id PK, workflow_id, event, created_at)
-slot       (id PK, project_key, slot_name, host_path, created_at, updated_at)
-worker     (worker_id PK, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count)
-worker_slot (worker_id FK, slot_id FK) — PK: (worker_id, slot_id)
+slot       (id PK, project_key, slot_name, host_path, created_at, updated_at, machine_id) — UNIQUE NULLS NOT DISTINCT (machine_id, project_key, slot_name)
+worker     (worker_id PK, process_id, project_key, container_id, worker_secret, strategy, agent_type, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count, brain_path, runtime, launch_pending, machine_id)
+worker_slot (worker_id FK, slot_id FK) — PK: (worker_id, slot_id), UNIQUE (slot_id)
 ui_events  (id BIGSERIAL PK, entity_type, entity_id, created_at) — ephemeral event buffer
 ```
 
 `worker.agent_type` (`TEXT NOT NULL DEFAULT 'claude'`) was added in `002_worker_agent_type.sql` — which agent (e.g. Claude) is running that worker, orthogonal to `strategy` (which describes what kind of work). `WorkerSummary.agent_type` (both the internal server struct and the proto message) reads from this column.
+
+### Machine ids
+
+`worker.machine_id` and `slot.machine_id` (`TEXT`, added in `007_machine_id.sql`) record which machine (`[machine] id`, passed to the server as `UR_MACHINE_ID`) the worker runs on or the slot's directory lives on.
+
+- **Nullable in the DB, required in Rust.** The id is only known at runtime, so the migration adds the columns without a value. The server fills every NULL with its own machine id via `WorkerRepo::backfill_machine_id` right after migrating (every row from before multi-machine support was local). `Worker.machine_id` / `Slot.machine_id` are plain `String`s: a NULL that somehow survived fails to decode loudly rather than being treated as local. Every insert writes the column.
+- **Uniqueness.** 007 drops 001's auto-named `slot_project_key_slot_name_key` (`UNIQUE (project_key, slot_name)`) and adds `slot_machine_project_slot_name_key` (`UNIQUE NULLS NOT DISTINCT (machine_id, project_key, slot_name)`): two machines may each have slot `3` of a project, one machine may not have two. `NULLS NOT DISTINCT` keeps the old guarantee for rows not yet backfilled. Its index leads with `(machine_id, project_key)` and serves the machine-scoped listings.
+- **Scoping.** Slot queries take a machine id: `list_slots`, `find_available_slots`, `slots_in_use`, `get_slot_by_host_path` and `reconcile_slots` (a server only reconciles its own machine's rows against its own disk). `claim_slot` refuses (error, not "taken") a slot whose machine differs from the claiming worker's. Lookups by globally unique id (`get_slot`, every worker query) stay unscoped.
 
 The `ui_events` table exists in **both** databases. Each database has its own copy with its own triggers. The server runs two `PgEventPoller` instances and merges their streams before dispatching to gRPC subscribers (see `docs/codeflows/ui-events.md`).
 

@@ -81,7 +81,11 @@ async fn open_pool(url: &str, label: &str) -> anyhow::Result<PgPool> {
     ))
 }
 
-async fn init_databases(cfg: &Config) -> anyhow::Result<DatabasePools> {
+/// Open both pools and migrate them. `machine_id` (this server's machine)
+/// fills the `machine_id` of worker/slot rows written before migration 007,
+/// immediately after the workflow_db migrations and before this returns, so
+/// no code path ever decodes a row without one.
+async fn init_databases(cfg: &Config, machine_id: &str) -> anyhow::Result<DatabasePools> {
     let ticket_url = std::env::var(ur_config::UR_TICKET_DB_URL_ENV)
         .unwrap_or_else(|_| cfg.ticket_db.database_url());
     let workflow_url = std::env::var(ur_config::UR_WORKFLOW_DB_URL_ENV)
@@ -101,7 +105,13 @@ async fn init_databases(cfg: &Config) -> anyhow::Result<DatabasePools> {
         async {
             workflow_db::migrate(&workflow_pool)
                 .await
-                .map_err(|e| anyhow::anyhow!("workflow_db migration failed: {e}"))
+                .map_err(|e| anyhow::anyhow!("workflow_db migration failed: {e}"))?;
+            let backfilled = WorkerRepo::new(workflow_pool.clone())
+                .backfill_machine_id(machine_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("workflow_db machine_id backfill failed: {e}"))?;
+            info!(machine_id, rows = backfilled, "backfilled machine_id");
+            Ok(())
         },
     )?;
 
@@ -199,7 +209,12 @@ async fn reconcile_slots(
         .map(|k| (k.clone(), pool_root.join(k)))
         .collect();
     let slot_result = worker_repo
-        .reconcile_slots(&project_pool_dirs, local_workspace, host_workspace)
+        .reconcile_slots(
+            &cfg.machine.id,
+            &project_pool_dirs,
+            local_workspace,
+            host_workspace,
+        )
         .await
         .map_err(|e| anyhow::anyhow!("slot reconciliation failed: {e}"))?;
     info!(
@@ -668,6 +683,7 @@ async fn init_managers(
         ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
             builderd_retry_channel.channel().clone(),
         ),
+        cfg.machine.id.clone(),
     );
 
     Ok((
@@ -716,7 +732,7 @@ async fn main() -> anyhow::Result<()> {
     info!(host_config_dir = %host_config_dir.display(), "host config resolved");
 
     let worker_modes = load_worker_modes(&cfg)?;
-    let pools = init_databases(&cfg).await?;
+    let pools = init_databases(&cfg, &cfg.machine.id).await?;
     let backup_handles = init_backups(&cfg)?;
 
     let (log_cleanup_shutdown_tx, log_cleanup_handle) = init_log_cleanup(&logs_dir);

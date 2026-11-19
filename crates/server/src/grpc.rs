@@ -977,6 +977,7 @@ impl LaunchManager {
             idle_redispatch_count: 0,
             brain_path: None,
             runtime,
+            machine_id: self.worker_manager.machine_id().to_owned(),
         }
     }
 

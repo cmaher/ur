@@ -371,6 +371,7 @@ async fn harness() -> Harness {
         config.global_skills.clone(),
         builder_container_client,
         BuilderLocalWorkerClient::new(local_channel.clone()),
+        config.machine.id.clone(),
     );
     let ticket_pool = test_db.ticket_pool().clone();
     let launch_manager = ur_server::grpc::LaunchManager {
@@ -656,6 +657,7 @@ async fn pool_slot(h: &Harness) -> String {
         host_path: h.slot.display().to_string(),
         created_at: now.clone(),
         updated_at: now,
+        machine_id: h.worker_manager.machine_id().into(),
     };
     h.worker_repo.insert_slot(&slot).await.unwrap();
     std::fs::write(h.slot.join("uncommitted.txt"), "work").unwrap();
@@ -690,6 +692,7 @@ fn claim_row(h: &Harness, worker_id: &str) -> workflow_db::model::Worker {
         idle_redispatch_count: 0,
         brain_path: None,
         runtime: ur_config::WorkerRuntime::Local,
+        machine_id: h.worker_manager.machine_id().into(),
     }
 }
 
@@ -818,7 +821,7 @@ async fn failed_launch_keeps_slot_until_cleanup_is_confirmed() {
     assert_eq!(slot_owner(&h, "local-1-lfno").await, Some(slot.clone()));
     assert!(
         h.worker_repo
-            .find_available_slots(PROJECT)
+            .find_available_slots(h.worker_manager.machine_id(), PROJECT)
             .await
             .unwrap()
             .is_empty(),
@@ -909,7 +912,7 @@ async fn concurrent_stoppers_leave_a_reacquired_slot_alone() {
     assert_eq!(h.fake.stops.lock().unwrap().len(), 2, "second stopper held");
     assert_eq!(
         h.worker_repo
-            .find_available_slots(PROJECT)
+            .find_available_slots(h.worker_manager.machine_id(), PROJECT)
             .await
             .unwrap()
             .len(),
@@ -1033,7 +1036,7 @@ async fn stop_during_launch_waits_for_it_through_builderd() {
         assert_eq!(slot_owner(&h, "local-1-infl").await, Some(slot.clone()));
         assert!(
             h.worker_repo
-                .find_available_slots(PROJECT)
+                .find_available_slots(h.worker_manager.machine_id(), PROJECT)
                 .await
                 .unwrap()
                 .is_empty()
@@ -1102,7 +1105,7 @@ async fn cancelled_launch_rpc_still_finalizes() {
     assert_eq!(slot_owner(&h, &row.worker_id).await, Some(slot));
     assert!(
         h.worker_repo
-            .find_available_slots(PROJECT)
+            .find_available_slots(h.worker_manager.machine_id(), PROJECT)
             .await
             .unwrap()
             .is_empty()
@@ -1134,6 +1137,7 @@ async fn acquire_moves_on_when_a_rival_claims_the_candidate_first() {
             host_path: slot1_path.display().to_string(),
             created_at: now.clone(),
             updated_at: now,
+            machine_id: h.worker_manager.machine_id().into(),
         })
         .await
         .unwrap();
@@ -1241,7 +1245,7 @@ async fn failed_container_launch_releases_its_slot_only_after_stop() {
     assert_eq!(slot_owner(&h, "proj-1-cfai").await, Some(slot.clone()));
     assert!(
         h.worker_repo
-            .find_available_slots(PROJECT)
+            .find_available_slots(h.worker_manager.machine_id(), PROJECT)
             .await
             .unwrap()
             .is_empty()
@@ -1666,7 +1670,7 @@ async fn lost_launch_converges(rt: ur_config::WorkerRuntime, launch_stop_fails: 
     );
     assert!(
         h.worker_repo
-            .find_available_slots(PROJECT)
+            .find_available_slots(h.worker_manager.machine_id(), PROJECT)
             .await
             .unwrap()
             .is_empty(),

@@ -671,6 +671,8 @@ pub struct WorkerManager {
     builder_container_client: BuilderContainerClient,
     /// gRPC client for launching/stopping `runtime = local` workers via builderd.
     pub(crate) builder_local_worker_client: BuilderLocalWorkerClient,
+    /// Machine this server launches workers on; recorded on every worker row.
+    machine_id: String,
 }
 
 impl WorkerManager {
@@ -689,6 +691,7 @@ impl WorkerManager {
         global_skills: GlobalSkillsConfig,
         builder_container_client: BuilderContainerClient,
         builder_local_worker_client: BuilderLocalWorkerClient,
+        machine_id: String,
     ) -> Self {
         Self {
             workspace,
@@ -704,7 +707,13 @@ impl WorkerManager {
             global_skills,
             builder_container_client,
             builder_local_worker_client,
+            machine_id,
         }
+    }
+
+    /// Machine this server launches workers on (recorded on worker rows).
+    pub fn machine_id(&self) -> &str {
+        &self.machine_id
     }
 
     /// Resolve skills for a launch request using the configured worker modes.
@@ -885,6 +894,7 @@ impl WorkerManager {
             idle_redispatch_count: 0,
             brain_path: brain_path.map(|p| p.display().to_string()),
             runtime: ur_config::WorkerRuntime::Container,
+            machine_id: self.machine_id.clone(),
         };
         self.worker_repo
             .insert_worker(&worker)
@@ -1108,6 +1118,7 @@ impl WorkerManager {
             idle_redispatch_count: 0,
             brain_path: brain_host_path(config, &self.host_config_dir),
             runtime: config.runtime,
+            machine_id: self.machine_id.clone(),
         };
         let db = |e: sqlx::Error| format!("failed to record worker: {e}");
         // A pool launch claimed its slot with this row already; refresh it.
@@ -1706,6 +1717,7 @@ mod tests {
             crate::builder_local_worker_client::BuilderLocalWorkerClient::new(
                 tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
             ),
+            "test-machine".to_owned(),
         );
         (mgr, workspace, test_db)
     }
@@ -3315,6 +3327,7 @@ agent = "claude"
             crate::builder_local_worker_client::BuilderLocalWorkerClient::new(
                 tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
             ),
+            "test-machine".to_owned(),
         );
         (mgr, workspace, test_db)
     }

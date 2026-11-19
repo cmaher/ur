@@ -95,6 +95,8 @@ pub struct Slot {
     pub host_path: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Machine the slot's directory lives on (`[machine] id`).
+    pub machine_id: String,
 }
 
 pub struct Worker {
@@ -115,6 +117,8 @@ pub struct Worker {
     pub brain_path: Option<String>,
     /// Where the worker's agent runs (`worker.runtime`, default container).
     pub runtime: WorkerRuntime,
+    /// Machine the worker runs on (`[machine] id`).
+    pub machine_id: String,
 }
 
 pub struct WorkerSlot {

@@ -156,6 +156,7 @@ async fn make_grpc_handler(
         ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
             tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
         ),
+        config.machine.id.clone(),
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager: worker_manager.clone(),
@@ -294,6 +295,7 @@ async fn make_worker_handler() -> (
         ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
             tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
         ),
+        config.machine.id.clone(),
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager,
@@ -476,6 +478,7 @@ fn worker_row(
         idle_redispatch_count: 0,
         brain_path: None,
         runtime,
+        machine_id: "test-machine".into(),
     }
 }
 
@@ -742,6 +745,7 @@ async fn handler_with_local_worker(
             idle_redispatch_count: 0,
             brain_path: None,
             runtime: ur_config::WorkerRuntime::Local,
+            machine_id: "test-machine".into(),
         })
         .await
         .unwrap();
@@ -857,6 +861,7 @@ fn peer_row(worker_id: &str, project_key: &str, strategy: &str) -> workflow_db::
         idle_redispatch_count: 0,
         brain_path: None,
         runtime: ur_config::WorkerRuntime::Local,
+        machine_id: "test-machine".into(),
     }
 }
 

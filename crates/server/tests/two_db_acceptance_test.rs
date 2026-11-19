@@ -209,6 +209,7 @@ fn running_worker(worker_id: &str, process_id: &str) -> workflow_db::model::Work
         idle_redispatch_count: 0,
         brain_path: None,
         runtime: workflow_db::model::WorkerRuntime::Container,
+        machine_id: "test-machine".to_string(),
     }
 }
 

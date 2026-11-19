@@ -74,6 +74,7 @@ async fn harness() -> Harness {
         ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
             tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
         ),
+        config.machine.id.clone(),
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager,
