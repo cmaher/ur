@@ -42,9 +42,11 @@ async fn harness() -> Harness {
     );
     let workflow_repo = workflow_db::WorkflowRepo::new(workflow_pool);
 
-    let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
-    let builder_container_client =
-        ur_server::builder_container_client::BuilderContainerClient::new(channel.clone());
+    let test_registry = ur_server::MachineRegistryManager::new(
+        config.machine.id.clone(),
+        "http://127.0.0.1:1".into(),
+    )
+    .unwrap();
     let project_registry = ur_server::ProjectRegistry::new(
         config.projects.clone(),
         ur_server::hostexec::HostExecConfigManager::empty(),
@@ -53,7 +55,6 @@ async fn harness() -> Harness {
         &config,
         worker_repo.clone(),
         project_registry.clone(),
-        ur_server::BuilderPoolClient::new(channel),
         ur_server::MachineRegistryManager::new(
             config.machine.id.clone(),
             "http://127.0.0.1:1".into(),
@@ -67,7 +68,7 @@ async fn harness() -> Harness {
         config.logs_dir.clone(),
         config.logs_dir.clone(),
         ur_server::network_manager::NetworkManager::new(
-            builder_container_client.clone(),
+            test_registry.clone(),
             config.network.worker_name.clone(),
         ),
         config.network.clone(),
@@ -75,11 +76,7 @@ async fn harness() -> Harness {
         worker_modes,
         worker_repo.clone(),
         config.global_skills.clone(),
-        builder_container_client,
-        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
-            tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
-        ),
-        config.machine.id.clone(),
+        test_registry.clone(),
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager,

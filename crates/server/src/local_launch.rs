@@ -43,6 +43,11 @@ impl WorkerManager {
         &self,
         config: WorkerConfig,
     ) -> Result<(String, String), String> {
+        // The row records `machine_id()`; its launch goes to that builderd.
+        let client = self
+            .machine_registry
+            .local_worker_client(self.machine_id())
+            .map_err(|e| e.to_string())?;
         let worker_secret = Uuid::new_v4().to_string();
         let session = local_session_name(&config.worker_id);
         let request = build_local_launch_request(
@@ -56,11 +61,7 @@ impl WorkerManager {
         self.record_provisioning_worker(&config, &session, &worker_secret)
             .await?;
 
-        if let Err(status) = self
-            .builder_local_worker_client
-            .launch_local_worker(request)
-            .await
-        {
+        if let Err(status) = client.launch_local_worker(request).await {
             let error = format!("launch_local_worker gRPC error: {status}");
             return Err(self.abandon_launch(&config.worker_id, error).await);
         }

@@ -8,6 +8,14 @@ and linking workers to slots. All filesystem and git operations are delegated to
 builderd via `BuilderPoolClient`, which calls coarse-grained RPCs on the
 `BuilderPoolService`. Builderd runs on the host with full credential and filesystem access.
 
+**Pools are per machine.** `RepoPoolManager` serves the local machine
+(`MachineRegistryManager::local_id()`): every slot query (`find_available_slots`,
+`get_slot_by_host_path`) is scoped to that `machine_id`, new slot and worker rows record
+it, and each pool RPC goes to that machine's builderd
+(`MachineRegistryManager::pool_client(machine_id)`). Another machine's free slot is never
+a candidate, and a claim naming one is `ClaimSlotError::SlotOnOtherMachine` →
+`failed_precondition`.
+
 **Local projects never reach the pool.** A project declared `local = true` in
 `ur.toml` has no `repo` to clone, so `RepoPoolManager::resolve_pool_project()`
 refuses it at the top of `acquire_slot`, `acquire_shared_slot`, and
@@ -122,6 +130,7 @@ therefore never reset a slot another worker already holds.
 
 - `crates/server/src/pool.rs` — `RepoPoolManager` (DB orchestration: acquire, release, slot linking)
 - `crates/server/src/builder_pool_client.rs` — `BuilderPoolClient` (typed wrappers for 5 RPCs)
+- `crates/server/src/machine_registry.rs` — `MachineRegistryManager` (the machine's `BuilderPoolClient`)
 - `crates/builderd/src/pool_handler.rs` — `BuilderPoolHandler` (all filesystem/git operations)
 - `proto/builder_pool.proto` — `BuilderPoolService` proto definition
 - `crates/server/src/grpc_hostexec.rs` — `HostExecServiceHandler` (separate path: worker -> server -> builderd)

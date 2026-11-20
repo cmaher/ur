@@ -568,15 +568,14 @@ mod tests {
     }
 
     fn dummy_worker_manager(worker_repo: WorkerRepo) -> crate::WorkerManager {
-        let channel =
-            tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
-        let builder_container_client =
-            crate::builder_container_client::BuilderContainerClient::new(channel.clone());
+        let test_registry = crate::MachineRegistryManager::new(
+            "test-machine".to_owned(),
+            "http://localhost:50051".into(),
+        )
+        .unwrap();
         let config = dummy_config();
-        let network_manager = crate::network_manager::NetworkManager::new(
-            builder_container_client.clone(),
-            "ur-workers".into(),
-        );
+        let network_manager =
+            crate::network_manager::NetworkManager::new(test_registry.clone(), "ur-workers".into());
         crate::WorkerManager::new(
             std::path::PathBuf::from("/tmp/test/workspace"),
             std::path::PathBuf::from("/tmp/test"),
@@ -589,11 +588,7 @@ mod tests {
             Default::default(),
             worker_repo,
             Default::default(),
-            builder_container_client,
-            crate::builder_local_worker_client::BuilderLocalWorkerClient::new(
-                tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
-            ),
-            "test-machine".to_owned(),
+            test_registry.clone(),
         )
     }
 

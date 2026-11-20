@@ -252,8 +252,10 @@ gets `teardown_orphan` (links only). Listing failure aborts startup; no tmux ins
 sessions. Orphan drive failures are logged only (known limit: drives hold only links; the next
 startup retries).
 
-**Reconcile pass** (`crates/server/src/worker_reconcile.rs`): read the active rows, then one
-list per runtime (`ListLocalWorkers`, `ListWorkerContainers`). One table for both runtimes:
+**Reconcile pass** (`crates/server/src/worker_reconcile.rs`): read the active rows, then, for
+each machine in the `MachineRegistryManager`, one list per runtime (`ListLocalWorkers`,
+`ListWorkerContainers`) from that machine's builderd, compared only against rows with its
+`machine_id`. One table for both runtimes:
 
 | DB row | builderd list | Action |
 |---|---|---|
@@ -263,6 +265,11 @@ list per runtime (`ListLocalWorkers`, `ListWorkerContainers`). One table for bot
 | `provisioning` | any | periodic: none · startup: → `stopping` |
 | no active row (none / `stopped`) | listed | builderd Stop(worker_id) (row re-read first) |
 | — | list failed | no change for that runtime this pass |
+| row's `machine_id` not in the registry | — | no change (never local, never gone; slot stays linked); logged, the pass errors |
+
+The stop path itself resolves the row's machine before `begin_stopping`, so a stop of such a
+row (`ur worker stop`, workflow, reconcile) leaves it untouched and returns
+`StopError::Machine` → `failed_precondition`.
 
 A legacy container `running` row (pre-ur-ezhdb, never listed) is left alone. Stale-row cleanup
 (`cleanup_stale_workers`, after startup) can delete a `stopped` row, but never hides a live

@@ -14,8 +14,7 @@ use crate::network_manager::NetworkManager;
 
 use ur_rpc::proto::builder_container::{LaunchWorkerRequest, StopWorkerRequest};
 
-use crate::builder_container_client::BuilderContainerClient;
-use crate::builder_local_worker_client::BuilderLocalWorkerClient;
+use crate::machine_registry::{MachineRegistryError, MachineRegistryManager};
 use crate::run_opts_builder::RunOptsBuilder;
 use crate::strategy::WorkerStrategy;
 
@@ -667,12 +666,9 @@ pub struct WorkerManager {
     worker_modes: WorkerModesConfig,
     pub(crate) worker_repo: WorkerRepo,
     global_skills: GlobalSkillsConfig,
-    /// gRPC client for launching/stopping containers via builderd on the host.
-    builder_container_client: BuilderContainerClient,
-    /// gRPC client for launching/stopping `runtime = local` workers via builderd.
-    pub(crate) builder_local_worker_client: BuilderLocalWorkerClient,
-    /// Machine this server launches workers on; recorded on every worker row.
-    machine_id: String,
+    /// Source of each machine's builderd: launches go to the local machine
+    /// (recorded on every new row), stops to the row's `machine_id`.
+    pub(crate) machine_registry: MachineRegistryManager,
 }
 
 impl WorkerManager {
@@ -689,9 +685,7 @@ impl WorkerManager {
         worker_modes: WorkerModesConfig,
         worker_repo: WorkerRepo,
         global_skills: GlobalSkillsConfig,
-        builder_container_client: BuilderContainerClient,
-        builder_local_worker_client: BuilderLocalWorkerClient,
-        machine_id: String,
+        machine_registry: MachineRegistryManager,
     ) -> Self {
         Self {
             workspace,
@@ -705,15 +699,13 @@ impl WorkerManager {
             worker_modes,
             worker_repo,
             global_skills,
-            builder_container_client,
-            builder_local_worker_client,
-            machine_id,
+            machine_registry,
         }
     }
 
     /// Machine this server launches workers on (recorded on worker rows).
     pub fn machine_id(&self) -> &str {
-        &self.machine_id
+        self.machine_registry.local_id()
     }
 
     /// Resolve skills for a launch request using the configured worker modes.
@@ -894,7 +886,7 @@ impl WorkerManager {
             idle_redispatch_count: 0,
             brain_path: brain_path.map(|p| p.display().to_string()),
             runtime: ur_config::WorkerRuntime::Container,
-            machine_id: self.machine_id.clone(),
+            machine_id: self.machine_id().to_owned(),
         };
         self.worker_repo
             .insert_worker(&worker)
@@ -968,6 +960,11 @@ impl WorkerManager {
         if config.runtime == ur_config::WorkerRuntime::Local {
             return self.run_and_record_local(config).await;
         }
+        // The row records `machine_id()`; its launch goes to that builderd.
+        let container_client = self
+            .machine_registry
+            .container_client(self.machine_id())
+            .map_err(|e| e.to_string())?;
         // Create per-worker log directory on the local filesystem so the
         // volume mount has a source directory when the container starts.
         let worker_logs_dir = self.logs_dir.join("workers").join(&config.worker_id.0);
@@ -977,7 +974,7 @@ impl WorkerManager {
 
         // Ensure the Docker network exists before launching the container
         self.network_manager
-            .ensure()
+            .ensure(self.machine_id())
             .await
             .map_err(|e| format!("failed to ensure Docker network: {e}"))?;
 
@@ -1000,7 +997,7 @@ impl WorkerManager {
 
         // Launch the container via builderd on the host, which stats each volume
         // source against the host filesystem before calling docker run.
-        if let Err(status) = self.builder_container_client.launch_worker(opts).await {
+        if let Err(status) = container_client.launch_worker(opts).await {
             let error = format!("launch_worker gRPC error: {status}");
             return Err(self.abandon_launch(&config.worker_id, error).await);
         }
@@ -1118,7 +1115,7 @@ impl WorkerManager {
             idle_redispatch_count: 0,
             brain_path: brain_host_path(config, &self.host_config_dir),
             runtime: config.runtime,
-            machine_id: self.machine_id.clone(),
+            machine_id: self.machine_id().to_owned(),
         };
         let db = |e: sqlx::Error| format!("failed to record worker: {e}");
         // A pool launch claimed its slot with this row already; refresh it.
@@ -1202,18 +1199,22 @@ impl WorkerManager {
     /// launch resolves: this Stop may have reached a builderd that then
     /// restarted. The launch path, the reconciler or the startup pass
     /// finishes it with a Stop that began after.
-    pub async fn stop_by_worker_id(&self, worker_id: &WorkerId) -> Result<(), String> {
+    pub async fn stop_by_worker_id(&self, worker_id: &WorkerId) -> Result<(), StopError> {
         let worker = self
             .worker_repo
             .get_worker(&worker_id.0)
             .await
             .map_err(|e| format!("db error: {e}"))?
             .ok_or_else(|| format!("unknown worker: {worker_id}"))?;
+        // Resolve the row's builderd before touching the row: a machine the
+        // registry does not hold leaves it as it was (never local, never gone).
+        let builderd = self.stop_target(&worker)?;
 
         info!(
             process_id = worker.process_id,
             %worker_id,
             container_id = worker.container_id,
+            machine_id = worker.machine_id,
             "stopping container"
         );
         let launch_pending = self
@@ -1222,28 +1223,7 @@ impl WorkerManager {
             .await
             .map_err(|e| format!("failed to update worker status: {e}"))?
             == Some(true);
-        match worker.runtime {
-            ur_config::WorkerRuntime::Container => self
-                .builder_container_client
-                .stop_worker(StopWorkerRequest {
-                    worker_id: worker_id.0.clone(),
-                    legacy_container_id: legacy_container_id(
-                        &self.network_config.worker_prefix,
-                        &worker,
-                    )
-                    .unwrap_or_default()
-                    .to_owned(),
-                })
-                .await
-                .map(|_| ())
-                .map_err(|status| format!("stop_worker gRPC error: {status}"))?,
-            // Stop of an unknown id still kills its session.
-            ur_config::WorkerRuntime::Local => self
-                .builder_local_worker_client
-                .stop_local_worker(&worker_id.0)
-                .await
-                .map_err(|status| format!("stop_local_worker gRPC error: {status}"))?,
-        }
+        builderd.stop(&worker).await?;
         let finished = !launch_pending
             && self
                 .worker_repo
@@ -1260,6 +1240,26 @@ impl WorkerManager {
         );
 
         Ok(())
+    }
+
+    /// The builderd client that stops `worker`: its runtime's service on
+    /// its row's machine.
+    fn stop_target(&self, worker: &workflow_db::model::Worker) -> Result<StopTarget, StopError> {
+        let machine_id = &worker.machine_id;
+        Ok(match worker.runtime {
+            ur_config::WorkerRuntime::Container => StopTarget::Container {
+                client: self.machine_registry.container_client(machine_id)?,
+                legacy_container_id: legacy_container_id(
+                    &self.network_config.worker_prefix,
+                    worker,
+                )
+                .unwrap_or_default()
+                .to_owned(),
+            },
+            ur_config::WorkerRuntime::Local => StopTarget::Local {
+                client: self.machine_registry.local_worker_client(machine_id)?,
+            },
+        })
     }
 
     /// List all running processes with their metadata.
@@ -1310,7 +1310,7 @@ impl WorkerManager {
     ///
     /// A process_id names a slot, and every worker that has ever occupied that
     /// slot shares it, so the newest running instance is the one a stop means.
-    pub async fn stop(&self, process_id: &str) -> Result<(), String> {
+    pub async fn stop(&self, process_id: &str) -> Result<(), StopError> {
         let workers = self
             .worker_repo
             .list_workers_by_container_status("running")
@@ -1320,7 +1320,61 @@ impl WorkerManager {
             let worker_id = WorkerId::parse(&workers[index].worker_id)?;
             return self.stop_by_worker_id(&worker_id).await;
         }
-        Err(format!("unknown worker: {process_id}"))
+        Err(format!("unknown worker: {process_id}").into())
+    }
+}
+
+/// Why [`WorkerManager::stop_by_worker_id`] failed.
+#[derive(Debug, thiserror::Error)]
+pub enum StopError {
+    /// The row names a machine the registry does not hold; the row was
+    /// left untouched (`failed_precondition`).
+    #[error("{source}")]
+    Machine {
+        #[from]
+        source: MachineRegistryError,
+    },
+    #[error("{reason}")]
+    Failed { reason: String },
+}
+
+impl From<String> for StopError {
+    fn from(reason: String) -> Self {
+        Self::Failed { reason }
+    }
+}
+
+/// A worker's stop RPC, bound to its row's machine.
+enum StopTarget {
+    Container {
+        client: crate::builder_container_client::BuilderContainerClient,
+        legacy_container_id: String,
+    },
+    Local {
+        client: crate::builder_local_worker_client::BuilderLocalWorkerClient,
+    },
+}
+
+impl StopTarget {
+    async fn stop(self, worker: &workflow_db::model::Worker) -> Result<(), String> {
+        match self {
+            Self::Container {
+                client,
+                legacy_container_id,
+            } => client
+                .stop_worker(StopWorkerRequest {
+                    worker_id: worker.worker_id.clone(),
+                    legacy_container_id,
+                })
+                .await
+                .map(|_| ())
+                .map_err(|status| format!("stop_worker gRPC error: {status}")),
+            // Stop of an unknown id still kills its session.
+            Self::Local { client } => client
+                .stop_local_worker(&worker.worker_id)
+                .await
+                .map_err(|status| format!("stop_local_worker gRPC error: {status}")),
+        }
     }
 }
 
@@ -1689,10 +1743,11 @@ mod tests {
         // Keep unit tests isolated from a builderd that may be running on its
         // normal development port. The lazy channel only connects in tests
         // that deliberately exercise an unreachable runtime.
-        let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
-        let builder_container_client = BuilderContainerClient::new(channel.clone());
+        let registry =
+            MachineRegistryManager::new("test-machine".to_owned(), "http://127.0.0.1:1".to_owned())
+                .unwrap();
         let network_manager = NetworkManager::new(
-            builder_container_client.clone(),
+            registry.clone(),
             ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
         );
         let network_config = NetworkConfig {
@@ -1713,11 +1768,7 @@ mod tests {
             WorkerModesConfig::default(),
             worker_repo,
             GlobalSkillsConfig::default(),
-            builder_container_client,
-            crate::builder_local_worker_client::BuilderLocalWorkerClient::new(
-                tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
-            ),
-            "test-machine".to_owned(),
+            registry,
         );
         (mgr, workspace, test_db)
     }
@@ -1805,12 +1856,57 @@ mod tests {
     /// container no row wants is the reconciler's List sweep's.
     #[tokio::test]
     async fn stop_unknown_process_is_an_unknown_worker() {
-        let (mut mgr, _workspace, _test_db) = test_manager().await;
-        let unreachable =
-            tonic::transport::Channel::from_static("http://127.0.0.1:0").connect_lazy();
-        mgr.builder_container_client = BuilderContainerClient::new(unreachable);
+        let (mgr, _workspace, _test_db) = test_manager().await;
         let err = mgr.stop("nonexistent").await.unwrap_err();
-        assert_eq!(err, "unknown worker: nonexistent");
+        assert!(
+            matches!(&err, StopError::Failed { reason } if reason == "unknown worker: nonexistent"),
+            "{err:?}"
+        );
+    }
+
+    /// A row on a machine the registry does not hold: the stop fails as
+    /// `StopError::Machine` before any builderd call, and the row keeps its
+    /// status (it is neither treated as local nor as gone).
+    #[tokio::test]
+    async fn stop_of_an_unregistered_machines_worker_fails_closed() {
+        let (mgr, _workspace, _test_db) = test_manager().await;
+        let now = Utc::now().to_rfc3339();
+        mgr.worker_repo
+            .insert_worker(&workflow_db::model::Worker {
+                worker_id: "remote-1-abcd".into(),
+                process_id: "remote-1".into(),
+                project_key: String::new(),
+                container_id: "ur-worker-remote-1-abcd".into(),
+                worker_secret: "secret".into(),
+                strategy: "code".into(),
+                agent_type: "claude".into(),
+                container_status: "running".into(),
+                agent_status: "idle".into(),
+                workspace_path: None,
+                created_at: now.clone(),
+                updated_at: now,
+                idle_redispatch_count: 0,
+                brain_path: None,
+                runtime: ur_config::WorkerRuntime::Container,
+                machine_id: "elsewhere".into(),
+            })
+            .await
+            .unwrap();
+        let err = mgr
+            .stop_by_worker_id(&WorkerId("remote-1-abcd".into()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, StopError::Machine { source: MachineRegistryError::UnknownMachine { machine_id } } if machine_id == "elsewhere"),
+            "{err:?}"
+        );
+        let row = mgr
+            .worker_repo
+            .get_worker("remote-1-abcd")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.container_status, "running");
     }
 
     #[test]
@@ -3284,7 +3380,7 @@ agent = "claude"
         let wid = WorkerId::parse("nonexistent-ab12").unwrap();
         let result = mgr.stop_by_worker_id(&wid).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unknown worker"));
+        assert!(result.unwrap_err().to_string().contains("unknown worker"));
     }
 
     // ---- merge_global_skills tests ----
@@ -3298,11 +3394,13 @@ agent = "claude"
     ) -> (WorkerManager, tempfile::TempDir, ur_db_test::TestDb) {
         let workspace = tempfile::tempdir().unwrap();
         let (worker_repo, test_db) = test_worker_repo().await;
-        let channel =
-            tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
-        let builder_container_client = BuilderContainerClient::new(channel.clone());
+        let registry = MachineRegistryManager::new(
+            "test-machine".to_owned(),
+            "http://localhost:12323".to_owned(),
+        )
+        .unwrap();
         let network_manager = NetworkManager::new(
-            builder_container_client.clone(),
+            registry.clone(),
             ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
         );
         let network_config = NetworkConfig {
@@ -3323,11 +3421,7 @@ agent = "claude"
             WorkerModesConfig::default(),
             worker_repo,
             globals,
-            builder_container_client,
-            crate::builder_local_worker_client::BuilderLocalWorkerClient::new(
-                tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
-            ),
-            "test-machine".to_owned(),
+            registry,
         );
         (mgr, workspace, test_db)
     }

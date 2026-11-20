@@ -31,8 +31,8 @@ impl From<String> for AcquireSlotError {
 ///
 /// Directory layout: `$WORKSPACE/pool/<project-key>/<slot-name>/`
 ///
-/// All filesystem and git operations are delegated to builderd via
-/// `BuilderPoolClient`. The server only performs DB orchestration.
+/// All filesystem and git operations are delegated to the pool machine's
+/// builderd via `BuilderPoolClient`. The server only performs DB orchestration.
 ///
 /// All slots are exclusive: acquired by one worker at a time. The `worker_slot`
 /// row is the claim: it is inserted together with the worker's `provisioning`
@@ -45,10 +45,9 @@ pub struct RepoPoolManager {
     worker_repo: WorkerRepo,
     /// Shared project registry for live-reloadable project configs.
     project_registry: ProjectRegistry,
-    /// Client for delegating all pool filesystem/git operations to builderd.
-    builder_pool_client: BuilderPoolClient,
     /// Source of the machine whose pool this manager serves (its local
-    /// machine); that id scopes every slot query and is recorded on new rows.
+    /// machine); that id scopes every slot query, is recorded on new rows,
+    /// and picks the builderd every pool RPC goes to.
     machine_registry: MachineRegistryManager,
 }
 
@@ -57,14 +56,12 @@ impl RepoPoolManager {
         config: &Config,
         worker_repo: WorkerRepo,
         project_registry: ProjectRegistry,
-        builder_pool_client: BuilderPoolClient,
         machine_registry: MachineRegistryManager,
     ) -> Self {
         Self {
             git_branch_prefix: config.git_branch_prefix.clone(),
             worker_repo,
             project_registry,
-            builder_pool_client,
             machine_registry,
         }
     }
@@ -72,6 +69,13 @@ impl RepoPoolManager {
     /// The machine whose pool this manager serves.
     fn machine_id(&self) -> &str {
         self.machine_registry.local_id()
+    }
+
+    /// The builderd pool client of [`Self::machine_id`].
+    fn pool_client(&self) -> Result<BuilderPoolClient, String> {
+        self.machine_registry
+            .pool_client(self.machine_id())
+            .map_err(|e| e.to_string())
     }
 
     /// Look up a project and its git remote, refusing local projects up front.
@@ -118,6 +122,7 @@ impl RepoPoolManager {
         F: Fn(&std::path::Path) -> workflow_db::model::Worker,
     {
         let (project, repo) = self.resolve_pool_project(project_key)?;
+        let pool_client = self.pool_client()?;
 
         let candidates = self
             .worker_repo
@@ -131,8 +136,7 @@ impl RepoPoolManager {
                 continue;
             }
             info!(project_key, slot_name = %slot.slot_name, path = %slot.host_path, "recycling existing pool slot");
-            let recycled = self
-                .builder_pool_client
+            let recycled = pool_client
                 .recycle_slot(project_key.to_owned(), slot.slot_name.clone(), repo.clone())
                 .await;
             return match recycled {
@@ -148,8 +152,7 @@ impl RepoPoolManager {
         }
 
         // No available slot — check pool_limit using builderd scan
-        let existing_slots = self
-            .builder_pool_client
+        let existing_slots = pool_client
             .scan_slots(project_key.to_owned())
             .await
             .map_err(|e| format!("scan_slots failed for {project_key}: {e}"))?;
@@ -175,8 +178,7 @@ impl RepoPoolManager {
             "preparing new pool slot via builderd"
         );
 
-        let host_path = self
-            .builder_pool_client
+        let host_path = pool_client
             .prepare_new_slot(project_key.to_owned(), slot_name.clone(), repo.clone())
             .await
             .map_err(|e| format!("prepare_new_slot failed for {project_key}/{slot_name}: {e}"))?;
@@ -248,7 +250,7 @@ impl RepoPoolManager {
         let (_project, repo) = self.resolve_pool_project(project_key)?;
 
         info!(project_key, repo = %repo, "preparing shared slot via builderd");
-        self.builder_pool_client
+        self.pool_client()?
             .prepare_shared_slot(project_key.to_owned(), repo)
             .await
             .map_err(|e| format!("prepare_shared_slot failed for {project_key}: {e}"))
@@ -276,7 +278,7 @@ impl RepoPoolManager {
                 )
             })?;
 
-        self.builder_pool_client
+        self.pool_client()?
             .checkout_branch(
                 slot.project_key.clone(),
                 slot.slot_name.clone(),
@@ -447,9 +449,6 @@ mod tests {
             },
         );
         let (worker_repo, test_db) = test_worker_repo().await;
-        let channel =
-            tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
-        let builder_pool_client = BuilderPoolClient::new(channel);
         let project_registry =
             ProjectRegistry::new(projects, hostexec::HostExecConfigManager::empty());
 
@@ -463,7 +462,6 @@ mod tests {
             &config,
             worker_repo,
             project_registry,
-            builder_pool_client,
             crate::MachineRegistryManager::new(TEST_MACHINE.into(), "http://127.0.0.1:1".into())
                 .unwrap(),
         );
@@ -527,6 +525,43 @@ mod tests {
         for name in ["other-0", "'other'", &format!("'{TEST_MACHINE}'")] {
             assert!(status.message().contains(name), "{}", status.message());
         }
+    }
+
+    /// Two machine ids in the DB, only one registered: the pool never picks
+    /// the other machine's free slot (it goes on to prepare its own, which
+    /// fails here: no builderd), and that slot stays free.
+    #[tokio::test]
+    async fn acquire_slot_never_claims_another_machines_slot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, _test_db) = test_pool(tmp.path(), 10).await;
+        let now = Utc::now().to_rfc3339();
+        mgr.worker_repo
+            .insert_slot(&workflow_db::model::Slot {
+                id: "other-0".into(),
+                project_key: "testproj".into(),
+                slot_name: "0".into(),
+                host_path: "/other/pool/testproj/0".into(),
+                created_at: now.clone(),
+                updated_at: now,
+                machine_id: "other".into(),
+            })
+            .await
+            .unwrap();
+        let err = acquire(&mgr, "testproj").await.unwrap_err();
+        assert!(err.contains("scan_slots failed"), "{err}");
+        let still_free = mgr
+            .worker_repo
+            .find_available_slots("other", "testproj")
+            .await
+            .unwrap();
+        assert_eq!(still_free.len(), 1);
+        assert!(
+            mgr.worker_repo
+                .list_active_workers()
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     fn claim_row(project_key: &str, path: &std::path::Path) -> workflow_db::model::Worker {
@@ -766,13 +801,10 @@ mod tests {
             hostexec::HostExecConfigManager::load(tmp.path(), &discovery).unwrap(),
         );
         let (worker_repo, _test_db) = test_worker_repo().await;
-        let channel =
-            tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
         let mgr = RepoPoolManager::new(
             &minimal_test_config(tmp.path()),
             worker_repo,
             project_registry,
-            BuilderPoolClient::new(channel),
             crate::MachineRegistryManager::new(TEST_MACHINE.into(), "http://127.0.0.1:1".into())
                 .unwrap(),
         );

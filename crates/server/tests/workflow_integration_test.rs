@@ -241,14 +241,14 @@ async fn setup_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
 }
 
 fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
-    let channel = tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
-    let builder_container_client =
-        ur_server::builder_container_client::BuilderContainerClient::new(channel.clone());
     let config = dummy_config();
-    let network_manager = ur_server::network_manager::NetworkManager::new(
-        builder_container_client.clone(),
-        "ur-workers".into(),
-    );
+    let test_registry = ur_server::MachineRegistryManager::new(
+        config.machine.id.clone(),
+        "http://localhost:50051".into(),
+    )
+    .unwrap();
+    let network_manager =
+        ur_server::network_manager::NetworkManager::new(test_registry.clone(), "ur-workers".into());
     ur_server::WorkerManager::new(
         std::path::PathBuf::from("/tmp/test/workspace"),
         std::path::PathBuf::from("/tmp/test"),
@@ -261,11 +261,7 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
         Default::default(),
         worker_repo,
         Default::default(),
-        builder_container_client,
-        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
-            tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
-        ),
-        config.machine.id.clone(),
+        test_registry.clone(),
     )
 }
 
@@ -362,10 +358,11 @@ fn dummy_launch_manager(
     workflow_repo: WorkflowRepo,
 ) -> ur_server::grpc::LaunchManager {
     let config = dummy_config();
-    let channel = tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
-    let builder_container_client =
-        ur_server::builder_container_client::BuilderContainerClient::new(channel.clone());
-    let builder_pool_client = ur_server::BuilderPoolClient::new(channel);
+    let test_registry = ur_server::MachineRegistryManager::new(
+        config.machine.id.clone(),
+        "http://localhost:50051".into(),
+    )
+    .unwrap();
     let project_registry = ur_server::ProjectRegistry::new(
         config.projects.clone(),
         ur_server::hostexec::HostExecConfigManager::empty(),
@@ -374,17 +371,14 @@ fn dummy_launch_manager(
         &config,
         worker_repo.clone(),
         project_registry.clone(),
-        builder_pool_client,
         ur_server::MachineRegistryManager::new(
             config.machine.id.clone(),
             "http://127.0.0.1:1".into(),
         )
         .unwrap(),
     );
-    let network_manager = ur_server::network_manager::NetworkManager::new(
-        builder_container_client.clone(),
-        "ur-workers".into(),
-    );
+    let network_manager =
+        ur_server::network_manager::NetworkManager::new(test_registry.clone(), "ur-workers".into());
     let worker_manager = ur_server::WorkerManager::new(
         std::path::PathBuf::from("/tmp/test/workspace"),
         std::path::PathBuf::from("/tmp/test"),
@@ -397,11 +391,7 @@ fn dummy_launch_manager(
         Default::default(),
         worker_repo.clone(),
         Default::default(),
-        builder_container_client,
-        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
-            tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
-        ),
-        config.machine.id.clone(),
+        test_registry.clone(),
     );
     ur_server::grpc::LaunchManager {
         worker_manager,

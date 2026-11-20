@@ -122,12 +122,13 @@ async fn make_grpc_handler(
     let graph_manager = ticket_db::GraphManager::new(ticket_pool.clone());
     let ticket_repo = ticket_db::TicketRepo::new(ticket_pool, graph_manager);
     let workflow_repo = workflow_db::WorkflowRepo::new(workflow_pool);
-    let channel = tonic::transport::Channel::from_static("http://localhost:12322").connect_lazy();
-    let builder_container_client =
-        ur_server::builder_container_client::BuilderContainerClient::new(channel.clone());
-    let builder_pool_client = ur_server::BuilderPoolClient::new(channel);
+    let test_registry = ur_server::MachineRegistryManager::new(
+        config.machine.id.clone(),
+        "http://localhost:12322".into(),
+    )
+    .unwrap();
     let network_manager = ur_server::network_manager::NetworkManager::new(
-        builder_container_client.clone(),
+        test_registry.clone(),
         network_config.worker_name.clone(),
     );
     let project_registry = ur_server::ProjectRegistry::new(
@@ -138,7 +139,6 @@ async fn make_grpc_handler(
         &config,
         worker_repo.clone(),
         project_registry.clone(),
-        builder_pool_client,
         ur_server::MachineRegistryManager::new(
             config.machine.id.clone(),
             "http://127.0.0.1:1".into(),
@@ -157,11 +157,7 @@ async fn make_grpc_handler(
         ur_server::worker::WorkerModesConfig::default(),
         worker_repo.clone(),
         ur_config::GlobalSkillsConfig::default(),
-        builder_container_client,
-        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
-            tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
-        ),
-        config.machine.id.clone(),
+        test_registry.clone(),
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager: worker_manager.clone(),
@@ -266,10 +262,6 @@ async fn make_worker_handler() -> (
     let (transition_tx, _transition_rx) = tokio::sync::mpsc::channel(16);
 
     let workspace = std::path::PathBuf::from("/tmp/test-worker-handler");
-    let channel = tonic::transport::Channel::from_static("http://localhost:12322").connect_lazy();
-    let builder_container_client =
-        ur_server::builder_container_client::BuilderContainerClient::new(channel.clone());
-    let builder_pool_client = ur_server::BuilderPoolClient::new(channel);
     let project_registry = ur_server::ProjectRegistry::new(
         std::collections::HashMap::new(),
         ur_server::hostexec::HostExecConfigManager::empty(),
@@ -281,11 +273,15 @@ async fn make_worker_handler() -> (
         worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
     };
     let (config, _network_config) = make_test_config(&workspace, &workspace);
+    let test_registry = ur_server::MachineRegistryManager::new(
+        config.machine.id.clone(),
+        "http://localhost:12322".into(),
+    )
+    .unwrap();
     let repo_pool_manager = ur_server::RepoPoolManager::new(
         &config,
         worker_repo.clone(),
         project_registry.clone(),
-        builder_pool_client,
         ur_server::MachineRegistryManager::new(
             config.machine.id.clone(),
             "http://127.0.0.1:1".into(),
@@ -293,7 +289,7 @@ async fn make_worker_handler() -> (
         .unwrap(),
     );
     let network_manager = ur_server::network_manager::NetworkManager::new(
-        builder_container_client.clone(),
+        test_registry.clone(),
         network_config.worker_name.clone(),
     );
     let worker_manager = ur_server::WorkerManager::new(
@@ -308,11 +304,7 @@ async fn make_worker_handler() -> (
         ur_server::worker::WorkerModesConfig::default(),
         worker_repo.clone(),
         ur_config::GlobalSkillsConfig::default(),
-        builder_container_client,
-        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(
-            tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy(),
-        ),
-        config.machine.id.clone(),
+        test_registry.clone(),
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager,

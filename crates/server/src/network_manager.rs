@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 
 use ur_rpc::proto::builder_container::InspectNetworkRequest;
 
-use crate::builder_container_client::BuilderContainerClient;
+use crate::MachineRegistryManager;
 
 /// Verifies the Docker network that ur worker containers join.
 ///
@@ -11,16 +11,16 @@ use crate::builder_container_client::BuilderContainerClient;
 /// networks.
 #[derive(Clone)]
 pub struct NetworkManager {
-    /// gRPC client used to inspect Docker networks via builderd on the host.
-    client: BuilderContainerClient,
+    /// Source of each machine's builderd, which inspects its Docker networks.
+    machine_registry: MachineRegistryManager,
     /// Name of the Docker network to verify.
     network_name: String,
 }
 
 impl NetworkManager {
-    pub fn new(client: BuilderContainerClient, network_name: String) -> Self {
+    pub fn new(machine_registry: MachineRegistryManager, network_name: String) -> Self {
         Self {
-            client,
+            machine_registry,
             network_name,
         }
     }
@@ -30,17 +30,18 @@ impl NetworkManager {
         &self.network_name
     }
 
-    /// Verify the Docker network exists (created by docker compose).
+    /// Verify the Docker network exists on `machine_id` (created by docker compose).
     ///
     /// Networks are owned by docker-compose — the worker network uses
     /// `internal: true` for isolation, which `docker network create` cannot
     /// express. This method only checks; it never creates.
-    pub async fn ensure(&self) -> Result<()> {
+    pub async fn ensure(&self, machine_id: &str) -> Result<()> {
         let request = InspectNetworkRequest {
             name: self.network_name.clone(),
         };
         let response = self
-            .client
+            .machine_registry
+            .container_client(machine_id)?
             .inspect_network(request)
             .await
             .map_err(|s| anyhow::anyhow!("inspect_network gRPC error: {s}"))?;

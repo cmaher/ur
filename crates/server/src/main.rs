@@ -13,7 +13,6 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::str::FromStr;
 use ticket_db::{GraphManager, TicketRepo};
 use ur_server::SnapshotManager;
-use ur_server::builder_container_client::BuilderContainerClient;
 use ur_server::worker::WorkerModesConfig;
 use ur_server::workflow::handlers::build_handlers;
 use ur_server::{
@@ -367,12 +366,10 @@ fn worker_reconcile_manager(
     worker_manager: &WorkerManager,
     worker_repo: &WorkerRepo,
 ) -> ur_server::worker_reconcile::WorkerReconcileManager {
-    let channel = machine_registry.local_builderd_channel();
     ur_server::worker_reconcile::WorkerReconcileManager::new(
         worker_manager.clone(),
         worker_repo.clone(),
-        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(channel.clone()),
-        BuilderContainerClient::new(channel),
+        machine_registry.clone(),
         ur_server::worker_reconcile::DEFAULT_RECONCILE_INTERVAL,
     )
 }
@@ -639,17 +636,7 @@ async fn init_managers(
     host_config_dir: &Path,
     logs_dir: &Path,
     worker_modes: WorkerModesConfig,
-) -> anyhow::Result<(
-    WorkerRepo,
-    RepoPoolManager,
-    WorkerManager,
-    ProjectRegistry,
-    BuilderContainerClient,
-)> {
-    let builderd_channel = machine_registry.local_builderd_channel();
-    let builder_container_client =
-        ur_server::builder_container_client::BuilderContainerClient::new(builderd_channel.clone());
-    let builder_pool_client = ur_server::BuilderPoolClient::new(builderd_channel.clone());
+) -> anyhow::Result<(WorkerRepo, RepoPoolManager, WorkerManager, ProjectRegistry)> {
     let worker_repo = WorkerRepo::new(workflow_pool.clone());
 
     reconcile_slots(
@@ -675,13 +662,10 @@ async fn init_managers(
         cfg,
         worker_repo.clone(),
         project_registry.clone(),
-        builder_pool_client,
         machine_registry.clone(),
     );
-    let network_manager = NetworkManager::new(
-        builder_container_client.clone(),
-        cfg.network.worker_name.clone(),
-    );
+    let network_manager =
+        NetworkManager::new(machine_registry.clone(), cfg.network.worker_name.clone());
     let host_logs_dir = std::env::var("UR_HOST_LOGS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| logs_dir.to_path_buf());
@@ -697,9 +681,7 @@ async fn init_managers(
         worker_modes,
         worker_repo.clone(),
         cfg.global_skills.clone(),
-        builder_container_client.clone(),
-        ur_server::builder_local_worker_client::BuilderLocalWorkerClient::new(builderd_channel),
-        machine_registry.local_id().to_owned(),
+        machine_registry.clone(),
     );
 
     Ok((
@@ -707,7 +689,6 @@ async fn init_managers(
         repo_pool_manager,
         worker_manager,
         project_registry,
-        builder_container_client,
     ))
 }
 
@@ -753,13 +734,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (log_cleanup_shutdown_tx, log_cleanup_handle) = init_log_cleanup(&logs_dir);
 
-    let (
-        worker_repo,
-        repo_pool_manager,
-        worker_manager,
-        project_registry,
-        _builder_container_client,
-    ) = init_managers(
+    let (worker_repo, repo_pool_manager, worker_manager, project_registry) = init_managers(
         &cfg,
         &machine_registry,
         &pools.workflow_pool,

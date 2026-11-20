@@ -12,8 +12,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tonic::transport::Channel;
+use ur_rpc::proto::builder::BuilderdClient;
 use ur_rpc::retry::{RetryChannel, RetryConfig};
 use workflow_db::{MachineRowCount, WorkerRepo};
+
+use crate::builder_container_client::BuilderContainerClient;
+use crate::builder_local_worker_client::BuilderLocalWorkerClient;
+use crate::builder_pool_client::BuilderPoolClient;
 
 /// Why the registry could not produce a machine's builderd connection.
 #[derive(Debug, thiserror::Error)]
@@ -129,6 +134,52 @@ impl MachineRegistryManager {
         Ok(&self.entry(machine_id)?.builderd_addr)
     }
 
+    /// Every registered machine id, sorted (the local one included).
+    pub fn machine_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.machines.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    /// `machine_id`'s builderd host-exec client (git, gh, hooks).
+    pub fn builderd_client(
+        &self,
+        machine_id: &str,
+    ) -> Result<BuilderdClient, MachineRegistryError> {
+        Ok(BuilderdClient::new(self.builderd_channel(machine_id)?))
+    }
+
+    /// The local machine's builderd host-exec client, for work tied to no
+    /// worker or slot (GitHub calls, host-CLI hostexec).
+    pub fn local_builderd_client(&self) -> BuilderdClient {
+        BuilderdClient::new(self.local_builderd_channel())
+    }
+
+    /// `machine_id`'s builderd container client.
+    pub fn container_client(
+        &self,
+        machine_id: &str,
+    ) -> Result<BuilderContainerClient, MachineRegistryError> {
+        Ok(BuilderContainerClient::new(
+            self.builderd_channel(machine_id)?,
+        ))
+    }
+
+    /// `machine_id`'s builderd local-worker client.
+    pub fn local_worker_client(
+        &self,
+        machine_id: &str,
+    ) -> Result<BuilderLocalWorkerClient, MachineRegistryError> {
+        Ok(BuilderLocalWorkerClient::new(
+            self.builderd_channel(machine_id)?,
+        ))
+    }
+
+    /// `machine_id`'s builderd pool client.
+    pub fn pool_client(&self, machine_id: &str) -> Result<BuilderPoolClient, MachineRegistryError> {
+        Ok(BuilderPoolClient::new(self.builderd_channel(machine_id)?))
+    }
+
     /// The local machine's builderd channel.
     pub fn local_builderd_channel(&self) -> Channel {
         self.machines[&self.local_id].builderd.channel().clone()
@@ -181,7 +232,12 @@ mod tests {
         assert_eq!(r.local_id(), "mbp");
         assert!(r.builderd_channel("mbp").is_ok());
         assert_eq!(r.builderd_addr("mbp").unwrap(), "http://127.0.0.1:12323");
-        let _ = r.local_builderd_channel();
+        assert_eq!(r.machine_ids(), vec!["mbp".to_owned()]);
+        let _ = r.local_builderd_client();
+        assert!(r.container_client("mbp").is_ok());
+        assert!(r.local_worker_client("mbp").is_ok());
+        assert!(r.pool_client("mbp").is_ok());
+        assert!(r.builderd_client("mbp").is_ok());
     }
 
     #[tokio::test]
@@ -196,6 +252,18 @@ mod tests {
 
         let status = tonic::Status::from(registry().builderd_addr("").unwrap_err());
         assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+
+        // Every typed client fails closed the same way.
+        let r = registry();
+        for err in [
+            r.builderd_client("studio").err(),
+            r.container_client("studio").err(),
+            r.local_worker_client("studio").err(),
+            r.pool_client("studio").err(),
+        ] {
+            let status = tonic::Status::from(err.expect("unknown machine must error"));
+            assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        }
     }
 
     #[test]

@@ -13,6 +13,13 @@
 //! | `provisioning` | any | periodic: none · startup: → `stopping` |
 //! | no active row (none / `stopped`) | listed | builderd Stop(worker_id) |
 //! | — | list failed | no change for that runtime this pass |
+//! | machine not in the registry | — | no change; logged and the pass errors |
+//!
+//! A pass runs per machine in the [`MachineRegistryManager`]: that
+//! machine's builderd lists are compared only against rows with its
+//! `machine_id`. A row naming a machine the registry does not hold is never
+//! treated as local or as gone: it is left untouched (slot linked) and
+//! reported.
 //!
 //! The stop path (`WorkerManager::stop_by_worker_id`) marks the row
 //! `stopped` and unlinks its slot only after builderd's Stop(worker_id)
@@ -53,6 +60,7 @@ use ur_rpc::proto::builder_container::StopWorkerRequest;
 use workflow_db::WorkerRepo;
 use workflow_db::model::Worker;
 
+use crate::MachineRegistryManager;
 use crate::builder_container_client::BuilderContainerClient;
 use crate::builder_local_worker_client::BuilderLocalWorkerClient;
 use crate::worker::{WorkerId, WorkerManager};
@@ -69,24 +77,27 @@ const STOPPED: &str = "stopped";
 pub struct WorkerReconcileManager {
     worker_manager: WorkerManager,
     worker_repo: WorkerRepo,
-    client: BuilderLocalWorkerClient,
-    container_client: BuilderContainerClient,
+    machine_registry: MachineRegistryManager,
     interval: Duration,
+}
+
+/// One machine's builderd services, for a pass over that machine.
+struct MachineClients {
+    local: BuilderLocalWorkerClient,
+    container: BuilderContainerClient,
 }
 
 impl WorkerReconcileManager {
     pub fn new(
         worker_manager: WorkerManager,
         worker_repo: WorkerRepo,
-        client: BuilderLocalWorkerClient,
-        container_client: BuilderContainerClient,
+        machine_registry: MachineRegistryManager,
         interval: Duration,
     ) -> Self {
         Self {
             worker_manager,
             worker_repo,
-            client,
-            container_client,
+            machine_registry,
             interval,
         }
     }
@@ -153,19 +164,69 @@ impl WorkerReconcileManager {
         }
     }
 
-    /// One pass over both runtimes. `Err` when the rows cannot be read
-    /// (nothing changed) or a builderd list failed (that runtime unchanged);
-    /// per-worker stop failures are logged and left on the row as `stopping`.
+    /// One pass over every registered machine. `Err` when the rows cannot
+    /// be read (nothing changed), a builderd list failed (that machine's
+    /// runtime unchanged), or rows name an unregistered machine (left
+    /// untouched); per-worker stop failures are logged and left on the row
+    /// as `stopping`.
     pub async fn reconcile_once(&self) -> Result<(), String> {
-        let (local, container): (Vec<_>, Vec<_>) = self
+        let mut by_machine: HashMap<String, Vec<Worker>> = HashMap::new();
+        for row in self
             .worker_repo
             .list_active_workers()
             .await
             .map_err(|e| format!("list active workers: {e}"))?
+        {
+            by_machine
+                .entry(row.machine_id.clone())
+                .or_default()
+                .push(row);
+        }
+        let mut errors = Vec::new();
+        for machine_id in self.machine_registry.machine_ids() {
+            let rows = by_machine.remove(&machine_id).unwrap_or_default();
+            if let Err(e) = self.reconcile_machine(&machine_id, rows).await {
+                errors.push(format!("machine '{machine_id}': {e}"));
+            }
+        }
+        // What is left names machines the registry does not hold: never
+        // local, never gone, so never stopped or released here.
+        for (machine_id, rows) in by_machine {
+            let workers: Vec<&str> = rows.iter().map(|w| w.worker_id.as_str()).collect();
+            error!(
+                machine_id,
+                ?workers,
+                "worker rows name an unregistered machine; left untouched"
+            );
+            errors.push(format!(
+                "unknown machine '{machine_id}': no builderd is registered for it \
+                 (workers {workers:?} left untouched)"
+            ));
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+
+    /// Both runtimes of one registered machine against its active `rows`.
+    async fn reconcile_machine(&self, machine_id: &str, rows: Vec<Worker>) -> Result<(), String> {
+        let clients = MachineClients {
+            local: self
+                .machine_registry
+                .local_worker_client(machine_id)
+                .map_err(|e| e.to_string())?,
+            container: self
+                .machine_registry
+                .container_client(machine_id)
+                .map_err(|e| e.to_string())?,
+        };
+        let (local, container): (Vec<_>, Vec<_>) = rows
             .into_iter()
             .partition(|w| w.runtime == WorkerRuntime::Local);
-        let local_listed = self
-            .client
+        let local_listed = clients
+            .local
             .list_local_workers()
             .await
             .map(|l| {
@@ -174,17 +235,22 @@ impl WorkerReconcileManager {
                     .collect()
             })
             .map_err(|status| format!("ListLocalWorkers: {status}"));
-        let container_listed = self
-            .container_client
+        let container_listed = clients
+            .container
             .list_worker_containers()
             .await
             .map(|l| l.into_iter().map(|c| (c.worker_id, c.running)).collect())
             .map_err(|status| format!("ListWorkerContainers: {status}"));
         let errors: Vec<String> = [
-            self.converge(WorkerRuntime::Local, &local, local_listed)
+            self.converge(&clients, WorkerRuntime::Local, &local, local_listed)
                 .await,
-            self.converge(WorkerRuntime::Container, &container, container_listed)
-                .await,
+            self.converge(
+                &clients,
+                WorkerRuntime::Container,
+                &container,
+                container_listed,
+            )
+            .await,
         ]
         .into_iter()
         .filter_map(Result::err)
@@ -199,6 +265,7 @@ impl WorkerReconcileManager {
     /// The table (module docs) for one runtime's active `rows`.
     async fn converge(
         &self,
+        clients: &MachineClients,
         runtime: WorkerRuntime,
         rows: &[Worker],
         listed: Result<HashMap<String, bool>, String>,
@@ -230,14 +297,19 @@ impl WorkerReconcileManager {
         // Provisioning rows count: builderd starts a worker before its row runs.
         let wanted: HashSet<&str> = rows.iter().map(|w| w.worker_id.as_str()).collect();
         for worker_id in listed.keys().filter(|id| !wanted.contains(id.as_str())) {
-            self.stop_unwanted(runtime, worker_id).await;
+            self.stop_unwanted(clients, runtime, worker_id).await;
         }
         Ok(())
     }
 
     /// Stop a listed worker no active row claims, unless a row appeared
     /// since the pass read them (a launch in progress).
-    async fn stop_unwanted(&self, runtime: WorkerRuntime, worker_id: &str) {
+    async fn stop_unwanted(
+        &self,
+        clients: &MachineClients,
+        runtime: WorkerRuntime,
+        worker_id: &str,
+    ) {
         match self.worker_repo.get_worker(worker_id).await {
             Ok(Some(row)) if row.container_status != STOPPED => return,
             Ok(_) => {}
@@ -252,9 +324,9 @@ impl WorkerReconcileManager {
             "builderd runs a worker with no active row; stopping it"
         );
         let stopped = match runtime {
-            WorkerRuntime::Local => self.client.stop_local_worker(worker_id).await,
-            WorkerRuntime::Container => self
-                .container_client
+            WorkerRuntime::Local => clients.local.stop_local_worker(worker_id).await,
+            WorkerRuntime::Container => clients
+                .container
                 .stop_worker(StopWorkerRequest {
                     worker_id: worker_id.to_owned(),
                     legacy_container_id: String::new(),

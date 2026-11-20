@@ -33,7 +33,6 @@ use ur_rpc::proto::builder_pool::{
     PrepareSharedSlotRequest, PrepareSharedSlotResponse, RecycleSlotRequest, RecycleSlotResponse,
     ScanSlotsRequest, ScanSlotsResponse,
 };
-use ur_server::builder_local_worker_client::BuilderLocalWorkerClient;
 use ur_server::worker_reconcile::WorkerReconcileManager;
 
 const WORKER_PORT: u16 = 23456;
@@ -302,16 +301,15 @@ struct Harness {
     worker_manager: ur_server::WorkerManager,
     launch_manager: ur_server::grpc::LaunchManager,
     worker_repo: workflow_db::WorkerRepo,
-    local_client: BuilderLocalWorkerClient,
-    container_client: ur_server::builder_container_client::BuilderContainerClient,
+    registry: ur_server::MachineRegistryManager,
     slot: std::path::PathBuf,
     _tmp: tempfile::TempDir,
     _test_db: ur_db_test::TestDb,
 }
 
 /// Serve `fake` as builderd (local-worker, pool and container services) and
-/// return a lazy channel to it.
-async fn serve_fake_builderd(fake: &FakeBuilderd) -> tonic::transport::Channel {
+/// return its address.
+async fn serve_fake_builderd(fake: &FakeBuilderd) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
@@ -327,14 +325,12 @@ async fn serve_fake_builderd(fake: &FakeBuilderd) -> tonic::transport::Channel {
             .await
             .unwrap();
     });
-    tonic::transport::Endpoint::try_from(format!("http://{addr}"))
-        .unwrap()
-        .connect_lazy()
+    format!("http://{addr}")
 }
 
 async fn harness() -> Harness {
     let fake = FakeBuilderd::default();
-    let local_channel = serve_fake_builderd(&fake).await;
+    let fake_addr = serve_fake_builderd(&fake).await;
 
     let tmp = tempfile::tempdir().unwrap();
     let config = ur_config::Config::from_toml_str(
@@ -348,22 +344,17 @@ async fn harness() -> Harness {
     let worker_repo = workflow_db::WorkerRepo::new(test_db.workflow_pool().clone());
     // The fake container service records StopWorker and refuses the rest;
     // `assert_slot_intact` checks local workers never used it.
-    let builder_container_client =
-        ur_server::builder_container_client::BuilderContainerClient::new(local_channel.clone());
     let project_registry = ur_server::ProjectRegistry::new(
         config.projects.clone(),
         ur_server::hostexec::HostExecConfigManager::empty(),
     );
-    let registry = ur_server::MachineRegistryManager::new(
-        config.machine.id.clone(),
-        "http://127.0.0.1:1".into(),
-    )
-    .unwrap();
+    // The one registered machine is the fake builderd.
+    let registry =
+        ur_server::MachineRegistryManager::new(config.machine.id.clone(), fake_addr).unwrap();
     let pool = ur_server::RepoPoolManager::new(
         &config,
         worker_repo.clone(),
         project_registry.clone(),
-        ur_server::BuilderPoolClient::new(local_channel.clone()),
         registry.clone(),
     );
     let worker_manager = ur_server::WorkerManager::new(
@@ -373,7 +364,7 @@ async fn harness() -> Harness {
         config.logs_dir.clone(),
         config.logs_dir.clone(),
         ur_server::network_manager::NetworkManager::new(
-            builder_container_client.clone(),
+            registry.clone(),
             config.network.worker_name.clone(),
         ),
         config.network.clone(),
@@ -381,9 +372,7 @@ async fn harness() -> Harness {
         ur_server::worker::WorkerModesConfig::default(),
         worker_repo.clone(),
         config.global_skills.clone(),
-        builder_container_client,
-        BuilderLocalWorkerClient::new(local_channel.clone()),
-        config.machine.id.clone(),
+        registry.clone(),
     );
     let ticket_pool = test_db.ticket_pool().clone();
     let launch_manager = ur_server::grpc::LaunchManager {
@@ -402,7 +391,7 @@ async fn harness() -> Harness {
         config_dir: config.config_dir.clone(),
         worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
         workerd_resolver: ur_server::WorkerdAddressResolver::new(
-            registry,
+            registry.clone(),
             config.network.worker_prefix.clone(),
         ),
     };
@@ -411,10 +400,7 @@ async fn harness() -> Harness {
         worker_manager,
         launch_manager,
         worker_repo,
-        local_client: BuilderLocalWorkerClient::new(local_channel.clone()),
-        container_client: ur_server::builder_container_client::BuilderContainerClient::new(
-            local_channel,
-        ),
+        registry,
         slot,
         _tmp: tmp,
         _test_db: test_db,
@@ -550,8 +536,7 @@ fn reconciler(h: &Harness) -> WorkerReconcileManager {
     WorkerReconcileManager::new(
         h.worker_manager.clone(),
         h.worker_repo.clone(),
-        h.local_client.clone(),
-        h.container_client.clone(),
+        h.registry.clone(),
         std::time::Duration::from_secs(3600),
     )
 }
@@ -1472,6 +1457,115 @@ async fn table_list_failure_changes_nothing_for_that_runtime() {
         assert_eq!(status_of(&h, "proj-1-stop").await, "stopping", "{rt:?}");
         assert!(stops_of(&h, rt).is_empty(), "{rt:?}");
         assert_eq!(status_of(&h, "proj-2-gone").await, "stopped", "{other:?}");
+    }
+}
+
+const ELSEWHERE: &str = "elsewhere";
+
+/// A row of runtime `rt` in `status` on machine [`ELSEWHERE`], which the
+/// registry does not hold, linked to a slot of that machine.
+async fn unregistered_row(
+    h: &Harness,
+    rt: ur_config::WorkerRuntime,
+    worker_id: &str,
+    status: &str,
+) {
+    let now = chrono::Utc::now().to_rfc3339();
+    let slot_id = format!("slot-{worker_id}");
+    h.worker_repo
+        .insert_slot(&workflow_db::model::Slot {
+            id: slot_id.clone(),
+            project_key: PROJECT.into(),
+            slot_name: worker_id.into(),
+            host_path: format!("/elsewhere/pool/{PROJECT}/{worker_id}"),
+            created_at: now.clone(),
+            updated_at: now,
+            machine_id: ELSEWHERE.into(),
+        })
+        .await
+        .unwrap();
+    let row = workflow_db::model::Worker {
+        runtime: rt,
+        container_id: recorded_name(rt, worker_id),
+        machine_id: ELSEWHERE.into(),
+        ..claim_row(h, worker_id)
+    };
+    assert!(h.worker_repo.claim_slot(&row, &slot_id).await.unwrap());
+    h.worker_repo.clear_launch_pending(worker_id).await.unwrap();
+    h.worker_repo
+        .update_worker_container_status(worker_id, status)
+        .await
+        .unwrap();
+}
+
+/// Reconciler: a row naming a machine the registry does not hold is never
+/// treated as local or as gone. It is not stopped (on any builderd), its
+/// status and slot link stay, and the pass reports the machine; the local
+/// machine still converges.
+#[tokio::test]
+async fn reconcile_leaves_unregistered_machine_rows_untouched() {
+    for rt in [LOCAL, CONTAINER] {
+        let h = harness().await;
+        unregistered_row(&h, rt, "proj-1-away", "running").await;
+        unregistered_row(&h, rt, "proj-1-awst", "stopping").await;
+        row_in(&h, rt, "proj-2-gone", "running").await;
+        // Even listed by the local builderd, another machine's row is no
+        // local worker to stop.
+        lists(&h, rt, &[("proj-1-away", true)]);
+
+        let err = reconciler(&h).reconcile_once().await.unwrap_err();
+        assert!(err.contains("unknown machine 'elsewhere'"), "{err}");
+        assert!(
+            err.contains("proj-1-away") && err.contains("proj-1-awst"),
+            "{err}"
+        );
+        assert_eq!(status_of(&h, "proj-1-away").await, "running", "{rt:?}");
+        assert_eq!(status_of(&h, "proj-1-awst").await, "stopping", "{rt:?}");
+        assert_eq!(
+            slot_owner(&h, "proj-1-away").await,
+            Some("slot-proj-1-away".into())
+        );
+        assert_eq!(
+            slot_owner(&h, "proj-1-awst").await,
+            Some("slot-proj-1-awst".into())
+        );
+        assert_eq!(stops_of(&h, rt), vec!["proj-2-gone"], "{rt:?}");
+        assert_eq!(status_of(&h, "proj-2-gone").await, "stopped", "{rt:?}");
+    }
+}
+
+/// Stop/kill of a worker on an unregistered machine, by worker id and by
+/// process id: `failed_precondition` naming the machine, no builderd call,
+/// row and slot link unchanged.
+#[tokio::test]
+async fn stop_of_an_unregistered_machines_worker_is_failed_precondition() {
+    for rt in [LOCAL, CONTAINER] {
+        let h = harness().await;
+        unregistered_row(&h, rt, "proj-1-away", "running").await;
+        for id in ["proj-1-away", "local-1"] {
+            let status = h.launch_manager.stop(id).await.unwrap_err();
+            assert_eq!(
+                status.code(),
+                tonic::Code::FailedPrecondition,
+                "{rt:?} {id}: {status:?}"
+            );
+            assert!(status.message().contains("elsewhere"), "{status:?}");
+        }
+        let err = h
+            .worker_manager
+            .stop_by_worker_id(&ur_server::WorkerId("proj-1-away".into()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ur_server::worker::StopError::Machine { .. }),
+            "{err:?}"
+        );
+        assert_eq!(status_of(&h, "proj-1-away").await, "running", "{rt:?}");
+        assert_eq!(
+            slot_owner(&h, "proj-1-away").await,
+            Some("slot-proj-1-away".into())
+        );
+        assert!(stops_of(&h, LOCAL).is_empty() && stops_of(&h, CONTAINER).is_empty());
     }
 }
 

@@ -25,6 +25,7 @@ use workflow_db::model::AgentStatus;
 use workflow_db::WorkerRepo;
 
 use crate::grpc_peer::PeerVerb;
+use crate::worker::StopError;
 use crate::{ProjectRegistry, RepoPoolManager, WorkerId, WorkerManager};
 
 #[derive(Debug, thiserror::Error)]
@@ -81,6 +82,10 @@ pub enum CoreError {
 
     #[error("stop failed: {reason}")]
     StopFailed { reason: String },
+
+    /// The worker's row names a machine the registry does not hold.
+    #[error("stop failed: {reason}")]
+    StopPrecondition { reason: String },
 
     #[error("workspace not found for process: {process_id}")]
     WorkspaceNotFound { process_id: String },
@@ -168,6 +173,9 @@ impl From<CoreError> for Status {
             CoreError::PrepareFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
             CoreError::RunFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
             CoreError::StopFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
+            CoreError::StopPrecondition { .. } => {
+                simple_status(Code::FailedPrecondition, &err, INVALID_ARGUMENT)
+            }
             CoreError::WorkerNotFound { worker_id } => status_with_meta(
                 Code::NotFound,
                 &err,
@@ -1008,13 +1016,13 @@ impl LaunchManager {
         let stop_result = match WorkerId::parse(id) {
             Ok(worker_id) => {
                 let res = self.worker_manager.stop_by_worker_id(&worker_id).await;
-                // A local worker's stop error is builderd's; a process-id
-                // retry would only mask it.
+                // A local worker's stop error is builderd's, and an unknown
+                // machine is the row's; a process-id retry would mask either.
                 let local = matches!(
                     self.worker_repo.get_worker(id).await,
                     Ok(Some(w)) if w.runtime == ur_config::WorkerRuntime::Local
                 );
-                if res.is_err() && !local {
+                if matches!(res, Err(StopError::Failed { .. })) && !local {
                     // worker_id parse can false-positive on process_ids like
                     // "ping-test" (suffix happens to be 4 lowercase chars).
                     // Fall back to process_id lookup.
@@ -1025,8 +1033,11 @@ impl LaunchManager {
             }
             Err(_) => self.worker_manager.stop(id).await,
         };
-        stop_result.map_err(|e| CoreError::StopFailed {
-            reason: e.to_string(),
+        stop_result.map_err(|e| match e {
+            StopError::Machine { source } => CoreError::StopPrecondition {
+                reason: source.to_string(),
+            },
+            StopError::Failed { reason } => CoreError::StopFailed { reason },
         })?;
         Ok(())
     }
