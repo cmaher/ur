@@ -15,9 +15,12 @@ resolves the caller's `ur-worker-id` row and sends the exec to
 `MachineRegistryManager::builderd_client(&worker.machine_id)`, right after resolving
 the request context and before reading the start frame. A row naming a machine the
 registry does not hold is `failed_precondition` (`unknown machine '<id>'`) — never the
-local builderd. A request with no worker id (host CLI) uses the local machine.
-`RemoteRepoService` routes the same way (`gh` runs where the calling worker's gh auth
-is; no worker → local). The workflow engine sends git work in a slot to the slot's
+local builderd. `RemoteRepoService` routes the same way (`gh` runs where the calling
+worker's gh auth is). HostExec and RemoteRepo are served only on the worker port, behind
+`worker_auth_interceptor`, so every request carries an authenticated `ur-worker-id`:
+there is no host-CLI path. (The handlers' no-header branch, which would use the local
+machine, is unreachable through the server and exists only for direct handler use in
+tests.) The workflow engine sends git work in a slot to the slot's
 machine (`WorkflowContext::slot_builderd`) and `gh` calls, like the GitHub poller, to the
 local one.
 

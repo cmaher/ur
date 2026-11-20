@@ -150,7 +150,7 @@ impl MachineRegistryManager {
     }
 
     /// The local machine's builderd host-exec client, for work tied to no
-    /// worker or slot (GitHub calls, host-CLI hostexec).
+    /// worker or slot (GitHub calls).
     pub fn local_builderd_client(&self) -> BuilderdClient {
         BuilderdClient::new(self.local_builderd_channel())
     }

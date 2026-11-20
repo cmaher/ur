@@ -22,8 +22,9 @@ pub struct HostExecServiceHandler {
     pub script_registry: ScriptRegistry,
     pub lua: LuaTransformManager,
     pub worker_manager: WorkerManager,
-    /// A worker's commands run on its own machine's builderd; a request
-    /// with no worker (host CLI) on the local one.
+    /// A worker's commands run on its own machine's builderd. Served only
+    /// on the worker port behind the auth interceptor, so every request
+    /// names a worker.
     pub machine_registry: crate::MachineRegistryManager,
     pub host_workspace: std::path::PathBuf,
     pub git_branch_prefix: String,
@@ -31,13 +32,14 @@ pub struct HostExecServiceHandler {
 
 /// Per-request state resolved from the caller's `ur-worker-id`.
 struct RequestContext {
-    /// Resolved from the worker ID (empty for host-server requests).
+    /// Resolved from the worker ID (empty without one: direct handler use only).
     process_id: String,
     /// The Lua-facing context (if the worker has a project/slot).
     worker_context: Option<hostexec::WorkerContext>,
     /// Base hostexec config merged with per-project passthrough commands.
     config: HostExecConfigManager,
-    /// The worker row's machine, or the local machine without a worker.
+    /// The worker row's machine (the local machine without a worker id, a
+    /// case the auth interceptor rules out on the server).
     machine_id: String,
 }
 
@@ -311,7 +313,8 @@ impl HostExecServiceHandler {
         metadata: &tonic::metadata::MetadataMap,
     ) -> Result<RequestContext, HostExecError> {
         let Some(worker_id_val) = metadata.get(ur_config::WORKER_ID_HEADER) else {
-            // No worker ID header — host-server request (e.g., from `ur` CLI).
+            // No worker ID header: unreachable through the server (the
+            // worker port's auth interceptor requires one); local machine.
             return Ok(RequestContext {
                 process_id: String::new(),
                 worker_context: None,

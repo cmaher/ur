@@ -931,17 +931,31 @@ impl GithubPollerManager {
                 worker_id = %worker_id,
                 "killing worker for cancelled workflow (PR closed)"
             );
-            if let Err(e) = self
+            match self
                 .worker_manager
                 .stop_by_worker_id(&WorkerId(worker_id.clone()))
                 .await
             {
-                warn!(
-                    ticket_id = %ticket_id,
-                    worker_id = %worker_id,
-                    error = %e,
-                    "failed to stop worker during workflow cancellation"
-                );
+                Ok(()) => {}
+                // The worker may still run on a machine we cannot reach:
+                // leave the ticket as it is rather than reopen it.
+                Err(crate::worker::StopError::Machine { source }) => {
+                    error!(
+                        ticket_id = %ticket_id,
+                        worker_id = %worker_id,
+                        error = %source,
+                        "cannot stop worker of cancelled workflow: its machine is not registered; ticket not reopened"
+                    );
+                    return;
+                }
+                Err(e) => {
+                    warn!(
+                        ticket_id = %ticket_id,
+                        worker_id = %worker_id,
+                        error = %e,
+                        "failed to stop worker during workflow cancellation"
+                    );
+                }
             }
         }
 
@@ -1569,5 +1583,108 @@ mod tests {
         assert!(!is_check_failed("neutral"));
         assert!(!is_check_failed("NEUTRAL"));
         assert!(!is_check_failed(""));
+    }
+
+    async fn poller(
+        test_db: &ur_db_test::TestDb,
+    ) -> (GithubPollerManager, TicketRepo, workflow_db::WorkerRepo) {
+        let ticket_pool = test_db.ticket_pool().clone();
+        let ticket_repo = TicketRepo::new(
+            ticket_pool.clone(),
+            ticket_db::GraphManager::new(ticket_pool),
+        );
+        let workflow_repo = WorkflowRepo::new(test_db.workflow_pool().clone());
+        let worker_repo = workflow_db::WorkerRepo::new(test_db.workflow_pool().clone());
+        let registry =
+            crate::MachineRegistryManager::new("test-machine".into(), "http://127.0.0.1:1".into())
+                .unwrap();
+        let handler = crate::grpc_ticket::TicketServiceHandler {
+            ticket_repo: ticket_repo.clone(),
+            workflow_repo: workflow_repo.clone(),
+            project_registry: crate::ProjectRegistry::new(
+                std::collections::HashMap::new(),
+                hostexec::HostExecConfigManager::empty(),
+            ),
+            transition_tx: None,
+            cancel_tx: None,
+            ui_event_poller: None,
+            worker_manager: None,
+            worker_repo: None,
+            workerd_resolver: crate::WorkerdAddressResolver::new(
+                registry.clone(),
+                ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
+            ),
+        };
+        let tmp = std::env::temp_dir();
+        let (transition_tx, _rx) = mpsc::channel(16);
+        let poller = GithubPollerManager::new(
+            ticket_repo.clone(),
+            workflow_repo,
+            registry,
+            Duration::from_secs(3600),
+            transition_tx,
+            TicketClient::new(handler),
+            crate::worker::test_support::worker_manager(worker_repo.clone()),
+            Config::from_toml_str("", &tmp).unwrap(),
+        );
+        (poller, ticket_repo, worker_repo)
+    }
+
+    /// A PR closed without merge whose worker's row names an unregistered
+    /// machine: the worker is not stopped and the ticket is not reopened.
+    #[tokio::test]
+    async fn closed_pr_with_worker_on_unregistered_machine_does_not_reopen() {
+        let test_db = ur_db_test::TestDb::new().await;
+        let (poller, ticket_repo, worker_repo) = poller(&test_db).await;
+        ticket_repo
+            .create_ticket(&ticket_db::NewTicket {
+                id: Some("t-away".into()),
+                type_: "code".into(),
+                priority: 1,
+                title: "Away".into(),
+                project: "test".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        ticket_repo
+            .update_ticket(
+                "t-away",
+                &ticket_db::TicketUpdate {
+                    status: Some("in_progress".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        poller
+            .workflow_repo
+            .create_workflow("t-away", LifecycleStatus::InReview)
+            .await
+            .unwrap();
+        poller
+            .workflow_repo
+            .set_workflow_worker_id("t-away", "away-1-abcd")
+            .await
+            .unwrap();
+        worker_repo
+            .insert_worker(&crate::worker::test_support::worker_row(
+                "away-1-abcd",
+                "elsewhere",
+                "running",
+            ))
+            .await
+            .unwrap();
+
+        poller.cancel_workflow_and_revert("t-away").await;
+
+        let ticket = ticket_repo.get_ticket("t-away").await.unwrap().unwrap();
+        assert_eq!(ticket.status, "in_progress");
+        let row = worker_repo
+            .get_worker("away-1-abcd")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.container_status, "running");
     }
 }

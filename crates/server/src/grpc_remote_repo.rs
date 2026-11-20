@@ -48,8 +48,9 @@ impl From<RemoteRepoError> for Status {
 /// gRPC implementation of the RemoteRepoService, delegating to `GhBackend`.
 #[derive(Clone)]
 pub struct RemoteRepoServiceHandler {
-    /// `gh` runs on the calling worker's machine (its gh auth); a call
-    /// with no worker on the local machine.
+    /// `gh` runs on the calling worker's machine (its gh auth). Served only
+    /// on the worker port behind the auth interceptor, so every call names
+    /// a worker.
     pub machine_registry: crate::MachineRegistryManager,
     /// Resolves the caller's `ur-worker-id` to its row's machine.
     pub worker_repo: workflow_db::WorkerRepo,
@@ -57,8 +58,9 @@ pub struct RemoteRepoServiceHandler {
 
 impl RemoteRepoServiceHandler {
     /// The builderd client of the caller's machine: its worker row's
-    /// `machine_id`, or the local machine without `ur-worker-id`. A machine
-    /// the registry does not hold is `failed_precondition`.
+    /// `machine_id` (without `ur-worker-id`, which the auth interceptor
+    /// rules out on the server, the local machine). A machine the registry
+    /// does not hold is `failed_precondition`.
     async fn builderd_for(
         &self,
         metadata: &tonic::metadata::MetadataMap,

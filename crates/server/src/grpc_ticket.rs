@@ -369,9 +369,10 @@ impl TicketServiceHandler {
             );
         }
 
-        // Kill the worker associated with this workflow.
+        // Kill the worker associated with this workflow. A worker on an
+        // unregistered machine fails the cancel (failed_precondition).
         self.kill_workflow_worker(ticket_id, &workflow.worker_id)
-            .await;
+            .await?;
 
         // Delete intents and mark workflow as cancelled.
         self.workflow_repo
@@ -387,25 +388,33 @@ impl TicketServiceHandler {
         Ok(())
     }
 
-    /// Kill the worker associated with a workflow, if one is assigned.
-    async fn kill_workflow_worker(&self, ticket_id: &str, worker_id: &str) {
+    /// Kill the worker associated with a workflow, if one is assigned. A
+    /// worker whose row names an unregistered machine is
+    /// `failed_precondition` naming it; other stop failures are logged
+    /// (the row stays `stopping` for the reconciler).
+    async fn kill_workflow_worker(&self, ticket_id: &str, worker_id: &str) -> Result<(), Status> {
         if worker_id.is_empty() {
-            return;
+            return Ok(());
         }
         let Some(ref worker_manager) = self.worker_manager else {
-            return;
+            return Ok(());
         };
         info!(ticket_id = %ticket_id, worker_id = %worker_id, "killing worker for cancelled workflow");
-        if let Err(e) = worker_manager
+        match worker_manager
             .stop_by_worker_id(&WorkerId(worker_id.to_owned()))
             .await
         {
-            tracing::warn!(
-                ticket_id = %ticket_id,
-                worker_id = %worker_id,
-                error = %e,
-                "failed to stop worker during workflow cancellation"
-            );
+            Ok(()) => Ok(()),
+            Err(crate::worker::StopError::Machine { source }) => Err(source.into()),
+            Err(e) => {
+                tracing::warn!(
+                    ticket_id = %ticket_id,
+                    worker_id = %worker_id,
+                    error = %e,
+                    "failed to stop worker during workflow cancellation"
+                );
+                Ok(())
+            }
         }
     }
 
@@ -2390,6 +2399,60 @@ mod tests {
         assert_eq!(received, "t-sig");
     }
 
+    /// A workflow whose worker's row names an unregistered machine: the
+    /// cancel fails with failed_precondition naming the machine (never
+    /// warn-and-continue), and the workflow is not marked cancelled.
+    #[tokio::test]
+    async fn cancel_active_workflow_with_worker_on_unregistered_machine_fails() {
+        let (test_db, mut handler) = setup_handler().await;
+        let worker_repo = workflow_db::WorkerRepo::new(test_db.workflow_pool().clone());
+        worker_repo
+            .insert_worker(&crate::worker::test_support::worker_row(
+                "away-1-abcd",
+                "elsewhere",
+                "running",
+            ))
+            .await
+            .unwrap();
+        handler.worker_manager = Some(crate::worker::test_support::worker_manager(
+            worker_repo.clone(),
+        ));
+        handler
+            .workflow_repo
+            .create_workflow("t-away", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+        handler
+            .workflow_repo
+            .set_workflow_worker_id("t-away", "away-1-abcd")
+            .await
+            .unwrap();
+
+        let status = TicketService::cancel_workflow(
+            &handler,
+            Request::new(CancelWorkflowRequest {
+                ticket_id: "t-away".into(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status.code(), Code::FailedPrecondition, "{status:?}");
+        assert!(status.message().contains("elsewhere"), "{status:?}");
+        let wf = handler
+            .workflow_repo
+            .get_latest_workflow_by_ticket("t-away")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(wf.status, LifecycleStatus::Cancelled);
+        let row = worker_repo
+            .get_worker("away-1-abcd")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.container_status, "running");
+    }
+
     #[tokio::test]
     async fn cancel_active_workflow_with_worker_id_but_no_manager() {
         let (_test_db, handler) = setup_handler().await;
@@ -2509,7 +2572,7 @@ mod tests {
     async fn kill_workflow_worker_skips_empty_worker_id() {
         let (_test_db, handler) = setup_handler().await;
         // Should return immediately without error.
-        handler.kill_workflow_worker("t-any", "").await;
+        handler.kill_workflow_worker("t-any", "").await.unwrap();
     }
 
     #[tokio::test]
@@ -2517,7 +2580,10 @@ mod tests {
         let (_test_db, handler) = setup_handler().await;
         assert!(handler.worker_manager.is_none());
         // Should return immediately without error even with a worker_id.
-        handler.kill_workflow_worker("t-any", "worker-456").await;
+        handler
+            .kill_workflow_worker("t-any", "worker-456")
+            .await
+            .unwrap();
     }
 
     fn create_request_with_branch(title: &str, branch: Option<String>) -> CreateTicketRequest {

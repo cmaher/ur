@@ -390,10 +390,12 @@ ur-server container
 a builderd client built from a channel. Managers hold the registry and ask it per call
 for a typed client of a machine (`builderd_client`, `container_client`,
 `local_worker_client`, `pool_client(machine_id)`), keyed by the relevant row's
-`machine_id`: stops, reconcile and hostexec/remote-repo calls by the worker row; pool
-RPCs and workflow git work by the slot row; launches by `local_id()` (which new rows
-record). Work tied to no row (GitHub poller and workflow `gh` calls, host-CLI hostexec)
-uses `local_builderd_client()`. An id the registry does not hold is
+`machine_id`: stops, reconcile and hostexec/remote-repo calls by the worker row (both
+services are worker-port only, behind the auth interceptor, so a caller always has a
+row); workflow git work by the slot row; launches by `local_id()` (which new rows
+record). Pool RPCs go to the local machine, `RepoPoolManager`'s machine, and its slot
+queries are filtered by that id. Work tied to no row (GitHub poller and workflow `gh`
+calls) uses `local_builderd_client()`. An id the registry does not hold is
 `MachineRegistryError::UnknownMachine`, surfaced as `failed_precondition` naming the id
 — never treated as local. `WorkerdAddressResolver` resolves a local-runtime worker's
 daemon this way (and refuses a container worker whose machine is unknown). For now

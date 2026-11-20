@@ -1732,6 +1732,70 @@ fn proxy_env_vars(proxy_hostname: &str) -> Vec<(String, String)> {
     ]
 }
 
+/// Fixtures shared by tests of the worker's callers.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// A `WorkerManager` whose registry holds only `test-machine`, at a
+    /// dead builderd port.
+    pub(crate) fn worker_manager(worker_repo: WorkerRepo) -> WorkerManager {
+        let registry =
+            MachineRegistryManager::new("test-machine".to_owned(), "http://127.0.0.1:1".to_owned())
+                .unwrap();
+        let network_config = NetworkConfig {
+            name: ur_config::DEFAULT_NETWORK_NAME.into(),
+            worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
+            server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
+            worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
+        };
+        WorkerManager::new(
+            PathBuf::from("/tmp/test/workspace"),
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test/logs"),
+            PathBuf::from("/tmp/test/logs"),
+            NetworkManager::new(
+                registry.clone(),
+                ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
+            ),
+            network_config,
+            ur_config::DEFAULT_SERVER_PORT + 1,
+            WorkerModesConfig::default(),
+            worker_repo,
+            GlobalSkillsConfig::default(),
+            registry,
+        )
+    }
+
+    /// A container worker row on `machine_id` in `status`.
+    pub(crate) fn worker_row(
+        worker_id: &str,
+        machine_id: &str,
+        status: &str,
+    ) -> workflow_db::model::Worker {
+        let now = Utc::now().to_rfc3339();
+        workflow_db::model::Worker {
+            worker_id: worker_id.into(),
+            process_id: worker_id.into(),
+            project_key: String::new(),
+            container_id: format!("{}{worker_id}", ur_config::DEFAULT_WORKER_PREFIX),
+            worker_secret: "secret".into(),
+            strategy: "code".into(),
+            agent_type: "claude".into(),
+            container_status: status.into(),
+            agent_status: "idle".into(),
+            workspace_path: None,
+            created_at: now.clone(),
+            updated_at: now,
+            idle_redispatch_count: 0,
+            brain_path: None,
+            runtime: ur_config::WorkerRuntime::Container,
+            machine_id: machine_id.into(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
