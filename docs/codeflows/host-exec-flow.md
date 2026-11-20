@@ -8,6 +8,19 @@ path handles path-based script invocations: project-declared shell scripts that
 are bind-mounted into the container and forwarded to builderd without Lua or
 allowlist checks.
 
+## Which builderd
+
+A worker's hostexec (commands and scripts) runs on **its own machine**: the handler
+resolves the caller's `ur-worker-id` row and sends the exec to
+`MachineRegistryManager::builderd_client(&worker.machine_id)`, right after resolving
+the request context and before reading the start frame. A row naming a machine the
+registry does not hold is `failed_precondition` (`unknown machine '<id>'`) — never the
+local builderd. A request with no worker id (host CLI) uses the local machine.
+`RemoteRepoService` routes the same way (`gh` runs where the calling worker's gh auth
+is; no worker → local). The workflow engine sends git work in a slot to the slot's
+machine (`WorkflowContext::slot_builderd`) and `gh` calls, like the GitHub poller, to the
+local one.
+
 ## Command Flow (PATH-based)
 
 1. Worker calls `git status` (or any configured command)
@@ -18,7 +31,7 @@ allowlist checks.
    b. Maps CWD: `/workspace/...` -> `%WORKSPACE%/...` (template prefix, not a resolved host path)
       - Exception: for `git` only, `/brain[/...]` maps to the worker's host brain path (`worker.brain_path`, recorded at launch). Any other command with a `/brain` CWD, a worker without a brain, or a `..` segment is rejected. `ur dream` itself runs from the normal working directory: `ur.lua` allows it only for workers with a project, sets `UR_PROJECT` to that project, and rejects `-p`/`--project`.
    c. Runs Lua transform if configured (validates/modifies args)
-   d. Forwards `BuilderDaemonExecRequest` to builderd
+   d. Forwards `BuilderDaemonExecRequest` to the worker's machine's builderd (see "Which builderd")
 5. builderd resolves `%WORKSPACE%` to its local workspace path (from env var or CLI flag), spawns the actual process
 6. Output streams back: builderd -> ur-server -> ur-workertools -> stdout/stderr
 

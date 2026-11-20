@@ -46,7 +46,7 @@ pub async fn serve_worker_grpc(
     workflow_repo: WorkflowRepo,
     worker_prefix: String,
     project_registry: ProjectRegistry,
-    builderd_channel: tonic::transport::Channel,
+    machine_registry: crate::MachineRegistryManager,
     host_workspace: std::path::PathBuf,
     git_branch_prefix: String,
     ticket_handler: crate::grpc_ticket::TicketServiceHandler,
@@ -76,15 +76,13 @@ pub async fn serve_worker_grpc(
     ));
 
     {
-        let hostexec_builderd_client =
-            ur_rpc::proto::builder::BuilderdClient::new(builderd_channel);
         let script_registry = hostexec::ScriptRegistry::from_projects(&project_registry.projects());
         let hostexec_handler = crate::grpc_hostexec::HostExecServiceHandler {
             project_registry,
             script_registry,
             lua: hostexec::LuaTransformManager::new(),
             worker_manager,
-            builderd_client: hostexec_builderd_client,
+            machine_registry,
             host_workspace,
             git_branch_prefix,
         };

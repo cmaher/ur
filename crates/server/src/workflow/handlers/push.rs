@@ -83,7 +83,7 @@ async fn handle_push(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<(
 
     // 3. Execute push via local_repo (through builderd).
     let local_repo = local_repo::GitBackend {
-        client: ctx.builderd_client.clone(),
+        client: ctx.slot_builderd(&slot)?,
     };
     let push_result = local_repo.push(branch, working_dir, no_verify).await?;
 
@@ -609,7 +609,7 @@ async fn ensure_pr(
     );
 
     let backend = GhBackend {
-        client: ctx.builderd_client.clone(),
+        client: ctx.local_builderd(),
         gh_repo: gh_repo.clone(),
     };
 

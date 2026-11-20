@@ -181,7 +181,7 @@ impl MachineRegistryManager {
     }
 
     /// The local machine's builderd channel.
-    pub fn local_builderd_channel(&self) -> Channel {
+    fn local_builderd_channel(&self) -> Channel {
         self.machines[&self.local_id].builderd.channel().clone()
     }
 

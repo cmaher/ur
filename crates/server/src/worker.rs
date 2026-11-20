@@ -787,13 +787,18 @@ impl WorkerManager {
 
     /// Look up a worker by worker ID and return the associated process_id.
     pub async fn resolve_process_id(&self, worker_id: &WorkerId) -> Result<String, String> {
-        let worker = self
-            .worker_repo
+        self.get_worker(worker_id).await.map(|w| w.process_id)
+    }
+
+    /// The worker row for `worker_id`; an unknown id is an error.
+    pub async fn get_worker(
+        &self,
+        worker_id: &WorkerId,
+    ) -> Result<workflow_db::model::Worker, String> {
+        self.worker_repo
             .get_worker(&worker_id.0)
             .await
-            .map_err(|e| format!("db error: {e}"))?;
-        worker
-            .map(|w| w.process_id)
+            .map_err(|e| format!("db error: {e}"))?
             .ok_or_else(|| format!("unknown worker: {worker_id}"))
     }
 

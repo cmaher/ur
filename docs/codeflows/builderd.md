@@ -386,11 +386,14 @@ ur-server container
 ```
 
 `MachineRegistryManager` is the server's only source of builderd connections:
-`main.rs` reads `UR_BUILDERD_ADDR` only to construct it, and every builderd client
-it builds (`BuilderContainerClient`, `BuilderPoolClient`, `BuilderLocalWorkerClient`,
-the reconciler's clients, the workflow/hostexec/remote-repo `BuilderdClient`s) clones
-`local_builderd_channel()`. Code that reaches builderd for a worker or slot row asks
-`builderd_channel(&row.machine_id)`; an id the registry does not hold is
+`main.rs` reads `UR_BUILDERD_ADDR` only to construct it, and no other server code holds
+a builderd client built from a channel. Managers hold the registry and ask it per call
+for a typed client of a machine (`builderd_client`, `container_client`,
+`local_worker_client`, `pool_client(machine_id)`), keyed by the relevant row's
+`machine_id`: stops, reconcile and hostexec/remote-repo calls by the worker row; pool
+RPCs and workflow git work by the slot row; launches by `local_id()` (which new rows
+record). Work tied to no row (GitHub poller and workflow `gh` calls, host-CLI hostexec)
+uses `local_builderd_client()`. An id the registry does not hold is
 `MachineRegistryError::UnknownMachine`, surfaced as `failed_precondition` naming the id
 — never treated as local. `WorkerdAddressResolver` resolves a local-runtime worker's
 daemon this way (and refuses a container worker whose machine is unknown). For now

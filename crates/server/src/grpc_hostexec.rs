@@ -22,9 +22,23 @@ pub struct HostExecServiceHandler {
     pub script_registry: ScriptRegistry,
     pub lua: LuaTransformManager,
     pub worker_manager: WorkerManager,
-    pub builderd_client: BuilderdClient,
+    /// A worker's commands run on its own machine's builderd; a request
+    /// with no worker (host CLI) on the local one.
+    pub machine_registry: crate::MachineRegistryManager,
     pub host_workspace: std::path::PathBuf,
     pub git_branch_prefix: String,
+}
+
+/// Per-request state resolved from the caller's `ur-worker-id`.
+struct RequestContext {
+    /// Resolved from the worker ID (empty for host-server requests).
+    process_id: String,
+    /// The Lua-facing context (if the worker has a project/slot).
+    worker_context: Option<hostexec::WorkerContext>,
+    /// Base hostexec config merged with per-project passthrough commands.
+    config: HostExecConfigManager,
+    /// The worker row's machine, or the local machine without a worker.
+    machine_id: String,
 }
 
 #[tonic::async_trait]
@@ -38,9 +52,17 @@ impl HostExecService for HostExecServiceHandler {
         // Extract worker context from metadata before consuming the request.
         // Streaming<T> is not Sync, so we extract metadata first.
         let metadata = req.metadata().clone();
-        let (process_id, worker_context, config) = self
+        let RequestContext {
+            process_id,
+            worker_context,
+            config,
+            machine_id,
+        } = self
             .resolve_request_context_from_metadata(&metadata)
             .await?;
+        // Fails closed: a machine the registry does not hold is
+        // failed_precondition, never the local builderd.
+        let builderd = self.machine_registry.builderd_client(&machine_id)?;
 
         let mut inbound = req.into_inner();
 
@@ -68,12 +90,25 @@ impl HostExecService for HostExecServiceHandler {
                 ));
             }
             (true, false) => {
-                self.exec_command(host_exec_req, worker_context, config, process_id, inbound)
-                    .await
+                self.exec_command(
+                    host_exec_req,
+                    worker_context,
+                    config,
+                    process_id,
+                    inbound,
+                    &builderd,
+                )
+                .await
             }
             (false, true) => {
-                self.exec_script(host_exec_req, worker_context, process_id, inbound)
-                    .await
+                self.exec_script(
+                    host_exec_req,
+                    worker_context,
+                    process_id,
+                    inbound,
+                    &builderd,
+                )
+                .await
             }
         }
     }
@@ -83,7 +118,9 @@ impl HostExecService for HostExecServiceHandler {
         req: Request<ListHostExecCommandsRequest>,
     ) -> Result<Response<ListHostExecCommandsResponse>, Status> {
         // Extract worker context to get per-project merged config
-        let (process_id, _worker_context, config) = self.resolve_request_context(&req).await?;
+        let RequestContext {
+            process_id, config, ..
+        } = self.resolve_request_context(&req).await?;
 
         let commands = config.command_names();
         let entries = config.command_entries();
@@ -108,6 +145,7 @@ impl HostExecServiceHandler {
         config: HostExecConfigManager,
         process_id: String,
         inbound: Streaming<HostExecMessage>,
+        builderd: &BuilderdClient,
     ) -> Result<Response<CommandOutputStream>, Status> {
         // 1. Allowlist check
         let cmd_config = config.get(&host_exec_req.command).ok_or_else(|| {
@@ -177,7 +215,7 @@ impl HostExecServiceHandler {
         );
 
         forward_to_builderd(
-            &self.builderd_client,
+            builderd,
             transform_result,
             cmd_config.long_lived,
             is_bidi,
@@ -193,6 +231,7 @@ impl HostExecServiceHandler {
         worker_context: Option<hostexec::WorkerContext>,
         process_id: String,
         inbound: Streaming<HostExecMessage>,
+        builderd: &BuilderdClient,
     ) -> Result<Response<CommandOutputStream>, Status> {
         // 1. Worker must have a project_key
         let project_key = worker_context
@@ -247,34 +286,17 @@ impl HostExecServiceHandler {
             "host exec script forwarding to builderd"
         );
 
-        forward_to_builderd(
-            &self.builderd_client,
-            transform_result,
-            false,
-            false,
-            inbound,
-        )
-        .await
+        forward_to_builderd(builderd, transform_result, false, false, inbound).await
     }
 
     /// Extract worker context from request metadata and resolve per-request state.
     ///
-    /// Returns `(process_id, worker_context, effective_config)` where:
-    /// - `process_id` is resolved from the worker ID (or empty for host-server requests)
-    /// - `worker_context` is the Lua-facing context (if the worker has a project/slot)
-    /// - `effective_config` is the base hostexec config merged with per-project passthrough commands
+    /// See [`RequestContext`].
     #[allow(clippy::result_large_err)]
     async fn resolve_request_context<T: Send + Sync>(
         &self,
         req: &Request<T>,
-    ) -> Result<
-        (
-            String,
-            Option<hostexec::WorkerContext>,
-            HostExecConfigManager,
-        ),
-        HostExecError,
-    > {
+    ) -> Result<RequestContext, HostExecError> {
         self.resolve_request_context_from_metadata(req.metadata())
             .await
     }
@@ -287,17 +309,15 @@ impl HostExecServiceHandler {
     async fn resolve_request_context_from_metadata(
         &self,
         metadata: &tonic::metadata::MetadataMap,
-    ) -> Result<
-        (
-            String,
-            Option<hostexec::WorkerContext>,
-            HostExecConfigManager,
-        ),
-        HostExecError,
-    > {
+    ) -> Result<RequestContext, HostExecError> {
         let Some(worker_id_val) = metadata.get(ur_config::WORKER_ID_HEADER) else {
             // No worker ID header — host-server request (e.g., from `ur` CLI).
-            return Ok((String::new(), None, self.project_registry.hostexec_config()));
+            return Ok(RequestContext {
+                process_id: String::new(),
+                worker_context: None,
+                config: self.project_registry.hostexec_config(),
+                machine_id: self.machine_registry.local_id().to_owned(),
+            });
         };
 
         let worker_id_str = worker_id_val
@@ -308,12 +328,13 @@ impl HostExecServiceHandler {
         let worker_id = crate::WorkerId::parse(worker_id_str)
             .map_err(|e| HostExecError::InvalidWorkerId { reason: e })?;
 
-        // Look up process_id from worker_manager
-        let process_id = self
+        // Look up the worker's process_id and machine
+        let worker = self
             .worker_manager
-            .resolve_process_id(&worker_id)
+            .get_worker(&worker_id)
             .await
             .map_err(|e| HostExecError::WorkerNotFound { worker_id: e })?;
+        let process_id = worker.process_id;
 
         // Look up worker context (project_key, slot_path) from worker_manager
         let proc_context = self.worker_manager.get_worker_context(&worker_id).await;
@@ -376,7 +397,12 @@ impl HostExecServiceHandler {
             ),
         };
 
-        Ok((process_id, worker_context, config))
+        Ok(RequestContext {
+            process_id,
+            worker_context,
+            config,
+            machine_id: worker.machine_id,
+        })
     }
 
     /// Host path of the brain mounted at `/brain` for the requesting worker, if any.

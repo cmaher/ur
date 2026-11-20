@@ -159,7 +159,7 @@ async fn read_worker_branch(
         .ok_or_else(|| anyhow::anyhow!("slot {} not found in database", worker_slot.slot_id))?;
 
     let local_repo = local_repo::GitBackend {
-        client: ctx.builderd_client.clone(),
+        client: ctx.slot_builderd(&slot)?,
     };
     let branch = local_repo.current_branch(&slot.host_path).await?;
 

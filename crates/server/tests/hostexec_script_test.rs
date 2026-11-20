@@ -41,6 +41,7 @@ image = "ur-worker"
 /// A HostExec server plus the worker manager used to register workers against it.
 struct HostExecHarness {
     worker_manager: ur_server::WorkerManager,
+    worker_repo: workflow_db::WorkerRepo,
     client: HostExecServiceClient<tonic::transport::Channel>,
     workspace: PathBuf,
     _test_db: ur_db_test::TestDb,
@@ -54,8 +55,6 @@ impl HostExecHarness {
 
         let test_db = ur_db_test::TestDb::new().await;
         let worker_repo = workflow_db::WorkerRepo::new(test_db.workflow_pool().clone());
-        let dead_builderd =
-            tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
         let test_registry = ur_server::MachineRegistryManager::new(
             config.machine.id.clone(),
             "http://127.0.0.1:1".into(),
@@ -82,7 +81,7 @@ impl HostExecHarness {
             config.network.clone(),
             config.worker_port,
             ur_server::worker::WorkerModesConfig::default(),
-            worker_repo,
+            worker_repo.clone(),
             ur_config::GlobalSkillsConfig::default(),
             test_registry.clone(),
         );
@@ -93,7 +92,7 @@ impl HostExecHarness {
             project_registry,
             lua: ur_server::hostexec::LuaTransformManager::new(),
             worker_manager: worker_manager.clone(),
-            builderd_client: ur_rpc::proto::builder::BuilderdClient::new(dead_builderd),
+            machine_registry: test_registry,
             host_workspace: workspace.clone(),
             git_branch_prefix: String::new(),
         };
@@ -116,6 +115,7 @@ impl HostExecHarness {
 
         Self {
             worker_manager,
+            worker_repo,
             client: HostExecServiceClient::new(channel),
             workspace,
             _test_db: test_db,
@@ -161,6 +161,19 @@ impl HostExecHarness {
             )
             .await;
         worker_id.to_string()
+    }
+
+    /// Move `worker_id`'s row to machine `machine_id` (not in the registry).
+    async fn move_to_machine(&self, worker_id: &str, machine_id: &str) {
+        let mut row = self
+            .worker_repo
+            .get_worker(worker_id)
+            .await
+            .unwrap()
+            .unwrap();
+        self.worker_repo.delete_worker(worker_id).await.unwrap();
+        row.machine_id = machine_id.into();
+        self.worker_repo.insert_worker(&row).await.unwrap();
     }
 
     /// Send a single-frame Exec request as `worker_id` and return the RPC error.
@@ -340,4 +353,43 @@ async fn brain_working_dir_requires_mount_and_stays_inside() {
         .exec_error(&with_brain, brain_request("git", "/brain/../etc"))
         .await;
     assert_invalid_working_dir(&escape, "must not contain '..'");
+}
+
+/// A worker's hostexec runs on its own machine's builderd. A worker whose
+/// row names a machine the registry does not hold is `failed_precondition`
+/// naming that machine, for commands and scripts alike, and never reaches
+/// the local builderd (which the same request from a local worker does:
+/// `builderd exec failed`, the dead local port).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hostexec_for_a_worker_on_an_unregistered_machine_fails_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = HostExecHarness::start(dir.path()).await;
+    let local = harness
+        .register_worker("machine-local-test", "noverifyproj")
+        .await;
+    let away = harness
+        .register_worker("machine-away-test", "scriptproj")
+        .await;
+    harness.move_to_machine(&away, "elsewhere").await;
+
+    let reached = harness
+        .exec_error(&local, git_push_no_verify_request())
+        .await;
+    assert_eq!(reached.code(), Code::Internal, "{reached:?}");
+    assert!(
+        reached.message().contains("builderd exec failed"),
+        "{reached:?}"
+    );
+
+    for request in [
+        git_push_no_verify_request(),
+        script_request("/workspace/host-only.sh"),
+    ] {
+        let status = harness.exec_error(&away, request).await;
+        assert_eq!(status.code(), Code::FailedPrecondition, "{status:?}");
+        assert!(
+            status.message().contains("unknown machine 'elsewhere'"),
+            "{status:?}"
+        );
+    }
 }

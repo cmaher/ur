@@ -388,9 +388,6 @@ fn spawn_workflow_services(
 ) -> WorkflowServices {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let workflow_builderd_client =
-        ur_rpc::proto::builder::BuilderdClient::new(machine_registry.local_builderd_channel());
-
     let workflow_ticket_client =
         ur_server::workflow::ticket_client::TicketClient::new(ticket_handler.clone());
     let poller_ticket_client = workflow_ticket_client.clone();
@@ -404,7 +401,7 @@ fn spawn_workflow_services(
         workflow_repo.clone(),
         worker_repo.clone(),
         workerd_resolver.clone(),
-        workflow_builderd_client.clone(),
+        machine_registry.clone(),
         config.clone(),
         handlers.clone(),
         transition_tx.clone(),
@@ -417,7 +414,7 @@ fn spawn_workflow_services(
         workflow_repo: workflow_repo.clone(),
         worker_repo: worker_repo.clone(),
         workerd_resolver: workerd_resolver.clone(),
-        builderd_client: workflow_builderd_client.clone(),
+        machine_registry: machine_registry.clone(),
         config: config.clone(),
         transition_tx: transition_tx.clone(),
         worker_manager: worker_manager.clone(),
@@ -434,7 +431,7 @@ fn spawn_workflow_services(
     let poller = GithubPollerManager::new(
         ticket_repo.clone(),
         workflow_repo.clone(),
-        workflow_builderd_client,
+        machine_registry.clone(),
         scan_interval,
         transition_tx.clone(),
         poller_ticket_client,
@@ -572,9 +569,8 @@ async fn serve_grpc_servers(
         ur_server::grpc_server::serve_grpc(host_addr, grpc_handler, ticket_handler.clone());
 
     let remote_repo_handler = ur_server::grpc_remote_repo::RemoteRepoServiceHandler {
-        builderd_client: ur_rpc::proto::builder::BuilderdClient::new(
-            machine_registry.local_builderd_channel(),
-        ),
+        machine_registry: machine_registry.clone(),
+        worker_repo: worker_repo.clone(),
     };
 
     let mut worker_ticket_handler = ticket_handler;
@@ -594,7 +590,7 @@ async fn serve_grpc_servers(
         workflow_repo,
         network_prefix,
         project_registry,
-        machine_registry.local_builderd_channel(),
+        machine_registry,
         host_workspace,
         config.git_branch_prefix.clone(),
         worker_ticket_handler,

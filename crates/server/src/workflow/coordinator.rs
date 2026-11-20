@@ -483,10 +483,9 @@ mod tests {
         (test_db, repo, workflow_repo, worker_repo)
     }
 
-    fn dummy_builderd_client() -> ur_rpc::proto::builder::BuilderdClient {
-        let channel =
-            tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
-        ur_rpc::proto::builder::BuilderdClient::new(channel)
+    fn dummy_registry() -> crate::MachineRegistryManager {
+        crate::MachineRegistryManager::new("test-machine".into(), "http://localhost:50051".into())
+            .unwrap()
     }
 
     fn dummy_config() -> Arc<ur_config::Config> {
@@ -611,7 +610,7 @@ mod tests {
                 .unwrap(),
                 ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
             ),
-            builderd_client: dummy_builderd_client(),
+            machine_registry: dummy_registry(),
             config: dummy_config(),
             transition_tx: tx,
             worker_manager,
@@ -639,6 +638,32 @@ mod tests {
             };
             Box::pin(std::future::ready(result))
         }
+    }
+
+    /// A slot's git work goes to the slot's machine: a slot on a machine
+    /// the registry does not hold is an error naming it, never the local
+    /// builderd.
+    #[tokio::test]
+    async fn slot_builderd_fails_closed_for_an_unregistered_machine() {
+        let (_db, ticket_repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let ctx = make_ctx(ticket_repo, workflow_repo, worker_repo);
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut slot = workflow_db::model::Slot {
+            id: "s0".into(),
+            project_key: "proj".into(),
+            slot_name: "0".into(),
+            host_path: "/pool/proj/0".into(),
+            created_at: now.clone(),
+            updated_at: now,
+            machine_id: "test-machine".into(),
+        };
+        assert!(ctx.slot_builderd(&slot).is_ok());
+        slot.machine_id = "elsewhere".into();
+        let err = ctx.slot_builderd(&slot).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown machine 'elsewhere'"),
+            "{err}"
+        );
     }
 
     async fn create_test_ticket(repo: &TicketRepo, id: &str) {

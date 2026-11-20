@@ -32,7 +32,7 @@ impl WorkflowEngine {
         workflow_repo: WorkflowRepo,
         worker_repo: WorkerRepo,
         workerd_resolver: crate::WorkerdAddressResolver,
-        builderd_client: ur_rpc::proto::builder::BuilderdClient,
+        machine_registry: crate::MachineRegistryManager,
         config: Arc<ur_config::Config>,
         handler_entries: Vec<HandlerEntry>,
         transition_tx: tokio::sync::mpsc::Sender<super::TransitionRequest>,
@@ -44,7 +44,7 @@ impl WorkflowEngine {
             workflow_repo,
             worker_repo,
             workerd_resolver,
-            builderd_client,
+            machine_registry,
             config,
             transition_tx,
             worker_manager,
@@ -252,10 +252,9 @@ mod tests {
         )
     }
 
-    fn dummy_builderd_client() -> ur_rpc::proto::builder::BuilderdClient {
-        let channel =
-            tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
-        ur_rpc::proto::builder::BuilderdClient::new(channel)
+    fn dummy_registry() -> crate::MachineRegistryManager {
+        crate::MachineRegistryManager::new("test-machine".into(), "http://localhost:50051".into())
+            .unwrap()
     }
 
     fn dummy_config() -> Arc<ur_config::Config> {
@@ -434,7 +433,7 @@ mod tests {
             workflow_repo.clone(),
             worker_repo.clone(),
             test_resolver(),
-            dummy_builderd_client(),
+            dummy_registry(),
             dummy_config(),
             vec![(
                 LifecycleStatus::Implementing,
@@ -505,7 +504,7 @@ mod tests {
             workflow_repo.clone(),
             worker_repo.clone(),
             test_resolver(),
-            dummy_builderd_client(),
+            dummy_registry(),
             dummy_config(),
             vec![(
                 LifecycleStatus::Implementing,
@@ -583,7 +582,7 @@ mod tests {
             workflow_repo.clone(),
             worker_repo.clone(),
             test_resolver(),
-            dummy_builderd_client(),
+            dummy_registry(),
             dummy_config(),
             vec![(
                 LifecycleStatus::AwaitingDispatch,
@@ -652,7 +651,7 @@ mod tests {
             workflow_repo.clone(),
             worker_repo.clone(),
             test_resolver(),
-            dummy_builderd_client(),
+            dummy_registry(),
             dummy_config(),
             vec![(
                 LifecycleStatus::AwaitingDispatch,
@@ -694,7 +693,7 @@ mod tests {
             workflow_repo.clone(),
             worker_repo.clone(),
             test_resolver(),
-            dummy_builderd_client(),
+            dummy_registry(),
             dummy_config(),
             vec![(
                 LifecycleStatus::Implementing,
@@ -760,7 +759,7 @@ mod tests {
             workflow_repo.clone(),
             worker_repo.clone(),
             test_resolver(),
-            dummy_builderd_client(),
+            dummy_registry(),
             dummy_config(),
             vec![],
             dummy_transition_tx(),

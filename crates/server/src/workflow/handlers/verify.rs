@@ -4,6 +4,7 @@ use local_repo::LocalRepo;
 use tracing::{info, warn};
 
 use ticket_db::LifecycleStatus;
+use ur_rpc::proto::builder::BuilderdClient;
 
 use crate::workflow::handlers::hook_log::write_hook_failure_log;
 use crate::workflow::{HandlerFuture, TransitionRequest, WorkflowContext, WorkflowHandler};
@@ -59,7 +60,7 @@ async fn run_verification(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Res
     };
 
     // 3. Resolve the hook path and working directory.
-    let (hook_path_str, working_dir) =
+    let (hook_path_str, working_dir, builderd) =
         match resolve_hook_context(ctx, ticket_id, project_key).await? {
             Some(resolved) => resolved,
             None => {
@@ -76,10 +77,8 @@ async fn run_verification(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Res
         "running pre-push verification hook"
     );
 
-    // 4. Execute the hook via local_repo (through builderd).
-    let local_repo = local_repo::GitBackend {
-        client: ctx.builderd_client.clone(),
-    };
+    // 4. Execute the hook via local_repo (through the slot machine's builderd).
+    let local_repo = local_repo::GitBackend { client: builderd };
     let hook_result = match local_repo.run_hook(&hook_path_str, &working_dir).await {
         Ok(result) => result,
         Err(e) => {
@@ -160,8 +159,8 @@ async fn resolve_hook_context(
     ctx: &WorkflowContext,
     ticket_id: &str,
     project_key: &str,
-) -> anyhow::Result<Option<(String, String)>> {
-    // Resolve worker and slot to get the working directory.
+) -> anyhow::Result<Option<(String, String, BuilderdClient)>> {
+    // Resolve worker and slot to get the working directory and its machine.
     let workflow = ctx
         .workflow_repo
         .get_workflow_by_ticket(ticket_id)
@@ -190,7 +189,11 @@ async fn resolve_hook_context(
     match find_workflow_hook_path(&ctx.config.config_dir, project_key, working_dir) {
         Some(hook_path) => {
             let hook_path_str = hook_path.to_string_lossy().into_owned();
-            Ok(Some((hook_path_str, working_dir.clone())))
+            Ok(Some((
+                hook_path_str,
+                working_dir.clone(),
+                ctx.slot_builderd(&slot)?,
+            )))
         }
         None => {
             info!(

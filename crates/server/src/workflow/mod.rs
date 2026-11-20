@@ -24,6 +24,7 @@ use ur_config::Config;
 use ur_rpc::proto::builder::BuilderdClient;
 use workflow_db::WorkerRepo;
 use workflow_db::WorkflowRepo;
+use workflow_db::model::Slot;
 
 use crate::WorkerManager;
 
@@ -39,9 +40,10 @@ pub struct WorkflowContext {
     pub worker_repo: WorkerRepo,
     /// Resolves a worker row to its daemon address (dispatch, labels).
     pub workerd_resolver: crate::WorkerdAddressResolver,
-    /// Pre-connected builderd gRPC client for delegating operations
-    /// (e.g., `gh` commands) that require host-side credentials.
-    pub builderd_client: BuilderdClient,
+    /// Source of builderd clients: a slot's git work goes to the slot's
+    /// machine ([`Self::slot_builderd`]), everything else (`gh`) to the
+    /// local one ([`Self::local_builderd`]).
+    pub machine_registry: crate::MachineRegistryManager,
     /// Resolved server configuration, providing access to per-project
     /// settings (workflow hooks, fix attempt limits, etc.).
     pub config: Arc<Config>,
@@ -51,6 +53,19 @@ pub struct WorkflowContext {
     pub transition_tx: mpsc::Sender<TransitionRequest>,
     /// Worker manager for stopping containers and releasing pool slots.
     pub worker_manager: WorkerManager,
+}
+
+impl WorkflowContext {
+    /// Builderd of the machine holding `slot` (git operations in it). An
+    /// unregistered machine is an error, never the local builderd.
+    pub fn slot_builderd(&self, slot: &Slot) -> anyhow::Result<BuilderdClient> {
+        Ok(self.machine_registry.builderd_client(&slot.machine_id)?)
+    }
+
+    /// The local machine's builderd, for work tied to no slot (`gh`).
+    pub fn local_builderd(&self) -> BuilderdClient {
+        self.machine_registry.local_builderd_client()
+    }
 }
 
 /// Trait for handling a lifecycle state entry.

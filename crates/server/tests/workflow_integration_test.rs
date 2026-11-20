@@ -157,7 +157,7 @@ impl TestHarness {
                 .unwrap(),
                 ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
             ),
-            builderd_client: dummy_builderd_client(),
+            machine_registry: dummy_registry(),
             config: dummy_config(),
             transition_tx: transition_tx.clone(),
             worker_manager: dummy_worker_manager(worker_repo.clone()),
@@ -265,9 +265,9 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
     )
 }
 
-fn dummy_builderd_client() -> ur_rpc::proto::builder::BuilderdClient {
-    let channel = tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
-    ur_rpc::proto::builder::BuilderdClient::new(channel)
+fn dummy_registry() -> ur_server::MachineRegistryManager {
+    ur_server::MachineRegistryManager::new("test-machine".into(), "http://localhost:50051".into())
+        .unwrap()
 }
 
 fn dummy_config() -> Arc<ur_config::Config> {
@@ -753,7 +753,7 @@ async fn per_project_cycle_limit_overrides_server_default() {
             .unwrap(),
             ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
         ),
-        builderd_client: dummy_builderd_client(),
+        machine_registry: dummy_registry(),
         config,
         transition_tx,
         worker_manager: dummy_worker_manager(worker_repo.clone()),

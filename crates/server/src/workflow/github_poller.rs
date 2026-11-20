@@ -49,7 +49,8 @@ mod check_run {
 pub struct GithubPollerManager {
     ticket_repo: TicketRepo,
     workflow_repo: WorkflowRepo,
-    builderd_client: BuilderdClient,
+    /// `gh` runs on the local machine's builderd.
+    machine_registry: crate::MachineRegistryManager,
     scan_interval: Duration,
     transition_tx: mpsc::Sender<TransitionRequest>,
     ticket_client: TicketClient,
@@ -62,7 +63,7 @@ impl GithubPollerManager {
     pub fn new(
         ticket_repo: TicketRepo,
         workflow_repo: WorkflowRepo,
-        builderd_client: BuilderdClient,
+        machine_registry: crate::MachineRegistryManager,
         scan_interval: Duration,
         transition_tx: mpsc::Sender<TransitionRequest>,
         ticket_client: TicketClient,
@@ -72,7 +73,7 @@ impl GithubPollerManager {
         Self {
             ticket_repo,
             workflow_repo,
-            builderd_client,
+            machine_registry,
             scan_interval,
             transition_tx,
             ticket_client,
@@ -175,7 +176,7 @@ impl GithubPollerManager {
             let body = build_reply_body(ticket_ids);
 
             let backend = GhBackend {
-                client: self.builderd_client.clone(),
+                client: self.machine_registry.local_builderd_client(),
                 gh_repo: gh_repo.clone(),
             };
 
@@ -338,7 +339,7 @@ impl GithubPollerManager {
         }
 
         let backend = GhBackend {
-            client: self.builderd_client.clone(),
+            client: self.machine_registry.local_builderd_client(),
             gh_repo: gh_repo.clone(),
         };
 
@@ -566,7 +567,7 @@ impl GithubPollerManager {
 
         let signal_result = check_review_signal(
             backend,
-            &self.builderd_client,
+            &self.machine_registry.local_builderd_client(),
             gh_repo,
             pr_number,
             &seen_comment_ids,
