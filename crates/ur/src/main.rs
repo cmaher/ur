@@ -638,19 +638,21 @@ fn kill_all_containers(worker_prefix: &str, output: &OutputManager) -> Result<()
     Ok(())
 }
 
-fn attach_manager(port: u16, worker_prefix: &str) -> attach::AttachManager {
+fn attach_manager(port: u16, worker_prefix: &str) -> attach::AttachManager<attach::LocalAttach> {
     attach::AttachManager::new(
         port,
         worker_prefix.to_owned(),
         ur_config::LOCAL_TMUX_SOCKET.to_owned(),
-        PathBuf::from("tmux"),
+        attach::LocalAttach {
+            tmux_program: PathBuf::from("tmux"),
+        },
     )
 }
 
 /// Attach for `--rm`; the stop goes through the server (WorkerStop), which
 /// tears local workers down via builderd.
 async fn attach_with_rm_cleanup(
-    attacher: &attach::AttachManager,
+    attacher: &attach::AttachManager<attach::LocalAttach>,
     plan: &attach::AttachPlan,
     process_id: &str,
     port: u16,

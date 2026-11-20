@@ -212,6 +212,10 @@ branches on `runtime`:
   itself. There is no health wait (launch returns only after the session exists). A missing
   session gives a clear error that points to `ur worker list`.
 
+Executing the plan is behind the `AttachTransport` trait (generic, not `dyn`); `AttachManager<T>`
+only plans and delegates. `LocalAttach` is today's behaviour (the exec and session-exists check
+above), so a remote transport (tailnet, SSM) can be added without touching callers.
+
 `--rm` stops the worker through the server once the attach ends, or on SIGHUP, SIGINT or SIGTERM.
 
 ## Session control (read / keys / interrupt / wait-idle)

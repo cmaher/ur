@@ -33,30 +33,92 @@ pub enum AttachPlan {
     },
 }
 
+/// How a terminal reaches the worker an [`AttachPlan`] describes. Plan
+/// building stays in [`AttachManager`]; a transport only executes the plan,
+/// so remote transports (tailnet, SSM, ...) can be added without touching
+/// the manager's callers.
+pub trait AttachTransport: Clone + Send + Sync {
+    /// Attach interactively; returns the attach's exit code.
+    fn attach(&self, plan: &AttachPlan) -> impl Future<Output = Result<i32>> + Send;
+}
+
+/// Attach on this host: `docker exec` for containers, host tmux for local
+/// workers.
 #[derive(Clone)]
-pub struct AttachManager {
+pub struct LocalAttach {
+    /// Host program for the interactive local attach exec only (`tmux` in
+    /// production). The pre-attach `session.exists()` check always runs
+    /// `tmux` from PATH.
+    pub tmux_program: PathBuf,
+}
+
+impl AttachTransport for LocalAttach {
+    async fn attach(&self, plan: &AttachPlan) -> Result<i32> {
+        match plan.clone() {
+            AttachPlan::Container { container, command } => {
+                info!(container = %container.0, "attaching to agent session");
+                tokio::task::spawn_blocking(move || {
+                    let status =
+                        container::runtime_from_env().exec_interactive(&container, &command)?;
+                    Ok(status.code().unwrap_or(1))
+                })
+                .await
+                .context("attach task panicked")?
+            }
+            AttachPlan::Local { worker_id, session } => {
+                if !session.exists().await? {
+                    bail!(
+                        "local worker {worker_id} has no tmux session '{}' on socket '{}' \
+                         (the agent may have exited); run `ur worker list`",
+                        session.name(),
+                        session.socket().unwrap_or_default()
+                    );
+                }
+                info!(
+                    worker_id,
+                    session = session.name(),
+                    "attaching to local agent session"
+                );
+                let mut cmd = self.local_attach_command(&session);
+                tokio::task::spawn_blocking(move || {
+                    let status = cmd.status().context("failed to exec tmux attach")?;
+                    Ok(status.code().unwrap_or(1))
+                })
+                .await
+                .context("attach task panicked")?
+            }
+        }
+    }
+}
+
+impl LocalAttach {
+    /// The host attach for a local session. `TMUX` is inherited on purpose:
+    /// attaching from the user's own tmux (another server) works with it set,
+    /// and it keeps tmux's guard against nesting the `ur` server in itself.
+    fn local_attach_command(&self, session: &tmux::Session) -> Command {
+        let argv = session.attach_command();
+        let mut cmd = Command::new(&self.tmux_program);
+        cmd.args(&argv[1..]);
+        cmd
+    }
+}
+
+#[derive(Clone)]
+pub struct AttachManager<T: AttachTransport> {
     port: u16,
     worker_prefix: String,
     /// tmux server socket of local workers (`ur_config::LOCAL_TMUX_SOCKET`).
     tmux_socket: String,
-    /// Host program for the interactive local attach exec only (`tmux` in
-    /// production). The pre-attach `session.exists()` check always runs
-    /// `tmux` from PATH.
-    tmux_program: PathBuf,
+    transport: T,
 }
 
-impl AttachManager {
-    pub fn new(
-        port: u16,
-        worker_prefix: String,
-        tmux_socket: String,
-        tmux_program: PathBuf,
-    ) -> Self {
+impl<T: AttachTransport> AttachManager<T> {
+    pub fn new(port: u16, worker_prefix: String, tmux_socket: String, transport: T) -> Self {
         Self {
             port,
             worker_prefix,
             tmux_socket,
-            tmux_program,
+            transport,
         }
     }
 
@@ -105,7 +167,7 @@ impl AttachManager {
     /// Wait until the freshly launched worker can be attached to.
     ///
     /// Local workers need no wait: the launch RPC returns only after builderd
-    /// created the tmux session, and [`Self::attach`] checks it still exists.
+    /// created the tmux session, and the transport checks it still exists.
     pub async fn wait_ready(&self, plan: &AttachPlan) -> Result<()> {
         match plan {
             AttachPlan::Container { container, .. } => {
@@ -118,52 +180,9 @@ impl AttachManager {
         }
     }
 
-    /// Attach interactively; returns the attach's exit code.
+    /// Attach interactively through the transport; returns the exit code.
     pub async fn attach(&self, plan: &AttachPlan) -> Result<i32> {
-        match plan.clone() {
-            AttachPlan::Container { container, command } => {
-                info!(container = %container.0, "attaching to agent session");
-                tokio::task::spawn_blocking(move || {
-                    let status =
-                        container::runtime_from_env().exec_interactive(&container, &command)?;
-                    Ok(status.code().unwrap_or(1))
-                })
-                .await
-                .context("attach task panicked")?
-            }
-            AttachPlan::Local { worker_id, session } => {
-                if !session.exists().await? {
-                    bail!(
-                        "local worker {worker_id} has no tmux session '{}' on socket '{}' \
-                         (the agent may have exited); run `ur worker list`",
-                        session.name(),
-                        session.socket().unwrap_or_default()
-                    );
-                }
-                info!(
-                    worker_id,
-                    session = session.name(),
-                    "attaching to local agent session"
-                );
-                let mut cmd = self.local_attach_command(&session);
-                tokio::task::spawn_blocking(move || {
-                    let status = cmd.status().context("failed to exec tmux attach")?;
-                    Ok(status.code().unwrap_or(1))
-                })
-                .await
-                .context("attach task panicked")?
-            }
-        }
-    }
-
-    /// The host attach for a local session. `TMUX` is inherited on purpose:
-    /// attaching from the user's own tmux (another server) works with it set,
-    /// and it keeps tmux's guard against nesting the `ur` server in itself.
-    fn local_attach_command(&self, session: &tmux::Session) -> Command {
-        let argv = session.attach_command();
-        let mut cmd = Command::new(&self.tmux_program);
-        cmd.args(&argv[1..]);
-        cmd
+        self.transport.attach(plan).await
     }
 
     /// Attach for `--rm`, then run `stop` once the attach ends.
@@ -277,8 +296,15 @@ mod tests {
         path
     }
 
-    fn manager(socket: &str, program: PathBuf) -> AttachManager {
-        AttachManager::new(0, "ur-worker-".into(), socket.into(), program)
+    fn manager(socket: &str, program: PathBuf) -> AttachManager<LocalAttach> {
+        AttachManager::new(
+            0,
+            "ur-worker-".into(),
+            socket.into(),
+            LocalAttach {
+                tmux_program: program,
+            },
+        )
     }
 
     fn summary(runtime: &str) -> WorkerSummary {
@@ -410,8 +436,10 @@ mod tests {
     /// nest the `ur` server inside one of its own panes.
     #[test]
     fn local_attach_inherits_tmux_env() {
-        let m = manager("ur", "/fake/tmux".into());
-        let cmd = m.local_attach_command(&tmux::Session::on_socket("ur", "ur-w1-ab12"));
+        let transport = LocalAttach {
+            tmux_program: "/fake/tmux".into(),
+        };
+        let cmd = transport.local_attach_command(&tmux::Session::on_socket("ur", "ur-w1-ab12"));
         assert_eq!(cmd.get_program(), "/fake/tmux");
         let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
         assert_eq!(
@@ -442,5 +470,38 @@ mod tests {
             !dir.path().join("args").exists(),
             "tmux attach must not run"
         );
+    }
+
+    /// A transport double recording the plans it is asked to attach.
+    #[derive(Clone, Default)]
+    struct RecordingTransport {
+        plans: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl AttachTransport for RecordingTransport {
+        async fn attach(&self, plan: &AttachPlan) -> Result<i32> {
+            let AttachPlan::Local { worker_id, .. } = plan else {
+                panic!("expected a local plan");
+            };
+            self.plans.lock().unwrap().push(worker_id.clone());
+            Ok(7)
+        }
+    }
+
+    #[tokio::test]
+    async fn attach_with_rm_delegates_to_the_transport_then_stops() {
+        let transport = RecordingTransport::default();
+        let m = AttachManager::new(0, "p-".into(), "ur".into(), transport.clone());
+        let mut stopped = false;
+        let code = m
+            .attach_with_rm(&local_plan("ur"), || async {
+                stopped = true;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(code, 7, "the transport's exit code is returned");
+        assert!(stopped, "stop runs after the transport attach");
+        assert_eq!(*transport.plans.lock().unwrap(), ["w1"]);
     }
 }
