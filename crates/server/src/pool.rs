@@ -5,10 +5,27 @@ use tracing::info;
 use uuid::Uuid;
 
 use ur_config::Config;
-use workflow_db::WorkerRepo;
+use workflow_db::{ClaimSlotError, WorkerRepo};
 
-use crate::ProjectRegistry;
 use crate::builder_pool_client::BuilderPoolClient;
+use crate::{MachineRegistryManager, ProjectRegistry};
+
+/// Why [`RepoPoolManager::acquire_slot`] failed.
+#[derive(Debug, thiserror::Error)]
+pub enum AcquireSlotError {
+    /// The claim named a slot that is missing or on another machine than
+    /// the claiming worker: a precondition failure, not an internal error.
+    #[error("{source}")]
+    Slot { source: ClaimSlotError },
+    #[error("{reason}")]
+    Failed { reason: String },
+}
+
+impl From<String> for AcquireSlotError {
+    fn from(reason: String) -> Self {
+        Self::Failed { reason }
+    }
+}
 
 /// Manages a pool of pre-cloned git repositories per project.
 ///
@@ -30,9 +47,9 @@ pub struct RepoPoolManager {
     project_registry: ProjectRegistry,
     /// Client for delegating all pool filesystem/git operations to builderd.
     builder_pool_client: BuilderPoolClient,
-    /// Machine whose pool this manager serves (`[machine] id`); scopes every
-    /// slot query and is recorded on new slot rows.
-    machine_id: String,
+    /// Source of the machine whose pool this manager serves (its local
+    /// machine); that id scopes every slot query and is recorded on new rows.
+    machine_registry: MachineRegistryManager,
 }
 
 impl RepoPoolManager {
@@ -41,14 +58,20 @@ impl RepoPoolManager {
         worker_repo: WorkerRepo,
         project_registry: ProjectRegistry,
         builder_pool_client: BuilderPoolClient,
+        machine_registry: MachineRegistryManager,
     ) -> Self {
         Self {
             git_branch_prefix: config.git_branch_prefix.clone(),
             worker_repo,
             project_registry,
             builder_pool_client,
-            machine_id: config.machine.id.clone(),
+            machine_registry,
         }
+    }
+
+    /// The machine whose pool this manager serves.
+    fn machine_id(&self) -> &str {
+        self.machine_registry.local_id()
     }
 
     /// Look up a project and its git remote, refusing local projects up front.
@@ -90,7 +113,7 @@ impl RepoPoolManager {
         &self,
         project_key: &str,
         owner: F,
-    ) -> Result<(PathBuf, workflow_db::model::Worker), String>
+    ) -> Result<(PathBuf, workflow_db::model::Worker), AcquireSlotError>
     where
         F: Fn(&std::path::Path) -> workflow_db::model::Worker,
     {
@@ -98,7 +121,7 @@ impl RepoPoolManager {
 
         let candidates = self
             .worker_repo
-            .find_available_slots(&self.machine_id, project_key)
+            .find_available_slots(self.machine_id(), project_key)
             .await
             .map_err(|e| format!("db error finding available slot: {e}"))?;
         for slot in candidates {
@@ -119,7 +142,8 @@ impl RepoPoolManager {
                         &row.worker_id,
                         format!("recycle_slot failed for slot {}: {e}", slot.slot_name),
                     )
-                    .await),
+                    .await
+                    .into()),
             };
         }
 
@@ -134,7 +158,8 @@ impl RepoPoolManager {
             return Err(format!(
                 "pool limit reached for project {project_key}: {total_slots}/{} slots in use",
                 project.pool_limit
-            ));
+            )
+            .into());
         }
 
         // Find next slot index (fill gaps or use max + 1)
@@ -166,7 +191,7 @@ impl RepoPoolManager {
             host_path: host_path.display().to_string(),
             created_at: now.clone(),
             updated_at: now,
-            machine_id: self.machine_id.clone(),
+            machine_id: self.machine_id().to_owned(),
         };
         self.worker_repo
             .insert_slot(&new_slot)
@@ -178,16 +203,26 @@ impl RepoPoolManager {
         if !self.claim(&row, &slot_id).await? {
             return Err(format!(
                 "newly prepared slot {slot_name} was taken by a concurrent launch for {project_key}"
-            ));
+            )
+            .into());
         }
         Ok((host_path, row))
     }
 
-    async fn claim(&self, row: &workflow_db::model::Worker, slot_id: &str) -> Result<bool, String> {
+    async fn claim(
+        &self,
+        row: &workflow_db::model::Worker,
+        slot_id: &str,
+    ) -> Result<bool, AcquireSlotError> {
         self.worker_repo
             .claim_slot(row, slot_id)
             .await
-            .map_err(|e| format!("db error claiming slot: {e}"))
+            .map_err(|e| match e {
+                ClaimSlotError::Db { .. } => AcquireSlotError::Failed {
+                    reason: e.to_string(),
+                },
+                other => AcquireSlotError::Slot { source: other },
+            })
     }
 
     /// Undo a claim nothing was launched under: delete the row (and so the
@@ -231,7 +266,7 @@ impl RepoPoolManager {
     ) -> Result<(), String> {
         let slot = self
             .worker_repo
-            .get_slot_by_host_path(&self.machine_id, &host_slot_path.display().to_string())
+            .get_slot_by_host_path(self.machine_id(), &host_slot_path.display().to_string())
             .await
             .map_err(|e| format!("db error looking up slot for checkout: {e}"))?
             .ok_or_else(|| {
@@ -277,6 +312,8 @@ mod tests {
     use ur_config::ProjectConfig;
 
     const TEST_MACHINE: &str = "test-machine";
+    /// `config.machine.id` in pool tests; never the pool's machine.
+    const CONFIG_MACHINE: &str = "config-machine";
 
     /// Build a minimal `Config` for use in tests.
     fn minimal_test_config(tmp: &std::path::Path) -> ur_config::Config {
@@ -416,10 +453,20 @@ mod tests {
         let project_registry =
             ProjectRegistry::new(projects, hostexec::HostExecConfigManager::empty());
 
-        // Build a minimal Config to pass to RepoPoolManager::new
-        let config = minimal_test_config(tmp);
+        // Build a minimal Config to pass to RepoPoolManager::new. Its machine
+        // id differs from the registry's on purpose: the pool must take its
+        // machine from the registry (see `acquire_slot_uses_the_registry_machine`).
+        let mut config = minimal_test_config(tmp);
+        config.machine.id = CONFIG_MACHINE.into();
 
-        let mgr = RepoPoolManager::new(&config, worker_repo, project_registry, builder_pool_client);
+        let mgr = RepoPoolManager::new(
+            &config,
+            worker_repo,
+            project_registry,
+            builder_pool_client,
+            crate::MachineRegistryManager::new(TEST_MACHINE.into(), "http://127.0.0.1:1".into())
+                .unwrap(),
+        );
         (mgr, test_db)
     }
 
@@ -428,6 +475,58 @@ mod tests {
         mgr.acquire_slot(project_key, |path| claim_row(project_key, path))
             .await
             .map(|(path, _row)| path)
+            .map_err(|e| e.to_string())
+    }
+
+    /// The pool's machine is the registry's local machine, not
+    /// `config.machine.id`: a slot of the registry machine is found and
+    /// claimed (then recycling fails: no builderd), where a config-scoped
+    /// lookup would find nothing and go on to scan for a new slot.
+    #[tokio::test]
+    async fn acquire_slot_uses_the_registry_machine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, _test_db) = test_pool(tmp.path(), 10).await;
+        assert_eq!(mgr.machine_id(), TEST_MACHINE);
+        let slot0 = PathBuf::from("/fake/pool/testproj/0");
+        insert_test_slot(&mgr.worker_repo, "testproj", "0", &slot0).await;
+        let err = acquire(&mgr, "testproj").await.unwrap_err();
+        assert!(err.contains("recycle_slot failed for slot 0"), "{err}");
+    }
+
+    /// A claim of another machine's slot is a typed precondition error.
+    #[tokio::test]
+    async fn claiming_another_machines_slot_is_a_slot_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, _test_db) = test_pool(tmp.path(), 10).await;
+        let now = Utc::now().to_rfc3339();
+        mgr.worker_repo
+            .insert_slot(&workflow_db::model::Slot {
+                id: "other-0".into(),
+                project_key: "testproj".into(),
+                slot_name: "0".into(),
+                host_path: "/other/pool/testproj/0".into(),
+                created_at: now.clone(),
+                updated_at: now,
+                machine_id: "other".into(),
+            })
+            .await
+            .unwrap();
+        let row = claim_row("testproj", std::path::Path::new("/other/pool/testproj/0"));
+        let err = mgr.claim(&row, "other-0").await.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                AcquireSlotError::Slot {
+                    source: ClaimSlotError::SlotOnOtherMachine { .. }
+                }
+            ),
+            "{err:?}"
+        );
+        let status = tonic::Status::from(crate::grpc::CoreError::from(err));
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        for name in ["other-0", "'other'", &format!("'{TEST_MACHINE}'")] {
+            assert!(status.message().contains(name), "{}", status.message());
+        }
     }
 
     fn claim_row(project_key: &str, path: &std::path::Path) -> workflow_db::model::Worker {
@@ -674,6 +773,8 @@ mod tests {
             worker_repo,
             project_registry,
             BuilderPoolClient::new(channel),
+            crate::MachineRegistryManager::new(TEST_MACHINE.into(), "http://127.0.0.1:1".into())
+                .unwrap(),
         );
         let err = acquire(&mgr, "hotreload").await.unwrap_err();
         assert!(err.contains("unknown project"), "unexpected error: {err}");

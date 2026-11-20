@@ -120,6 +120,11 @@ async fn make_components_with_db(
         worker_repo.clone(),
         project_registry.clone(),
         builder_pool_client,
+        ur_server::MachineRegistryManager::new(
+            config.machine.id.clone(),
+            "http://127.0.0.1:1".into(),
+        )
+        .unwrap(),
     );
     let worker_manager = ur_server::WorkerManager::new(
         workspace.clone(),

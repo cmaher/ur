@@ -54,6 +54,11 @@ async fn harness() -> Harness {
         worker_repo.clone(),
         project_registry.clone(),
         ur_server::BuilderPoolClient::new(channel),
+        ur_server::MachineRegistryManager::new(
+            config.machine.id.clone(),
+            "http://127.0.0.1:1".into(),
+        )
+        .unwrap(),
     );
     let worker_manager = ur_server::WorkerManager::new(
         config.workspace.clone(),

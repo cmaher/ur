@@ -51,7 +51,7 @@ impl WorkerStrategy {
         pool: &RepoPoolManager,
         project_key: &str,
         owner: F,
-    ) -> Result<(PathBuf, Option<workflow_db::model::Worker>), String>
+    ) -> Result<(PathBuf, Option<workflow_db::model::Worker>), crate::pool::AcquireSlotError>
     where
         F: Fn(&Path) -> workflow_db::model::Worker,
     {

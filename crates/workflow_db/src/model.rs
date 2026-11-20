@@ -121,6 +121,15 @@ pub struct Worker {
     pub machine_id: String,
 }
 
+/// Rows naming one machine id ([`crate::WorkerRepo::machine_row_counts`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineRowCount {
+    pub machine_id: String,
+    pub slots: i64,
+    /// Workers not `stopped`.
+    pub active_workers: i64,
+}
+
 pub struct WorkerSlot {
     pub worker_id: String,
     pub slot_id: String,

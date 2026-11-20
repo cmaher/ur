@@ -309,8 +309,9 @@ struct Harness {
     _test_db: ur_db_test::TestDb,
 }
 
-async fn harness() -> Harness {
-    let fake = FakeBuilderd::default();
+/// Serve `fake` as builderd (local-worker, pool and container services) and
+/// return a lazy channel to it.
+async fn serve_fake_builderd(fake: &FakeBuilderd) -> tonic::transport::Channel {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
@@ -326,9 +327,14 @@ async fn harness() -> Harness {
             .await
             .unwrap();
     });
-    let local_channel = tonic::transport::Endpoint::try_from(format!("http://{addr}"))
+    tonic::transport::Endpoint::try_from(format!("http://{addr}"))
         .unwrap()
-        .connect_lazy();
+        .connect_lazy()
+}
+
+async fn harness() -> Harness {
+    let fake = FakeBuilderd::default();
+    let local_channel = serve_fake_builderd(&fake).await;
 
     let tmp = tempfile::tempdir().unwrap();
     let config = ur_config::Config::from_toml_str(
@@ -348,11 +354,17 @@ async fn harness() -> Harness {
         config.projects.clone(),
         ur_server::hostexec::HostExecConfigManager::empty(),
     );
+    let registry = ur_server::MachineRegistryManager::new(
+        config.machine.id.clone(),
+        "http://127.0.0.1:1".into(),
+    )
+    .unwrap();
     let pool = ur_server::RepoPoolManager::new(
         &config,
         worker_repo.clone(),
         project_registry.clone(),
         ur_server::BuilderPoolClient::new(local_channel.clone()),
+        registry.clone(),
     );
     let worker_manager = ur_server::WorkerManager::new(
         config.workspace.clone(),
@@ -390,11 +402,7 @@ async fn harness() -> Harness {
         config_dir: config.config_dir.clone(),
         worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
         workerd_resolver: ur_server::WorkerdAddressResolver::new(
-            ur_server::MachineRegistryManager::new(
-                config.machine.id.clone(),
-                "http://127.0.0.1:1".into(),
-            )
-            .unwrap(),
+            registry,
             config.network.worker_prefix.clone(),
         ),
     };

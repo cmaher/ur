@@ -49,6 +49,10 @@ pub enum CoreError {
     #[error("pool slot acquisition failed: {reason}")]
     PoolSlotFailed { reason: String },
 
+    /// The slot a launch tried to claim is missing or on another machine.
+    #[error("pool slot acquisition failed: {reason}")]
+    PoolSlotPrecondition { reason: String },
+
     #[error("invalid context repo: {reason}")]
     InvalidContextRepo { reason: String },
 
@@ -109,6 +113,19 @@ fn status_with_meta(
     error::status_with_info(code, err.to_string(), DOMAIN_CORE, err_type, meta)
 }
 
+impl From<crate::pool::AcquireSlotError> for CoreError {
+    fn from(err: crate::pool::AcquireSlotError) -> Self {
+        match err {
+            crate::pool::AcquireSlotError::Slot { source } => CoreError::PoolSlotPrecondition {
+                reason: source.to_string(),
+            },
+            crate::pool::AcquireSlotError::Failed { reason } => {
+                CoreError::PoolSlotFailed { reason }
+            }
+        }
+    }
+}
+
 impl From<CoreError> for Status {
     fn from(err: CoreError) -> Self {
         match &err {
@@ -128,6 +145,9 @@ impl From<CoreError> for Status {
                 simple_status(Code::FailedPrecondition, &err, INVALID_ARGUMENT)
             }
             CoreError::PoolSlotFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
+            CoreError::PoolSlotPrecondition { .. } => {
+                simple_status(Code::FailedPrecondition, &err, INVALID_ARGUMENT)
+            }
             CoreError::InvalidContextRepo { .. } => {
                 simple_status(Code::InvalidArgument, &err, INVALID_ARGUMENT)
             }
@@ -671,9 +691,7 @@ impl LaunchManager {
                 let (slot_path, row) = strategy
                     .acquire_slot(&self.repo_pool_manager, &effective_project_key, owner)
                     .await
-                    .map_err(|e| CoreError::PoolSlotFailed {
-                        reason: e.to_string(),
-                    })?;
+                    .map_err(CoreError::from)?;
                 info!(
                     worker_id = req.worker_id,
                     project_key = %effective_project_key,

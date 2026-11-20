@@ -95,11 +95,15 @@ fn build_machine_registry(cfg: &Config) -> anyhow::Result<MachineRegistryManager
     Ok(registry)
 }
 
-/// Open both pools and migrate them. `machine_id` (this server's machine)
-/// fills the `machine_id` of worker/slot rows written before migration 007,
-/// immediately after the workflow_db migrations and before this returns, so
-/// no code path ever decodes a row without one.
-async fn init_databases(cfg: &Config, machine_id: &str) -> anyhow::Result<DatabasePools> {
+/// Open both pools and migrate them. Immediately after the workflow_db
+/// migrations, the registry's local machine id fills the `machine_id` of
+/// worker/slot rows written before migration 007 (so no code path ever
+/// decodes a row without one), then startup fails closed if any slot or
+/// active worker row names a machine the registry does not hold.
+async fn init_databases(
+    cfg: &Config,
+    machine_registry: &MachineRegistryManager,
+) -> anyhow::Result<DatabasePools> {
     let ticket_url = std::env::var(ur_config::UR_TICKET_DB_URL_ENV)
         .unwrap_or_else(|_| cfg.ticket_db.database_url());
     let workflow_url = std::env::var(ur_config::UR_WORKFLOW_DB_URL_ENV)
@@ -120,11 +124,20 @@ async fn init_databases(cfg: &Config, machine_id: &str) -> anyhow::Result<Databa
             workflow_db::migrate(&workflow_pool)
                 .await
                 .map_err(|e| anyhow::anyhow!("workflow_db migration failed: {e}"))?;
-            let backfilled = WorkerRepo::new(workflow_pool.clone())
-                .backfill_machine_id(machine_id)
+            let worker_repo = WorkerRepo::new(workflow_pool.clone());
+            let backfilled = worker_repo
+                .backfill_machine_id(machine_registry.local_id())
                 .await
                 .map_err(|e| anyhow::anyhow!("workflow_db machine_id backfill failed: {e}"))?;
-            info!(machine_id, rows = backfilled, "backfilled machine_id");
+            info!(
+                machine_id = machine_registry.local_id(),
+                rows = backfilled,
+                "backfilled machine_id"
+            );
+            machine_registry
+                .ensure_rows_registered(&worker_repo)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             Ok(())
         },
     )?;
@@ -663,6 +676,7 @@ async fn init_managers(
         worker_repo.clone(),
         project_registry.clone(),
         builder_pool_client,
+        machine_registry.clone(),
     );
     let network_manager = NetworkManager::new(
         builder_container_client.clone(),
@@ -734,7 +748,7 @@ async fn main() -> anyhow::Result<()> {
 
     let worker_modes = load_worker_modes(&cfg)?;
     let machine_registry = build_machine_registry(&cfg)?;
-    let pools = init_databases(&cfg, machine_registry.local_id()).await?;
+    let pools = init_databases(&cfg, &machine_registry).await?;
     let backup_handles = init_backups(&cfg)?;
 
     let (log_cleanup_shutdown_tx, log_cleanup_handle) = init_log_cleanup(&logs_dir);

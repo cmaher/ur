@@ -57,7 +57,7 @@ On startup (`crates/server/src/main.rs`), each database goes through the same in
 1. `DatabaseManager::open(url)` creates an sqlx `PgPool`
 2. `sqlx::migrate!().run(&pool)` applies pending migrations from the crate's `migrations/` directory
 3. Migrations are embedded at compile time via the `sqlx::migrate!()` macro
-4. Workflow DB only: `WorkerRepo::backfill_machine_id(<this server's machine id>)` runs immediately after the workflow migrations, inside `init_databases`, before any manager is built or any worker/slot row is read (see "Machine ids" below)
+4. Workflow DB only: `WorkerRepo::backfill_machine_id(<this server's machine id>)` and then the unknown-machine check run immediately after the workflow migrations, inside `init_databases`, before any manager is built or any worker/slot row is read (see "Machine ids" below)
 
 Each crate owns its own migration history:
 
@@ -108,7 +108,8 @@ ui_events  (id BIGSERIAL PK, entity_type, entity_id, created_at) — ephemeral e
 
 - **Nullable in the DB, required in Rust.** The id is only known at runtime, so the migration adds the columns without a value. The server fills every NULL with its own machine id via `WorkerRepo::backfill_machine_id` right after migrating (every row from before multi-machine support was local). `Worker.machine_id` / `Slot.machine_id` are plain `String`s: a NULL that somehow survived fails to decode loudly rather than being treated as local. Every insert writes the column.
 - **Uniqueness.** 007 drops 001's auto-named `slot_project_key_slot_name_key` (`UNIQUE (project_key, slot_name)`) and adds `slot_machine_project_slot_name_key` (`UNIQUE NULLS NOT DISTINCT (machine_id, project_key, slot_name)`): two machines may each have slot `3` of a project, one machine may not have two. `NULLS NOT DISTINCT` keeps the old guarantee for rows not yet backfilled. Its index leads with `(machine_id, project_key)` and serves the machine-scoped listings.
-- **Scoping.** Slot queries take a machine id: `list_slots`, `find_available_slots`, `slots_in_use`, `get_slot_by_host_path` and `reconcile_slots` (a server only reconciles its own machine's rows against its own disk). `claim_slot` refuses (error, not "taken") a slot whose machine differs from the claiming worker's. Lookups by globally unique id (`get_slot`, every worker query) stay unscoped.
+- **Scoping.** Slot queries take a machine id: `list_slots`, `find_available_slots`, `slots_in_use`, `get_slot_by_host_path` and `reconcile_slots` (a server only reconciles its own machine's rows against its own disk). `claim_slot` refuses a missing slot or one whose machine differs from the claiming worker's with a typed `ClaimSlotError` (`SlotMissing` / `SlotOnOtherMachine`, naming the slot and both machine ids), which reaches gRPC as `failed_precondition` (`CoreError::PoolSlotPrecondition`); losing a race stays `Ok(false)`.
+- **Fail closed on a changed machine id.** Right after the backfill, `MachineRegistryManager::ensure_rows_registered` reads `WorkerRepo::machine_row_counts` (per machine id: slot rows and non-`stopped` worker rows) and aborts startup if any id is not in the registry, naming each id with its counts and the local id, and telling the user to set `[machine] id` back to the old id (renaming a machine is not supported yet). Stopped workers are history and never block. Lookups by globally unique id (`get_slot`, every worker query) stay unscoped.
 
 The `ui_events` table exists in **both** databases. Each database has its own copy with its own triggers. The server runs two `PgEventPoller` instances and merges their streams before dispatching to gRPC subscribers (see `docs/codeflows/ui-events.md`).
 

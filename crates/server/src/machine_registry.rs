@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use tonic::transport::Channel;
 use ur_rpc::retry::{RetryChannel, RetryConfig};
+use workflow_db::{MachineRowCount, WorkerRepo};
 
 /// Why the registry could not produce a machine's builderd connection.
 #[derive(Debug, thiserror::Error)]
@@ -32,6 +33,44 @@ impl From<MachineRegistryError> for tonic::Status {
             MachineRegistryError::Channel { .. } => tonic::Status::internal(e.to_string()),
         }
     }
+}
+
+/// Startup refusal: worker/slot rows name machines the registry does not
+/// hold (typically the machine id changed).
+#[derive(Debug, thiserror::Error)]
+pub enum UnregisteredRowsError {
+    #[error("db error checking worker/slot machine ids: {source}")]
+    Db {
+        #[from]
+        source: sqlx::Error,
+    },
+    #[error("{}", unregistered_message(local_id, foreign))]
+    Unregistered {
+        local_id: String,
+        foreign: Vec<MachineRowCount>,
+    },
+}
+
+fn unregistered_message(local_id: &str, foreign: &[MachineRowCount]) -> String {
+    let listed: Vec<String> = foreign
+        .iter()
+        .map(|r| {
+            format!(
+                "'{}' ({} slot(s), {} active worker(s))",
+                r.machine_id, r.slots, r.active_workers
+            )
+        })
+        .collect();
+    let old_id = match foreign {
+        [only] => only.machine_id.as_str(),
+        _ => "<old id>",
+    };
+    format!(
+        "worker/slot rows name machine(s) this server does not know: {}; this machine is '{local_id}'. \
+         set [machine] id = \"{old_id}\" in ur.toml to keep using these rows \
+         (renaming a machine is not supported yet)",
+        listed.join(", ")
+    )
 }
 
 /// A registered machine's builderd connection.
@@ -95,6 +134,30 @@ impl MachineRegistryManager {
         self.machines[&self.local_id].builderd.channel().clone()
     }
 
+    /// Fail closed when any slot row or non-`stopped` worker row names a
+    /// machine the registry does not hold: such rows would otherwise be
+    /// orphaned (or misrouted) silently after a machine id change. Stopped
+    /// workers are history and never block. Runs at startup, right after
+    /// the machine_id backfill.
+    pub async fn ensure_rows_registered(
+        &self,
+        worker_repo: &WorkerRepo,
+    ) -> Result<(), UnregisteredRowsError> {
+        let foreign: Vec<MachineRowCount> = worker_repo
+            .machine_row_counts()
+            .await?
+            .into_iter()
+            .filter(|r| !self.machines.contains_key(&r.machine_id))
+            .collect();
+        if foreign.is_empty() {
+            return Ok(());
+        }
+        Err(UnregisteredRowsError::Unregistered {
+            local_id: self.local_id.clone(),
+            foreign,
+        })
+    }
+
     fn entry(&self, machine_id: &str) -> Result<&MachineEntry, MachineRegistryError> {
         self.machines
             .get(machine_id)
@@ -144,5 +207,93 @@ mod tests {
             matches!(&err, MachineRegistryError::Channel { machine_id, .. } if machine_id == "mbp")
         );
         assert_eq!(tonic::Status::from(err).code(), tonic::Code::Internal);
+    }
+
+    fn row_worker(worker_id: &str, machine_id: &str, status: &str) -> workflow_db::Worker {
+        let now = chrono::Utc::now().to_rfc3339();
+        workflow_db::Worker {
+            worker_id: worker_id.into(),
+            process_id: worker_id.into(),
+            project_key: "proj".into(),
+            container_id: String::new(),
+            worker_secret: "secret".into(),
+            strategy: "code".into(),
+            agent_type: "claude".into(),
+            container_status: status.into(),
+            agent_status: "idle".into(),
+            workspace_path: None,
+            created_at: now.clone(),
+            updated_at: now,
+            idle_redispatch_count: 0,
+            brain_path: None,
+            runtime: workflow_db::model::WorkerRuntime::Container,
+            machine_id: machine_id.into(),
+        }
+    }
+
+    fn registry_b() -> MachineRegistryManager {
+        MachineRegistryManager::new("b".into(), "http://127.0.0.1:1".into()).unwrap()
+    }
+
+    /// Rows of a machine the registry does not hold (here: the machine id
+    /// changed from "a" to "b") stop startup with an error naming the old
+    /// id, its counts, the local id and the remedy.
+    #[tokio::test]
+    async fn rows_of_an_unregistered_machine_block_startup() {
+        let db = ur_db_test::TestDb::new().await;
+        let repo = WorkerRepo::new(db.workflow_pool().clone());
+        let now = chrono::Utc::now().to_rfc3339();
+        repo.insert_slot(&workflow_db::Slot {
+            id: "s0".into(),
+            project_key: "proj".into(),
+            slot_name: "0".into(),
+            host_path: "/pool/proj/0".into(),
+            created_at: now.clone(),
+            updated_at: now,
+            machine_id: "a".into(),
+        })
+        .await
+        .unwrap();
+        repo.insert_worker(&row_worker("w-run", "a", "running"))
+            .await
+            .unwrap();
+        repo.insert_worker(&row_worker("w-local", "b", "running"))
+            .await
+            .unwrap();
+
+        let err = registry_b()
+            .ensure_rows_registered(&repo)
+            .await
+            .unwrap_err();
+        let UnregisteredRowsError::Unregistered { local_id, foreign } = &err else {
+            panic!("expected Unregistered, got {err:?}");
+        };
+        assert_eq!(local_id, "b");
+        assert_eq!(
+            foreign,
+            &[MachineRowCount {
+                machine_id: "a".into(),
+                slots: 1,
+                active_workers: 1,
+            }]
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("'a' (1 slot(s), 1 active worker(s))"), "{msg}");
+        assert!(msg.contains("this machine is 'b'"), "{msg}");
+        assert!(msg.contains("set [machine] id = \"a\" in ur.toml"), "{msg}");
+    }
+
+    /// Stopped workers of another machine are history: they do not block.
+    #[tokio::test]
+    async fn stopped_workers_of_another_machine_do_not_block() {
+        let db = ur_db_test::TestDb::new().await;
+        let repo = WorkerRepo::new(db.workflow_pool().clone());
+        repo.insert_worker(&row_worker("w-old", "a", "stopped"))
+            .await
+            .unwrap();
+        repo.insert_worker(&row_worker("w-local", "b", "running"))
+            .await
+            .unwrap();
+        registry_b().ensure_rows_registered(&repo).await.unwrap();
     }
 }

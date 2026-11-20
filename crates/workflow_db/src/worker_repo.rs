@@ -7,7 +7,31 @@ use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::model::{AgentStatus, Slot, Worker, WorkerRuntime, WorkerSlot};
+use crate::model::{AgentStatus, MachineRowCount, Slot, Worker, WorkerRuntime, WorkerSlot};
+
+/// Why [`WorkerRepo::claim_slot`] could not claim a slot (losing a race is
+/// `Ok(false)`, not an error).
+#[derive(Debug, thiserror::Error)]
+pub enum ClaimSlotError {
+    #[error("db error claiming slot: {source}")]
+    Db {
+        #[from]
+        source: sqlx::Error,
+    },
+    #[error("slot {slot_id} does not exist (claim for a worker on machine '{worker_machine_id}')")]
+    SlotMissing {
+        slot_id: String,
+        worker_machine_id: String,
+    },
+    #[error(
+        "slot {slot_id} is on machine '{slot_machine_id}', not on the claiming worker's machine '{worker_machine_id}'"
+    )]
+    SlotOnOtherMachine {
+        slot_id: String,
+        slot_machine_id: String,
+        worker_machine_id: String,
+    },
+}
 
 /// Result of slot reconciliation: reports what was cleaned up or discovered.
 pub struct SlotReconcileResult {
@@ -135,7 +159,7 @@ impl WorkerRepo {
     /// (nothing is written). A link left by a `stopped` worker owns nothing
     /// and is dropped first. A slot that is missing or on a machine other
     /// than `worker.machine_id` is an error, never a claim.
-    pub async fn claim_slot(&self, worker: &Worker, slot_id: &str) -> Result<bool, sqlx::Error> {
+    pub async fn claim_slot(&self, worker: &Worker, slot_id: &str) -> Result<bool, ClaimSlotError> {
         let mut tx = self.pool.begin().await?;
         let slot_machine: Option<Option<String>> =
             sqlx::query_scalar("SELECT machine_id FROM slot WHERE id = $1 FOR SHARE")
@@ -143,13 +167,18 @@ impl WorkerRepo {
                 .fetch_optional(&mut *tx)
                 .await?;
         match slot_machine {
-            None => return Err(sqlx::Error::RowNotFound),
+            None => {
+                return Err(ClaimSlotError::SlotMissing {
+                    slot_id: slot_id.to_owned(),
+                    worker_machine_id: worker.machine_id.clone(),
+                });
+            }
             Some(m) if m.as_deref() != Some(worker.machine_id.as_str()) => {
-                return Err(sqlx::Error::Protocol(format!(
-                    "slot {slot_id} is on machine {}, not {}",
-                    m.as_deref().unwrap_or("<unset>"),
-                    worker.machine_id
-                )));
+                return Err(ClaimSlotError::SlotOnOtherMachine {
+                    slot_id: slot_id.to_owned(),
+                    slot_machine_id: m.unwrap_or_default(),
+                    worker_machine_id: worker.machine_id.clone(),
+                });
             }
             Some(_) => {}
         }
@@ -175,7 +204,7 @@ impl WorkerRepo {
                 Ok(true)
             }
             Err(sqlx::Error::Database(e)) if e.code().is_some_and(|c| c == "23505") => Ok(false),
-            Err(e) => Err(e),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -591,6 +620,31 @@ impl WorkerRepo {
             .rows_affected();
         tx.commit().await?;
         Ok(workers + slots)
+    }
+
+    /// Per machine id, how many slot rows and non-`stopped` worker rows name
+    /// it, across every machine (a NULL id is reported as `""`). Stopped
+    /// workers are history and are not counted. Used at startup to refuse
+    /// rows of a machine the server does not know.
+    pub async fn machine_row_counts(&self) -> Result<Vec<MachineRowCount>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, i64, i64)>(
+            "SELECT machine_id, SUM(slots)::INT8, SUM(workers)::INT8 FROM (
+               SELECT COALESCE(machine_id, '') AS machine_id, 1 AS slots, 0 AS workers FROM slot
+               UNION ALL
+               SELECT COALESCE(machine_id, ''), 0, 1 FROM worker
+                 WHERE container_status <> 'stopped'
+             ) r GROUP BY machine_id ORDER BY machine_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(machine_id, slots, active_workers)| MachineRowCount {
+                machine_id,
+                slots,
+                active_workers,
+            })
+            .collect())
     }
 
     // --- Reconciliation helpers ---
@@ -1304,7 +1358,26 @@ mod tests {
             .claim_slot(&provisioning("w-a"), "b-0")
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("mach-b"), "{err}");
+        assert!(
+            matches!(
+                &err,
+                ClaimSlotError::SlotOnOtherMachine { slot_id, slot_machine_id, worker_machine_id }
+                    if slot_id == "b-0" && slot_machine_id == "mach-b" && worker_machine_id == "mach-a"
+            ),
+            "{err:?}"
+        );
+        let missing = repo
+            .claim_slot(&provisioning("w-a"), "nope")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                &missing,
+                ClaimSlotError::SlotMissing { slot_id, worker_machine_id }
+                    if slot_id == "nope" && worker_machine_id == "mach-a"
+            ),
+            "{missing:?}"
+        );
         assert!(
             repo.get_worker("w-a").await.unwrap().is_none(),
             "rolled back"
