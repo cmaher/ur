@@ -24,5 +24,5 @@ $RUNTIME build -t ur-server:latest -f containers/server/Dockerfile containers/se
 echo ""
 echo "=== Recreating ur-server container ==="
 # Recreate through ur rather than raw `docker compose`: ur supplies the
-# the host-resolved UR_MACHINE_ID and UR_HOST_HOME the server needs.
+# host-resolved UR_MACHINE_ID and UR_HOST_HOME the server needs.
 ur server redeploy server

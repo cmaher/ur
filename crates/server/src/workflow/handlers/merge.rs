@@ -75,7 +75,7 @@ async fn execute_merge(
     })?;
 
     let backend = GhBackend {
-        client: ctx.local_builderd(),
+        client: ctx.machine_registry.local_builderd_client(),
         gh_repo: gh_repo.clone(),
     };
 
@@ -180,7 +180,7 @@ async fn merge_pr(
     );
 
     let backend = GhBackend {
-        client: ctx.local_builderd(),
+        client: ctx.machine_registry.local_builderd_client(),
         gh_repo: gh_repo.to_owned(),
     };
     let pr_num: i64 = pr_number

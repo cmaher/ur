@@ -638,7 +638,7 @@ fn kill_all_containers(worker_prefix: &str, output: &OutputManager) -> Result<()
     Ok(())
 }
 
-fn attach_manager(port: u16, worker_prefix: &str) -> attach::AttachManager<attach::LocalAttach> {
+fn attach_manager(port: u16, worker_prefix: &str) -> attach::AttachManager {
     attach::AttachManager::new(
         port,
         worker_prefix.to_owned(),
@@ -652,7 +652,7 @@ fn attach_manager(port: u16, worker_prefix: &str) -> attach::AttachManager<attac
 /// Attach for `--rm`; the stop goes through the server (WorkerStop), which
 /// tears local workers down via builderd.
 async fn attach_with_rm_cleanup(
-    attacher: &attach::AttachManager<attach::LocalAttach>,
+    attacher: &attach::AttachManager,
     plan: &attach::AttachPlan,
     process_id: &str,
     port: u16,

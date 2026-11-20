@@ -42,7 +42,7 @@ pub struct WorkflowContext {
     pub workerd_resolver: crate::WorkerdAddressResolver,
     /// Source of builderd clients: a slot's git work goes to the slot's
     /// machine ([`Self::slot_builderd`]), everything else (`gh`) to the
-    /// local one ([`Self::local_builderd`]).
+    /// local one (`MachineRegistryManager::local_builderd_client`).
     pub machine_registry: crate::MachineRegistryManager,
     /// Resolved server configuration, providing access to per-project
     /// settings (workflow hooks, fix attempt limits, etc.).
@@ -60,11 +60,6 @@ impl WorkflowContext {
     /// unregistered machine is an error, never the local builderd.
     pub fn slot_builderd(&self, slot: &Slot) -> anyhow::Result<BuilderdClient> {
         Ok(self.machine_registry.builderd_client(&slot.machine_id)?)
-    }
-
-    /// The local machine's builderd, for work tied to no slot (`gh`).
-    pub fn local_builderd(&self) -> BuilderdClient {
-        self.machine_registry.local_builderd_client()
     }
 }
 

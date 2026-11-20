@@ -145,22 +145,19 @@ impl TestHarness {
         let (transition_tx, transition_rx) = coordinator_channel(64);
         let (_cancel_tx, cancel_rx) = coordinator_cancel_channel(16);
 
+        let registry = dummy_registry();
         let ctx = WorkflowContext {
             ticket_repo: ticket_repo.clone(),
             workflow_repo: workflow_repo.clone(),
             worker_repo: worker_repo.clone(),
             workerd_resolver: ur_server::WorkerdAddressResolver::new(
-                ur_server::MachineRegistryManager::new(
-                    "test-machine".into(),
-                    "http://127.0.0.1:1".into(),
-                )
-                .unwrap(),
+                registry.clone(),
                 ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
             ),
-            machine_registry: dummy_registry(),
+            machine_registry: registry.clone(),
             config: dummy_config(),
             transition_tx: transition_tx.clone(),
-            worker_manager: dummy_worker_manager(worker_repo.clone()),
+            worker_manager: dummy_worker_manager(worker_repo.clone(), registry),
         };
 
         let coordinator = WorkflowCoordinator::new(transition_rx, cancel_rx, ctx, &handlers);
@@ -240,15 +237,13 @@ async fn setup_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
     (test_db, ticket_repo, workflow_repo, worker_repo)
 }
 
-fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
+fn dummy_worker_manager(
+    worker_repo: WorkerRepo,
+    registry: ur_server::MachineRegistryManager,
+) -> ur_server::WorkerManager {
     let config = dummy_config();
-    let test_registry = ur_server::MachineRegistryManager::new(
-        config.machine.id.clone(),
-        "http://localhost:50051".into(),
-    )
-    .unwrap();
     let network_manager =
-        ur_server::network_manager::NetworkManager::new(test_registry.clone(), "ur-workers".into());
+        ur_server::network_manager::NetworkManager::new(registry.clone(), "ur-workers".into());
     ur_server::WorkerManager::new(
         std::path::PathBuf::from("/tmp/test/workspace"),
         std::path::PathBuf::from("/tmp/test"),
@@ -261,12 +256,13 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
         Default::default(),
         worker_repo,
         Default::default(),
-        test_registry.clone(),
+        registry,
     )
 }
 
+/// A registry holding only `test-machine`, at a dead builderd port.
 fn dummy_registry() -> ur_server::MachineRegistryManager {
-    ur_server::MachineRegistryManager::new("test-machine".into(), "http://localhost:50051".into())
+    ur_server::MachineRegistryManager::new("test-machine".into(), "http://127.0.0.1:1".into())
         .unwrap()
 }
 
@@ -358,11 +354,7 @@ fn dummy_launch_manager(
     workflow_repo: WorkflowRepo,
 ) -> ur_server::grpc::LaunchManager {
     let config = dummy_config();
-    let test_registry = ur_server::MachineRegistryManager::new(
-        config.machine.id.clone(),
-        "http://localhost:50051".into(),
-    )
-    .unwrap();
+    let test_registry = dummy_registry();
     let project_registry = ur_server::ProjectRegistry::new(
         config.projects.clone(),
         ur_server::hostexec::HostExecConfigManager::empty(),
@@ -371,11 +363,7 @@ fn dummy_launch_manager(
         &config,
         worker_repo.clone(),
         project_registry.clone(),
-        ur_server::MachineRegistryManager::new(
-            config.machine.id.clone(),
-            "http://127.0.0.1:1".into(),
-        )
-        .unwrap(),
+        test_registry.clone(),
     );
     let network_manager =
         ur_server::network_manager::NetworkManager::new(test_registry.clone(), "ur-workers".into());
@@ -406,11 +394,7 @@ fn dummy_launch_manager(
         config_dir: config.config_dir.clone(),
         worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
         workerd_resolver: ur_server::WorkerdAddressResolver::new(
-            ur_server::MachineRegistryManager::new(
-                "test-machine".into(),
-                "http://127.0.0.1:1".into(),
-            )
-            .unwrap(),
+            test_registry.clone(),
             ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
         ),
     }
@@ -741,22 +725,19 @@ async fn per_project_cycle_limit_overrides_server_default() {
     let config = config_with_projects(project_cycle_limit_map(project_key, 2), Some(6));
 
     let (transition_tx, _transition_rx) = coordinator_channel(8);
+    let registry = dummy_registry();
     let ctx = WorkflowContext {
         ticket_repo: ticket_repo.clone(),
         workflow_repo: workflow_repo.clone(),
         worker_repo: worker_repo.clone(),
         workerd_resolver: ur_server::WorkerdAddressResolver::new(
-            ur_server::MachineRegistryManager::new(
-                "test-machine".into(),
-                "http://127.0.0.1:1".into(),
-            )
-            .unwrap(),
+            registry.clone(),
             ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
         ),
-        machine_registry: dummy_registry(),
+        machine_registry: registry.clone(),
         config,
         transition_tx,
-        worker_manager: dummy_worker_manager(worker_repo.clone()),
+        worker_manager: dummy_worker_manager(worker_repo.clone(), registry),
     };
 
     // Invoke the real ImplementHandler — cycle limit is already at 2/2, so it

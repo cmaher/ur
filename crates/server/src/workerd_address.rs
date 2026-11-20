@@ -109,11 +109,7 @@ mod tests {
 
     fn resolver() -> WorkerdAddressResolver {
         WorkerdAddressResolver::new(
-            MachineRegistryManager::new(
-                "test-machine".into(),
-                "http://host.docker.internal:12323".into(),
-            )
-            .unwrap(),
+            crate::machine_registry::test_registry(),
             ur_config::DEFAULT_WORKER_PREFIX.into(),
         )
     }
@@ -156,10 +152,7 @@ mod tests {
     #[tokio::test]
     async fn local_worker_dials_builderd_with_worker_id_header() {
         let w = worker(WorkerRuntime::Local);
-        assert_eq!(
-            resolver().address_for(&w).unwrap(),
-            "http://host.docker.internal:12323"
-        );
+        assert_eq!(resolver().address_for(&w).unwrap(), "http://127.0.0.1:1");
         let request = resolver().client_for(&w).unwrap().request(()).unwrap();
         assert_eq!(
             request.metadata().get(ur_config::WORKER_ID_HEADER).unwrap(),

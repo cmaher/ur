@@ -152,7 +152,7 @@ impl MachineRegistryManager {
     /// The local machine's builderd host-exec client, for work tied to no
     /// worker or slot (GitHub calls).
     pub fn local_builderd_client(&self) -> BuilderdClient {
-        BuilderdClient::new(self.local_builderd_channel())
+        BuilderdClient::new(self.machines[&self.local_id].builderd.channel().clone())
     }
 
     /// `machine_id`'s builderd container client.
@@ -178,11 +178,6 @@ impl MachineRegistryManager {
     /// `machine_id`'s builderd pool client.
     pub fn pool_client(&self, machine_id: &str) -> Result<BuilderPoolClient, MachineRegistryError> {
         Ok(BuilderPoolClient::new(self.builderd_channel(machine_id)?))
-    }
-
-    /// The local machine's builderd channel.
-    fn local_builderd_channel(&self) -> Channel {
-        self.machines[&self.local_id].builderd.channel().clone()
     }
 
     /// Fail closed when any slot row or non-`stopped` worker row names a
@@ -218,9 +213,17 @@ impl MachineRegistryManager {
     }
 }
 
+/// A registry holding only `test-machine`, at a dead builderd port (the
+/// lazy channel never reaches a builderd running on its normal port).
+#[cfg(test)]
+pub(crate) fn test_registry() -> MachineRegistryManager {
+    MachineRegistryManager::new("test-machine".into(), "http://127.0.0.1:1".into()).unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::worker::test_support::worker_row;
 
     fn registry() -> MachineRegistryManager {
         MachineRegistryManager::new("mbp".into(), "http://127.0.0.1:12323".into()).unwrap()
@@ -277,28 +280,6 @@ mod tests {
         assert_eq!(tonic::Status::from(err).code(), tonic::Code::Internal);
     }
 
-    fn row_worker(worker_id: &str, machine_id: &str, status: &str) -> workflow_db::Worker {
-        let now = chrono::Utc::now().to_rfc3339();
-        workflow_db::Worker {
-            worker_id: worker_id.into(),
-            process_id: worker_id.into(),
-            project_key: "proj".into(),
-            container_id: String::new(),
-            worker_secret: "secret".into(),
-            strategy: "code".into(),
-            agent_type: "claude".into(),
-            container_status: status.into(),
-            agent_status: "idle".into(),
-            workspace_path: None,
-            created_at: now.clone(),
-            updated_at: now,
-            idle_redispatch_count: 0,
-            brain_path: None,
-            runtime: workflow_db::model::WorkerRuntime::Container,
-            machine_id: machine_id.into(),
-        }
-    }
-
     fn registry_b() -> MachineRegistryManager {
         MachineRegistryManager::new("b".into(), "http://127.0.0.1:1".into()).unwrap()
     }
@@ -322,10 +303,10 @@ mod tests {
         })
         .await
         .unwrap();
-        repo.insert_worker(&row_worker("w-run", "a", "running"))
+        repo.insert_worker(&worker_row("w-run", "a", "running"))
             .await
             .unwrap();
-        repo.insert_worker(&row_worker("w-local", "b", "running"))
+        repo.insert_worker(&worker_row("w-local", "b", "running"))
             .await
             .unwrap();
 
@@ -356,10 +337,10 @@ mod tests {
     async fn stopped_workers_of_another_machine_do_not_block() {
         let db = ur_db_test::TestDb::new().await;
         let repo = WorkerRepo::new(db.workflow_pool().clone());
-        repo.insert_worker(&row_worker("w-old", "a", "stopped"))
+        repo.insert_worker(&worker_row("w-old", "a", "stopped"))
             .await
             .unwrap();
-        repo.insert_worker(&row_worker("w-local", "b", "running"))
+        repo.insert_worker(&worker_row("w-local", "b", "running"))
             .await
             .unwrap();
         registry_b().ensure_rows_registered(&repo).await.unwrap();

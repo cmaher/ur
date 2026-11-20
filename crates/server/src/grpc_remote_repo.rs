@@ -336,28 +336,7 @@ impl RemoteRepoService for RemoteRepoServiceHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn worker_row(worker_id: &str, machine_id: &str) -> workflow_db::model::Worker {
-        let now = chrono::Utc::now().to_rfc3339();
-        workflow_db::model::Worker {
-            worker_id: worker_id.into(),
-            process_id: worker_id.into(),
-            project_key: "proj".into(),
-            container_id: String::new(),
-            worker_secret: "secret".into(),
-            strategy: "code".into(),
-            agent_type: "claude".into(),
-            container_status: "running".into(),
-            agent_status: "idle".into(),
-            workspace_path: None,
-            created_at: now.clone(),
-            updated_at: now,
-            idle_redispatch_count: 0,
-            brain_path: None,
-            runtime: workflow_db::model::WorkerRuntime::Container,
-            machine_id: machine_id.into(),
-        }
-    }
+    use crate::worker::test_support::worker_row;
 
     fn metadata(worker_id: Option<&str>) -> tonic::metadata::MetadataMap {
         let mut m = tonic::metadata::MetadataMap::new();
@@ -375,19 +354,15 @@ mod tests {
         let db = ur_db_test::TestDb::new().await;
         let worker_repo = workflow_db::WorkerRepo::new(db.workflow_pool().clone());
         worker_repo
-            .insert_worker(&worker_row("w-local", "mbp"))
+            .insert_worker(&worker_row("w-local", "test-machine", "running"))
             .await
             .unwrap();
         worker_repo
-            .insert_worker(&worker_row("w-away", "elsewhere"))
+            .insert_worker(&worker_row("w-away", "elsewhere", "running"))
             .await
             .unwrap();
         let handler = RemoteRepoServiceHandler {
-            machine_registry: crate::MachineRegistryManager::new(
-                "mbp".into(),
-                "http://127.0.0.1:1".into(),
-            )
-            .unwrap(),
+            machine_registry: crate::machine_registry::test_registry(),
             worker_repo,
         };
 

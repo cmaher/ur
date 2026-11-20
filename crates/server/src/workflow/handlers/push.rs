@@ -609,7 +609,7 @@ async fn ensure_pr(
     );
 
     let backend = GhBackend {
-        client: ctx.local_builderd(),
+        client: ctx.machine_registry.local_builderd_client(),
         gh_repo: gh_repo.clone(),
     };
 

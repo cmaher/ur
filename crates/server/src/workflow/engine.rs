@@ -246,15 +246,9 @@ mod tests {
 
     fn test_resolver() -> crate::WorkerdAddressResolver {
         crate::WorkerdAddressResolver::new(
-            crate::MachineRegistryManager::new("test-machine".into(), "http://127.0.0.1:1".into())
-                .unwrap(),
+            crate::machine_registry::test_registry(),
             ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
         )
-    }
-
-    fn dummy_registry() -> crate::MachineRegistryManager {
-        crate::MachineRegistryManager::new("test-machine".into(), "http://localhost:50051".into())
-            .unwrap()
     }
 
     fn dummy_config() -> Arc<ur_config::Config> {
@@ -340,31 +334,6 @@ mod tests {
         tx
     }
 
-    fn dummy_worker_manager(worker_repo: WorkerRepo) -> crate::WorkerManager {
-        let test_registry = crate::MachineRegistryManager::new(
-            "test-machine".to_owned(),
-            "http://localhost:50051".into(),
-        )
-        .unwrap();
-        let config = dummy_config();
-        let network_manager =
-            crate::network_manager::NetworkManager::new(test_registry.clone(), "ur-workers".into());
-        crate::WorkerManager::new(
-            std::path::PathBuf::from("/tmp/test/workspace"),
-            std::path::PathBuf::from("/tmp/test"),
-            std::path::PathBuf::from("/tmp/test/logs"),
-            std::path::PathBuf::from("/tmp/test/logs"),
-            std::path::PathBuf::from("/tmp/test/logs"),
-            network_manager,
-            config.network.clone(),
-            config.worker_port,
-            Default::default(),
-            worker_repo,
-            Default::default(),
-            test_registry.clone(),
-        )
-    }
-
     struct CountingHandler {
         call_count: Arc<AtomicU32>,
         should_fail: bool,
@@ -433,7 +402,7 @@ mod tests {
             workflow_repo.clone(),
             worker_repo.clone(),
             test_resolver(),
-            dummy_registry(),
+            crate::machine_registry::test_registry(),
             dummy_config(),
             vec![(
                 LifecycleStatus::Implementing,
@@ -443,7 +412,7 @@ mod tests {
                 }) as Arc<dyn WorkflowHandler>,
             )],
             dummy_transition_tx(),
-            dummy_worker_manager(worker_repo.clone()),
+            crate::worker::test_support::worker_manager(worker_repo.clone()),
         );
 
         engine.poll_once().await;
@@ -504,7 +473,7 @@ mod tests {
             workflow_repo.clone(),
             worker_repo.clone(),
             test_resolver(),
-            dummy_registry(),
+            crate::machine_registry::test_registry(),
             dummy_config(),
             vec![(
                 LifecycleStatus::Implementing,
@@ -514,7 +483,7 @@ mod tests {
                 }) as Arc<dyn WorkflowHandler>,
             )],
             dummy_transition_tx(),
-            dummy_worker_manager(worker_repo.clone()),
+            crate::worker::test_support::worker_manager(worker_repo.clone()),
         );
 
         engine.poll_once().await;
@@ -582,7 +551,7 @@ mod tests {
             workflow_repo.clone(),
             worker_repo.clone(),
             test_resolver(),
-            dummy_registry(),
+            crate::machine_registry::test_registry(),
             dummy_config(),
             vec![(
                 LifecycleStatus::AwaitingDispatch,
@@ -592,7 +561,7 @@ mod tests {
                 }) as Arc<dyn WorkflowHandler>,
             )],
             dummy_transition_tx(),
-            dummy_worker_manager(worker_repo.clone()),
+            crate::worker::test_support::worker_manager(worker_repo.clone()),
         );
 
         engine.poll_once().await;
@@ -651,7 +620,7 @@ mod tests {
             workflow_repo.clone(),
             worker_repo.clone(),
             test_resolver(),
-            dummy_registry(),
+            crate::machine_registry::test_registry(),
             dummy_config(),
             vec![(
                 LifecycleStatus::AwaitingDispatch,
@@ -661,7 +630,7 @@ mod tests {
                 }) as Arc<dyn WorkflowHandler>,
             )],
             dummy_transition_tx(),
-            dummy_worker_manager(worker_repo.clone()),
+            crate::worker::test_support::worker_manager(worker_repo.clone()),
         );
         noop_engine.poll_once().await;
 
@@ -693,7 +662,7 @@ mod tests {
             workflow_repo.clone(),
             worker_repo.clone(),
             test_resolver(),
-            dummy_registry(),
+            crate::machine_registry::test_registry(),
             dummy_config(),
             vec![(
                 LifecycleStatus::Implementing,
@@ -703,7 +672,7 @@ mod tests {
                 }) as Arc<dyn WorkflowHandler>,
             )],
             dummy_transition_tx(),
-            dummy_worker_manager(worker_repo.clone()),
+            crate::worker::test_support::worker_manager(worker_repo.clone()),
         );
 
         engine.poll_once().await;
@@ -759,11 +728,11 @@ mod tests {
             workflow_repo.clone(),
             worker_repo.clone(),
             test_resolver(),
-            dummy_registry(),
+            crate::machine_registry::test_registry(),
             dummy_config(),
             vec![],
             dummy_transition_tx(),
-            dummy_worker_manager(worker_repo.clone()),
+            crate::worker::test_support::worker_manager(worker_repo.clone()),
         );
 
         engine.poll_once().await;

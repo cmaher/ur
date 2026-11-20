@@ -468,24 +468,6 @@ impl WorkerRepo {
         Ok(row.map(slot_from_row))
     }
 
-    /// Every slot of `project_key` on `machine_id`, oldest first.
-    pub async fn list_slots(
-        &self,
-        machine_id: &str,
-        project_key: &str,
-    ) -> Result<Vec<Slot>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, SlotRow>(
-            "SELECT id, project_key, slot_name, host_path, created_at, updated_at, machine_id
-             FROM slot WHERE machine_id = $1 AND project_key = $2 ORDER BY created_at ASC",
-        )
-        .bind(machine_id)
-        .bind(project_key)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows.into_iter().map(slot_from_row).collect())
-    }
-
     /// List every available exclusive slot for a project on `machine_id` (not linked to an
     /// active worker), oldest first.
     ///
@@ -520,28 +502,6 @@ impl WorkerRepo {
         .await?;
 
         Ok(rows.into_iter().map(slot_from_row).collect())
-    }
-
-    /// Count slots of `project_key` on `machine_id` that have an active worker linked via
-    /// worker_slot.
-    pub async fn slots_in_use(
-        &self,
-        machine_id: &str,
-        project_key: &str,
-    ) -> Result<i32, sqlx::Error> {
-        let count = sqlx::query_scalar::<_, i32>(
-            "SELECT COUNT(*)::INT4 FROM slot s
-             INNER JOIN worker_slot ws ON ws.slot_id = s.id
-             INNER JOIN worker w ON w.worker_id = ws.worker_id
-             WHERE s.machine_id = $1 AND s.project_key = $2
-               AND w.container_status IN ('provisioning', 'running', 'stopping')",
-        )
-        .bind(machine_id)
-        .bind(project_key)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(count)
     }
 
     pub async fn delete_slot(&self, id: &str) -> Result<(), sqlx::Error> {
@@ -1331,11 +1291,11 @@ mod tests {
 
         let ids = |slots: Vec<Slot>| slots.into_iter().map(|s| s.id).collect::<Vec<_>>();
         assert_eq!(
-            ids(repo.list_slots("mach-a", "testproj").await.unwrap()),
+            ids(repo.list_machine_slots("mach-a").await.unwrap()),
             ["a-0"]
         );
         assert_eq!(
-            ids(repo.list_slots("mach-b", "testproj").await.unwrap()),
+            ids(repo.list_machine_slots("mach-b").await.unwrap()),
             ["b-0"]
         );
         assert_eq!(
@@ -1384,8 +1344,6 @@ mod tests {
         );
 
         assert!(repo.claim_slot(&provisioning("w-a"), "a-0").await.unwrap());
-        assert_eq!(repo.slots_in_use("mach-a", "testproj").await.unwrap(), 1);
-        assert_eq!(repo.slots_in_use("mach-b", "testproj").await.unwrap(), 0);
         assert!(
             repo.find_available_slots("mach-a", "testproj")
                 .await
@@ -1429,7 +1387,7 @@ mod tests {
         assert_eq!(result.deleted_stale, ["a-0"]);
         assert_eq!(result.inserted_orphaned.len(), 1);
         assert!(repo.get_slot("b-0").await.unwrap().is_some());
-        let a = repo.list_slots("mach-a", "testproj").await.unwrap();
+        let a = repo.list_machine_slots("mach-a").await.unwrap();
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].slot_name, "1");
         assert_eq!(a[0].machine_id, "mach-a");

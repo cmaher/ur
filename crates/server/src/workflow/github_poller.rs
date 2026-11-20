@@ -1595,9 +1595,7 @@ mod tests {
         );
         let workflow_repo = WorkflowRepo::new(test_db.workflow_pool().clone());
         let worker_repo = workflow_db::WorkerRepo::new(test_db.workflow_pool().clone());
-        let registry =
-            crate::MachineRegistryManager::new("test-machine".into(), "http://127.0.0.1:1".into())
-                .unwrap();
+        let registry = crate::machine_registry::test_registry();
         let handler = crate::grpc_ticket::TicketServiceHandler {
             ticket_repo: ticket_repo.clone(),
             workflow_repo: workflow_repo.clone(),

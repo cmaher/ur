@@ -873,62 +873,31 @@ mod tests {
         }
     }
 
-    /// The host-resolved machine id reaches ur-server, and compose refuses to
-    /// interpolate an unset value instead of passing an empty id.
+    /// The host-resolved machine id and the host's HOME (as UR_HOST_HOME, for
+    /// `%HOME%` config paths) reach ur-server; compose refuses to interpolate
+    /// an unset machine id instead of passing an empty one.
     #[test]
-    fn compose_passes_machine_id_to_server() {
+    fn compose_passes_machine_id_and_host_home_to_server() {
         let config = test_config_for_compose();
         let manager = compose_manager_from_config(&config);
         assert!(manager.env_vars.contains(&(
             ur_config::UR_MACHINE_ID_ENV.to_string(),
             "test-machine".to_string()
         )));
-        let generated = generate_compose(
-            &config.network,
-            &config.proxy,
-            &config.ticket_db,
-            &config.workflow_db,
-            &config.config_dir,
-        );
-        let server_section = generated
-            .split("  ur-server:")
-            .nth(1)
-            .expect("ur-server service present");
-        assert!(
-            server_section.contains(
-                "      - UR_MACHINE_ID=${UR_MACHINE_ID:?UR_MACHINE_ID must be set by ur start}"
-            ),
-            "{generated}"
-        );
-    }
-
-    /// The host's HOME reaches ur-server as UR_HOST_HOME for `%HOME%` config paths.
-    #[test]
-    fn compose_passes_host_home_to_server() {
-        let config = test_config_for_compose();
-        let manager = compose_manager_from_config(&config);
-        let expected = std::env::var("HOME").ok().filter(|home| !home.is_empty());
-        let forwarded = manager
+        let expected_home = std::env::var("HOME").ok().filter(|home| !home.is_empty());
+        let forwarded_home = manager
             .env_vars
             .iter()
             .find(|(key, _)| key == ur_config::UR_HOST_HOME_ENV)
             .map(|(_, value)| value.clone());
-        assert_eq!(forwarded, expected);
-        let generated = generate_compose(
-            &config.network,
-            &config.proxy,
-            &config.ticket_db,
-            &config.workflow_db,
-            &config.config_dir,
-        );
-        let server_section = generated
-            .split("  ur-server:")
-            .nth(1)
-            .expect("ur-server service present");
-        assert!(
-            server_section.contains("      - UR_HOST_HOME=${UR_HOST_HOME:-}"),
-            "{generated}"
-        );
+        assert_eq!(forwarded_home, expected_home);
+        let server_section = service_section(&manager.compose_content, "ur-server");
+        for line in [
+            "      - UR_MACHINE_ID=${UR_MACHINE_ID:?UR_MACHINE_ID must be set by ur start}",
+            "      - UR_HOST_HOME=${UR_HOST_HOME:-}",
+        ] {
+            assert!(server_section.contains(line), "{server_section}");
+        }
     }
 
     /// Host-local workers reach the worker server on loopback only.

@@ -10,14 +10,12 @@ pub use agent::{
     TranscriptLocation, UnknownAliasError, credentials_file_is_seeded,
 };
 pub use forge::{ForgeType, UR_WORKER_FORGE_ENV, parse_forge_from_url};
-pub use machine::{
-    MachineConfig, UR_MACHINE_ID_ENV, machine_id_from_hostname, validate_machine_id,
-};
+pub use machine::{MachineConfig, UR_MACHINE_ID_ENV};
 use machine::{RawMachineConfig, resolve_machine};
 pub use runtime::{WorkerRuntime, resolve_worker_runtime};
 pub use template_path::{
-    ResolvedTemplatePath, TemplateHome, UR_HOST_HOME_ENV, WORKSPACE_TEMPLATE,
-    resolve_template_path, resolve_template_path_with_home, resolve_workspace_content,
+    ResolvedTemplatePath, UR_HOST_HOME_ENV, WORKSPACE_TEMPLATE, resolve_template_path,
+    resolve_workspace_content,
 };
 
 /// A parsed mount configuration entry: host source -> container destination.
@@ -2393,21 +2391,6 @@ mod tests {
     fn machine_id_parses_from_machine_section() {
         let cfg = Config::from_toml_str("[machine]\nid = \"mbp\"\n", Path::new("/cfg")).unwrap();
         assert_eq!(cfg.machine.id, "mbp");
-    }
-
-    #[test]
-    fn machine_id_invalid_is_config_error() {
-        let err =
-            Config::from_toml_str("[machine]\nid = \"My Mac\"\n", Path::new("/cfg")).unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("[machine] id"), "{msg}");
-    }
-
-    #[test]
-    fn machine_id_defaults_to_normalized_hostname() {
-        let cfg = Config::from_toml_str("", Path::new("/cfg")).unwrap();
-        let expected = machine_id_from_hostname(&whoami::hostname().unwrap()).unwrap();
-        assert_eq!(cfg.machine.id, expected);
     }
 
     #[test]

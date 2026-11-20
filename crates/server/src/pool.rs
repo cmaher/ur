@@ -462,8 +462,7 @@ mod tests {
             &config,
             worker_repo,
             project_registry,
-            crate::MachineRegistryManager::new(TEST_MACHINE.into(), "http://127.0.0.1:1".into())
-                .unwrap(),
+            crate::machine_registry::test_registry(),
         );
         (mgr, test_db)
     }
@@ -496,19 +495,7 @@ mod tests {
     async fn claiming_another_machines_slot_is_a_slot_error() {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, _test_db) = test_pool(tmp.path(), 10).await;
-        let now = Utc::now().to_rfc3339();
-        mgr.worker_repo
-            .insert_slot(&workflow_db::model::Slot {
-                id: "other-0".into(),
-                project_key: "testproj".into(),
-                slot_name: "0".into(),
-                host_path: "/other/pool/testproj/0".into(),
-                created_at: now.clone(),
-                updated_at: now,
-                machine_id: "other".into(),
-            })
-            .await
-            .unwrap();
+        insert_other_machines_slot(&mgr.worker_repo).await;
         let row = claim_row("testproj", std::path::Path::new("/other/pool/testproj/0"));
         let err = mgr.claim(&row, "other-0").await.unwrap_err();
         assert!(
@@ -534,19 +521,7 @@ mod tests {
     async fn acquire_slot_never_claims_another_machines_slot() {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, _test_db) = test_pool(tmp.path(), 10).await;
-        let now = Utc::now().to_rfc3339();
-        mgr.worker_repo
-            .insert_slot(&workflow_db::model::Slot {
-                id: "other-0".into(),
-                project_key: "testproj".into(),
-                slot_name: "0".into(),
-                host_path: "/other/pool/testproj/0".into(),
-                created_at: now.clone(),
-                updated_at: now,
-                machine_id: "other".into(),
-            })
-            .await
-            .unwrap();
+        insert_other_machines_slot(&mgr.worker_repo).await;
         let err = acquire(&mgr, "testproj").await.unwrap_err();
         assert!(err.contains("scan_slots failed"), "{err}");
         let still_free = mgr
@@ -562,6 +537,24 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// Insert slot `other-0` (testproj, `/other/pool/testproj/0`) on the
+    /// unregistered machine `other`.
+    async fn insert_other_machines_slot(worker_repo: &WorkerRepo) {
+        let now = Utc::now().to_rfc3339();
+        worker_repo
+            .insert_slot(&workflow_db::model::Slot {
+                id: "other-0".into(),
+                project_key: "testproj".into(),
+                slot_name: "0".into(),
+                host_path: "/other/pool/testproj/0".into(),
+                created_at: now.clone(),
+                updated_at: now,
+                machine_id: "other".into(),
+            })
+            .await
+            .unwrap();
     }
 
     fn claim_row(project_key: &str, path: &std::path::Path) -> workflow_db::model::Worker {
@@ -805,8 +798,7 @@ mod tests {
             &minimal_test_config(tmp.path()),
             worker_repo,
             project_registry,
-            crate::MachineRegistryManager::new(TEST_MACHINE.into(), "http://127.0.0.1:1".into())
-                .unwrap(),
+            crate::machine_registry::test_registry(),
         );
         let err = acquire(&mgr, "hotreload").await.unwrap_err();
         assert!(err.contains("unknown project"), "unexpected error: {err}");

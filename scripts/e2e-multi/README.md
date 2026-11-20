@@ -25,7 +25,9 @@ scripts/e2e-multi/vm.sh stop              # stop the VM (it persists; `setup` re
 picks the host image tag to load (default `latest`). Behind a TLS-intercepting
 proxy (e.g. Netskope), `setup` adds the PEM bundle in `UR_E2E_CA_CERTS`
 (default `$SSL_CERT_FILE`) to the VM's trust store at create time; without it
-the Docker install fails with a self-signed-certificate error.
+the Docker install fails with a self-signed-certificate error. The bundle is
+applied only when the VM is created: after a `setup` that failed without
+`UR_E2E_CA_CERTS`/`SSL_CERT_FILE`, set one and rerun `vm.sh setup --fresh`.
 
 ## What it touches
 

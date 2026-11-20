@@ -45,23 +45,7 @@ mod tests {
     #[tokio::test]
     async fn migration_is_idempotent() {
         let admin = admin_pool().await;
-        let db_name = format!("workflow_db_test_{}", Uuid::new_v4().simple());
-
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "CREATE DATABASE \"{db_name}\""
-        )))
-        .execute(&admin)
-        .await
-        .expect("failed to create test database");
-
-        let db_url = ci_postgres_url(&db_name);
-        let options =
-            PgConnectOptions::from_str(&db_url).expect("invalid test database connection string");
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect_with(options)
-            .await
-            .expect("failed to connect to test database");
+        let (pool, db_name) = create_empty_db(&admin).await;
 
         // First run: apply migrations.
         migrate(&pool).await.expect("first migration run failed");
@@ -116,14 +100,7 @@ mod tests {
         migrate(&pool).await.expect("second migration run failed");
 
         pool.close().await;
-
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)"
-        )))
-        .execute(&admin)
-        .await
-        .expect("failed to drop test database");
-
+        drop_db(&admin, &db_name).await;
         admin.close().await;
     }
 
@@ -143,6 +120,15 @@ mod tests {
             .await
             .expect("failed to connect to test database");
         (pool, db_name)
+    }
+
+    async fn drop_db(admin: &PgPool, db_name: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)"
+        )))
+        .execute(admin)
+        .await
+        .expect("failed to drop test database");
     }
 
     async fn slot_constraints(pool: &PgPool) -> Vec<String> {
@@ -247,7 +233,7 @@ mod tests {
                 .slot_id,
             "s0"
         );
-        let slots = repo.list_slots("mach-a", "proj").await.unwrap();
+        let slots = repo.list_all_slots().await.unwrap();
         let names: Vec<_> = slots
             .iter()
             .map(|s| (s.id.as_str(), s.machine_id.as_str()))
@@ -260,12 +246,7 @@ mod tests {
         );
 
         pool.close().await;
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)"
-        )))
-        .execute(&admin)
-        .await
-        .expect("failed to drop test database");
+        drop_db(&admin, &db_name).await;
         admin.close().await;
     }
 }

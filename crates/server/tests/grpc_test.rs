@@ -124,7 +124,7 @@ async fn make_grpc_handler(
     let workflow_repo = workflow_db::WorkflowRepo::new(workflow_pool);
     let test_registry = ur_server::MachineRegistryManager::new(
         config.machine.id.clone(),
-        "http://localhost:12322".into(),
+        "http://127.0.0.1:1".into(),
     )
     .unwrap();
     let network_manager = ur_server::network_manager::NetworkManager::new(
@@ -139,11 +139,7 @@ async fn make_grpc_handler(
         &config,
         worker_repo.clone(),
         project_registry.clone(),
-        ur_server::MachineRegistryManager::new(
-            config.machine.id.clone(),
-            "http://127.0.0.1:1".into(),
-        )
-        .unwrap(),
+        test_registry.clone(),
     );
     let worker_manager = ur_server::WorkerManager::new(
         workspace.clone(),
@@ -172,11 +168,7 @@ async fn make_grpc_handler(
         config_dir: workspace.clone(),
         worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
         workerd_resolver: ur_server::WorkerdAddressResolver::new(
-            ur_server::MachineRegistryManager::new(
-                "test-machine".into(),
-                "http://127.0.0.1:1".into(),
-            )
-            .unwrap(),
+            test_registry.clone(),
             ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
         ),
     };
@@ -193,11 +185,7 @@ async fn make_grpc_handler(
         network_config,
         config_dir: workspace,
         workerd_resolver: ur_server::WorkerdAddressResolver::new(
-            ur_server::MachineRegistryManager::new(
-                "test-machine".into(),
-                "http://127.0.0.1:1".into(),
-            )
-            .unwrap(),
+            test_registry.clone(),
             ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
         ),
     };
@@ -275,18 +263,14 @@ async fn make_worker_handler() -> (
     let (config, _network_config) = make_test_config(&workspace, &workspace);
     let test_registry = ur_server::MachineRegistryManager::new(
         config.machine.id.clone(),
-        "http://localhost:12322".into(),
+        "http://127.0.0.1:1".into(),
     )
     .unwrap();
     let repo_pool_manager = ur_server::RepoPoolManager::new(
         &config,
         worker_repo.clone(),
         project_registry.clone(),
-        ur_server::MachineRegistryManager::new(
-            config.machine.id.clone(),
-            "http://127.0.0.1:1".into(),
-        )
-        .unwrap(),
+        test_registry.clone(),
     );
     let network_manager = ur_server::network_manager::NetworkManager::new(
         test_registry.clone(),
@@ -319,11 +303,7 @@ async fn make_worker_handler() -> (
         config_dir: workspace.clone(),
         worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
         workerd_resolver: ur_server::WorkerdAddressResolver::new(
-            ur_server::MachineRegistryManager::new(
-                "test-machine".into(),
-                "http://127.0.0.1:1".into(),
-            )
-            .unwrap(),
+            test_registry.clone(),
             ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
         ),
     };

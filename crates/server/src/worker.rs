@@ -1205,12 +1205,7 @@ impl WorkerManager {
     /// restarted. The launch path, the reconciler or the startup pass
     /// finishes it with a Stop that began after.
     pub async fn stop_by_worker_id(&self, worker_id: &WorkerId) -> Result<(), StopError> {
-        let worker = self
-            .worker_repo
-            .get_worker(&worker_id.0)
-            .await
-            .map_err(|e| format!("db error: {e}"))?
-            .ok_or_else(|| format!("unknown worker: {worker_id}"))?;
+        let worker = self.get_worker(worker_id).await?;
         // Resolve the row's builderd before touching the row: a machine the
         // registry does not hold leaves it as it was (never local, never gone).
         let builderd = self.stop_target(&worker)?;
@@ -1735,14 +1730,29 @@ fn proxy_env_vars(proxy_hostname: &str) -> Vec<(String, String)> {
 /// Fixtures shared by tests of the worker's callers.
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::path::Path;
+
     use super::*;
 
-    /// A `WorkerManager` whose registry holds only `test-machine`, at a
-    /// dead builderd port.
+    /// A `WorkerManager` rooted at `/tmp/test` with default global skills
+    /// (see [`worker_manager_with`]).
     pub(crate) fn worker_manager(worker_repo: WorkerRepo) -> WorkerManager {
-        let registry =
-            MachineRegistryManager::new("test-machine".to_owned(), "http://127.0.0.1:1".to_owned())
-                .unwrap();
+        worker_manager_with(
+            worker_repo,
+            Path::new("/tmp/test"),
+            GlobalSkillsConfig::default(),
+        )
+    }
+
+    /// A `WorkerManager` whose workspace and config dirs are `root` (logs in
+    /// `root/logs`), with default network config and worker modes, and a
+    /// registry holding only `test-machine` at a dead builderd port.
+    pub(crate) fn worker_manager_with(
+        worker_repo: WorkerRepo,
+        root: &Path,
+        global_skills: GlobalSkillsConfig,
+    ) -> WorkerManager {
+        let registry = crate::machine_registry::test_registry();
         let network_config = NetworkConfig {
             name: ur_config::DEFAULT_NETWORK_NAME.into(),
             worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
@@ -1750,11 +1760,11 @@ pub(crate) mod test_support {
             worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
         };
         WorkerManager::new(
-            PathBuf::from("/tmp/test/workspace"),
-            PathBuf::from("/tmp/test"),
-            PathBuf::from("/tmp/test"),
-            PathBuf::from("/tmp/test/logs"),
-            PathBuf::from("/tmp/test/logs"),
+            root.to_path_buf(),
+            root.to_path_buf(),
+            root.to_path_buf(),
+            root.join("logs"),
+            root.join("logs"),
             NetworkManager::new(
                 registry.clone(),
                 ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
@@ -1763,7 +1773,7 @@ pub(crate) mod test_support {
             ur_config::DEFAULT_SERVER_PORT + 1,
             WorkerModesConfig::default(),
             worker_repo,
-            GlobalSkillsConfig::default(),
+            global_skills,
             registry,
         )
     }
@@ -1807,39 +1817,7 @@ mod tests {
     }
 
     async fn test_manager() -> (WorkerManager, tempfile::TempDir, ur_db_test::TestDb) {
-        let workspace = tempfile::tempdir().unwrap();
-        let (worker_repo, test_db) = test_worker_repo().await;
-        // Keep unit tests isolated from a builderd that may be running on its
-        // normal development port. The lazy channel only connects in tests
-        // that deliberately exercise an unreachable runtime.
-        let registry =
-            MachineRegistryManager::new("test-machine".to_owned(), "http://127.0.0.1:1".to_owned())
-                .unwrap();
-        let network_manager = NetworkManager::new(
-            registry.clone(),
-            ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
-        );
-        let network_config = NetworkConfig {
-            name: ur_config::DEFAULT_NETWORK_NAME.into(),
-            worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
-            server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
-            worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
-        };
-        let mgr = WorkerManager::new(
-            workspace.path().to_path_buf(),
-            workspace.path().to_path_buf(),
-            workspace.path().join("logs"),
-            workspace.path().join("logs"),
-            workspace.path().join("logs"),
-            network_manager,
-            network_config,
-            ur_config::DEFAULT_SERVER_PORT + 1,
-            WorkerModesConfig::default(),
-            worker_repo,
-            GlobalSkillsConfig::default(),
-            registry,
-        );
-        (mgr, workspace, test_db)
+        test_manager_with_globals(GlobalSkillsConfig::default()).await
     }
 
     /// The provisional row written before builderd's launch carries the
@@ -1931,51 +1909,6 @@ mod tests {
             matches!(&err, StopError::Failed { reason } if reason == "unknown worker: nonexistent"),
             "{err:?}"
         );
-    }
-
-    /// A row on a machine the registry does not hold: the stop fails as
-    /// `StopError::Machine` before any builderd call, and the row keeps its
-    /// status (it is neither treated as local nor as gone).
-    #[tokio::test]
-    async fn stop_of_an_unregistered_machines_worker_fails_closed() {
-        let (mgr, _workspace, _test_db) = test_manager().await;
-        let now = Utc::now().to_rfc3339();
-        mgr.worker_repo
-            .insert_worker(&workflow_db::model::Worker {
-                worker_id: "remote-1-abcd".into(),
-                process_id: "remote-1".into(),
-                project_key: String::new(),
-                container_id: "ur-worker-remote-1-abcd".into(),
-                worker_secret: "secret".into(),
-                strategy: "code".into(),
-                agent_type: "claude".into(),
-                container_status: "running".into(),
-                agent_status: "idle".into(),
-                workspace_path: None,
-                created_at: now.clone(),
-                updated_at: now,
-                idle_redispatch_count: 0,
-                brain_path: None,
-                runtime: ur_config::WorkerRuntime::Container,
-                machine_id: "elsewhere".into(),
-            })
-            .await
-            .unwrap();
-        let err = mgr
-            .stop_by_worker_id(&WorkerId("remote-1-abcd".into()))
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(&err, StopError::Machine { source: MachineRegistryError::UnknownMachine { machine_id } } if machine_id == "elsewhere"),
-            "{err:?}"
-        );
-        let row = mgr
-            .worker_repo
-            .get_worker("remote-1-abcd")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(row.container_status, "running");
     }
 
     #[test]
@@ -3455,43 +3388,15 @@ agent = "claude"
     // ---- merge_global_skills tests ----
     //
     // merge_global_skills is a pure function on self.global_skills — no DB
-    // access needed. We use test_manager() just to get a valid WorkerManager,
-    // then build a fresh one with custom globals via the public constructor.
+    // access needed; test_manager_with_globals builds a manager with custom
+    // globals.
 
     async fn test_manager_with_globals(
         globals: GlobalSkillsConfig,
     ) -> (WorkerManager, tempfile::TempDir, ur_db_test::TestDb) {
         let workspace = tempfile::tempdir().unwrap();
         let (worker_repo, test_db) = test_worker_repo().await;
-        let registry = MachineRegistryManager::new(
-            "test-machine".to_owned(),
-            "http://localhost:12323".to_owned(),
-        )
-        .unwrap();
-        let network_manager = NetworkManager::new(
-            registry.clone(),
-            ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
-        );
-        let network_config = NetworkConfig {
-            name: ur_config::DEFAULT_NETWORK_NAME.into(),
-            worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
-            server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
-            worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
-        };
-        let mgr = WorkerManager::new(
-            workspace.path().to_path_buf(),
-            workspace.path().to_path_buf(),
-            workspace.path().join("logs"),
-            workspace.path().join("logs"),
-            workspace.path().join("logs"),
-            network_manager,
-            network_config,
-            ur_config::DEFAULT_SERVER_PORT + 1,
-            WorkerModesConfig::default(),
-            worker_repo,
-            globals,
-            registry,
-        );
+        let mgr = test_support::worker_manager_with(worker_repo, workspace.path(), globals);
         (mgr, workspace, test_db)
     }
 

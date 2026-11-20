@@ -1,5 +1,7 @@
 //! `ur worker attach` / `launch -a` / `--rm`: attach the terminal to a
-//! worker's agent tmux session, branching on the worker's runtime.
+//! worker's agent tmux session. [`AttachManager`] builds the [`AttachPlan`]
+//! from the worker's runtime; an [`AttachTransport`] runs it ([`LocalAttach`]
+//! does the `docker exec` / host tmux attach below).
 //!
 //! - container: `docker exec -it <prefix><worker_id_full> tmux -u attach-session -t =agent`
 //!   (a container from before ur-ezhdb: its recorded Docker ID)
@@ -104,7 +106,7 @@ impl LocalAttach {
 }
 
 #[derive(Clone)]
-pub struct AttachManager<T: AttachTransport> {
+pub struct AttachManager<T: AttachTransport = LocalAttach> {
     port: u16,
     worker_prefix: String,
     /// tmux server socket of local workers (`ur_config::LOCAL_TMUX_SOCKET`).
@@ -296,7 +298,7 @@ mod tests {
         path
     }
 
-    fn manager(socket: &str, program: PathBuf) -> AttachManager<LocalAttach> {
+    fn manager(socket: &str, program: PathBuf) -> AttachManager {
         AttachManager::new(
             0,
             "ur-worker-".into(),

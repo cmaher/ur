@@ -38,7 +38,6 @@ pub use backup::BackupTaskManager;
 pub use builder_pool_client::BuilderPoolClient;
 pub use config::Config;
 pub use hostexec;
-pub use hostexec::materialize_shim;
 pub use log_cleanup::LogCleanupManager;
 pub use machine_registry::{MachineRegistryError, MachineRegistryManager};
 pub use pool::RepoPoolManager;

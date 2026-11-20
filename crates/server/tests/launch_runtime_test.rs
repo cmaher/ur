@@ -55,11 +55,7 @@ async fn harness() -> Harness {
         &config,
         worker_repo.clone(),
         project_registry.clone(),
-        ur_server::MachineRegistryManager::new(
-            config.machine.id.clone(),
-            "http://127.0.0.1:1".into(),
-        )
-        .unwrap(),
+        test_registry.clone(),
     );
     let worker_manager = ur_server::WorkerManager::new(
         config.workspace.clone(),
@@ -91,11 +87,7 @@ async fn harness() -> Harness {
         config_dir: config.config_dir.clone(),
         worker_image_tag: ur_config::DEFAULT_IMAGE_TAG.to_owned(),
         workerd_resolver: ur_server::WorkerdAddressResolver::new(
-            ur_server::MachineRegistryManager::new(
-                config.machine.id.clone(),
-                "http://127.0.0.1:1".into(),
-            )
-            .unwrap(),
+            test_registry.clone(),
             config.network.worker_prefix.clone(),
         ),
     };

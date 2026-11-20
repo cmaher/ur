@@ -483,11 +483,6 @@ mod tests {
         (test_db, repo, workflow_repo, worker_repo)
     }
 
-    fn dummy_registry() -> crate::MachineRegistryManager {
-        crate::MachineRegistryManager::new("test-machine".into(), "http://localhost:50051".into())
-            .unwrap()
-    }
-
     fn dummy_config() -> Arc<ur_config::Config> {
         Arc::new(ur_config::Config {
             agent: ur_config::AgentType::Claude,
@@ -566,51 +561,22 @@ mod tests {
         })
     }
 
-    fn dummy_worker_manager(worker_repo: WorkerRepo) -> crate::WorkerManager {
-        let test_registry = crate::MachineRegistryManager::new(
-            "test-machine".to_owned(),
-            "http://localhost:50051".into(),
-        )
-        .unwrap();
-        let config = dummy_config();
-        let network_manager =
-            crate::network_manager::NetworkManager::new(test_registry.clone(), "ur-workers".into());
-        crate::WorkerManager::new(
-            std::path::PathBuf::from("/tmp/test/workspace"),
-            std::path::PathBuf::from("/tmp/test"),
-            std::path::PathBuf::from("/tmp/test/logs"),
-            std::path::PathBuf::from("/tmp/test/logs"),
-            std::path::PathBuf::from("/tmp/test/logs"),
-            network_manager,
-            config.network.clone(),
-            config.worker_port,
-            Default::default(),
-            worker_repo,
-            Default::default(),
-            test_registry.clone(),
-        )
-    }
-
     fn make_ctx(
         ticket_repo: TicketRepo,
         workflow_repo: WorkflowRepo,
         worker_repo: WorkerRepo,
     ) -> WorkflowContext {
         let (tx, _rx) = tokio::sync::mpsc::channel(16);
-        let worker_manager = dummy_worker_manager(worker_repo.clone());
+        let worker_manager = crate::worker::test_support::worker_manager(worker_repo.clone());
         WorkflowContext {
             ticket_repo,
             workflow_repo,
             worker_repo,
             workerd_resolver: crate::WorkerdAddressResolver::new(
-                crate::MachineRegistryManager::new(
-                    "test-machine".into(),
-                    "http://127.0.0.1:1".into(),
-                )
-                .unwrap(),
+                crate::machine_registry::test_registry(),
                 ur_config::DEFAULT_WORKER_PREFIX.to_owned(),
             ),
-            machine_registry: dummy_registry(),
+            machine_registry: crate::machine_registry::test_registry(),
             config: dummy_config(),
             transition_tx: tx,
             worker_manager,
