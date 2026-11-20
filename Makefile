@@ -9,7 +9,7 @@ SHELL := /bin/bash
 	stage stage-native \
 	image image-native image-force-base image-update-claude image-update-codex image-update-agy \
 	install install-nocache install-debug install-update-claude install-update-codex install-update-agy \
-	tools acceptance acceptance-ci install-hooks
+	tools acceptance acceptance-ci install-hooks e2e-multi-vm
 
 help: ## List targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-28s %s\n", $$1, $$2}'
@@ -122,6 +122,10 @@ acceptance: image ## Build container images and run acceptance tests
 
 acceptance-ci: ## Build content-hash-tagged CI images (skipped when already built) and run acceptance tests
 	scripts/acceptance-ci.sh
+
+# Opt-in only: never add to ci or the pre-push hook (scripts/e2e-multi/README.md).
+e2e-multi-vm: ## Manage the opt-in multi-machine e2e Lima VM, e.g. ARGS="setup --fresh" (setup|sync|reset|shell|stop)
+	scripts/e2e-multi/vm.sh $(ARGS)
 
 install-hooks: ## Install git hooks (pre-commit formats, pre-push runs CI + acceptance)
 	scripts/build/install-hooks.sh

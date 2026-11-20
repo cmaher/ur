@@ -1,0 +1,46 @@
+# Lima template for `ur-e2e`, the "machine B" VM of the opt-in multi-machine
+# e2e suite. Managed by scripts/e2e-multi/vm.sh; see scripts/e2e-multi/README.md.
+minimumLimaVersion: 2.0.0
+
+# Ubuntu 24.04 (stock tmux 3.4) for the host's arch. No base mounts template:
+# the VM gets no view of the host filesystem, so nothing in it can touch the
+# host's ~/.ur. Files go in with `limactl copy`.
+base:
+- template:_images/ubuntu-24.04
+mounts: []
+
+cpus: 4
+memory: 8GiB
+disk: 60GiB
+
+# Docker owns containerd; Lima's nerdctl stack stays off.
+containerd:
+  system: false
+  user: false
+
+# Runs on every boot, so each step is idempotent.
+provision:
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    if ! command -v tmux >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
+      apt-get update
+      apt-get install -y --no-install-recommends ca-certificates curl git tmux
+    fi
+    if ! command -v docker >/dev/null 2>&1; then
+      curl -fsSL https://get.docker.com | sh
+    fi
+    systemctl enable --now docker
+    usermod -aG docker "{{.User}}"
+
+probes:
+- script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    if ! timeout 300s bash -c "until command -v docker >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; do sleep 3; done"; then
+      echo >&2 "docker is not ready"
+      exit 1
+    fi
+  hint: See "/var/log/cloud-init-output.log" in the guest
