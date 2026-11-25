@@ -203,7 +203,7 @@ Built-in modes come from `WorkerStrategy::skills()` (`crates/server/src/strategy
 | common (all) | `green`, `cli-design`, `reclaude`, `writing-skills`, `address-feedback`, `code-review`, `brain`, `brain:init` |
 | `code` | common + `implement`, `ship`, `bacon`, `systematic-debugging`, `test-driven-development` |
 | `design` | common + `design`, `dispatch` |
-| `manual` | common + `implement`, `implement-agents`, `ship`, `bacon`, `systematic-debugging`, `test-driven-development`, `design`, `dispatch`, `brain:dream`, `brain:dream-init` |
+| `manual` | common + `implement`, `implement-agents`, `ship`, `bacon`, `systematic-debugging`, `test-driven-development`, `design`, `dispatch`, `brain:dream`, `brain:dream-init`, `drive-workers`, `auto`, `receiving-code-review` |
 
 ### `[worker_modes.<name>]`
 

@@ -107,6 +107,9 @@ impl WorkerStrategy {
                     "brain:dream-init".into(),
                     // Only manual workers may drive other workers (grpc_peer.rs).
                     "drive-workers".into(),
+                    // Unattended implement/review orchestrator, and the triage skill it drives.
+                    "auto".into(),
+                    "receiving-code-review".into(),
                 ]);
             }
         }
@@ -199,6 +202,9 @@ mod tests {
         assert!(skills.contains(&"brain:dream-init".to_string()));
         // Driving other workers
         assert!(skills.contains(&"drive-workers".to_string()));
+        // Unattended orchestration
+        assert!(skills.contains(&"auto".to_string()));
+        assert!(skills.contains(&"receiving-code-review".to_string()));
         // Common skills
         assert!(skills.contains(&"green".to_string()));
         assert!(skills.contains(&"cli-design".to_string()));
