@@ -1,50 +1,51 @@
 ---
 name: address-feedback
-description: Use when creating follow-up tickets from PR review comments
+description: Use when turning PR review comments on an active ur epic or ticket into follow-up child tickets and in-thread PR replies
 ---
+
+# Address PR Feedback
 
 Parse `$ARGUMENTS` for two required positional arguments: `<epic_id>` and `<pr_number>`.
 
-## 1. Fetch the ticket
+## Unattended Execution — Exactly Two Ways To Stop
 
-Run `ur ticket show <epic_id> --output json` to get the ticket details. Record its `project`, `title`, and `priority`.
+You are running unattended; response text is not delivered to anyone. End your turn ONLY with:
+- Done: `ur-workertools status step-complete`
+- Blocked: `ur-workertools status request-human "<reason>"`
 
-If the ticket has children, also run `ur ticket list --parent <epic_id> --output json` to see existing child tickets — avoid creating duplicates of feedback already tracked.
+Never pause, wait, ask questions in response text, or stop without one of those two commands. `ur-workertools status pause-nudge` only mutes nudges while you keep working and never ends your turn. Never push, open PRs, or advance ticket lifecycle status — the workflow handles that after `step-complete`.
 
-## 2. Fetch PR review comments
+## 1. Fetch Ticket Context
 
-Run `gh api repos/{owner}/{repo}/pulls/<pr_number>/comments --paginate` to fetch all inline review comments on the PR.
+1. Run `ur ticket show <epic_id> --output json` and record its `project`, `title`, and `priority`.
+2. Run `ur ticket list --parent <epic_id> --output json` to see existing child tickets and avoid duplicating already-tracked feedback.
 
-- Parse the JSON array of review comment objects.
-- Extract the `body`, `path`, `line`, `html_url`, `id`, and `user.login` fields from each comment.
-- Do NOT skip bot comments — bot feedback (CI failures, linters) is actionable.
-- DO skip any comment whose body starts with 🤖 (robot emoji) — these are auto-replies posted by the poller system, not real feedback.
+## 2. Fetch All PR Comments
 
-Also fetch top-level PR comments (conversation comments, not inline reviews):
+Resolve `{owner}/{repo}` via `gh pr view <pr_number> --json url` or `gh api repos/{owner}/{repo}/pulls/<pr_number> --jq '.head.repo.full_name'`.
 
-```
+Fetch both inline review comments and top-level conversation comments:
+```bash
 gh api repos/{owner}/{repo}/pulls/<pr_number>/comments --paginate
 gh api repos/{owner}/{repo}/issues/<pr_number>/comments --paginate
 ```
 
-Use `gh api repos/{owner}/{repo}/pulls/<pr_number> --jq '.head.repo.full_name'` (or parse from `gh pr view <pr_number> --json url`) to determine `{owner}/{repo}`.
+Extract `body`, `path`, `line`, `html_url`, `id`, and `user.login`.
+- **Keep bot comments** (CI/linter feedback is actionable).
+- **Skip comments starting with `🤖`** (auto-replies posted by the poller).
 
-## 3. Triage comments
+## 3. Triage Comments
 
-Classify each comment into one of two buckets:
+Classify each comment into one of two buckets (if both buckets are empty, skip straight to Step 6):
+- **Ticket-worthy:** actionable code changes (bugs, missing error handling, refactors, performance, substantive suggestions). Group related comments on the same concern into a single ticket.
+- **Reply-only:** nits, questions, discussion, praise/acknowledgments.
 
-**Ticket-worthy** — actionable feedback that requires code changes: bug reports, missing error handling, refactoring requests, performance concerns, substantive suggestions. Group related comments about the same concern into a single ticket.
+## 4. Create Child Tickets & Link Comments
 
-**Reply-only** — comments that deserve a response but not a ticket: questions, nits, style observations, praise, discussion. The agent will reply to these directly on the PR.
+For each ticket-worthy group, create one child ticket inheriting `<parent_priority>`:
 
-If there are no comments in either bucket, skip to step 6.
-
-## 4. Create child tickets and link comments
-
-For each ticket-worthy group, create a child ticket:
-
-```
-ur ticket create "<short summary of the feedback>" \
+```bash
+ur ticket create "<concise actionable title>" \
   --parent <epic_id> \
   --priority <parent_priority> \
   --body "PR Feedback from PR #<pr_number>
@@ -60,43 +61,33 @@ Comment: <html_url>
   --output json
 ```
 
-Use the parent ticket's priority value recorded in step 1.
+- For top-level PR comments (from `issues/.../comments`), omit `File: <path>:<line>`.
+- When grouping multiple comments into one ticket, include every comment's context block and full body.
+- Link **every** source comment in the group (one call per comment so the server posts tracking replies):
+  `ur-workertools repo comments link --pr <pr_number> --comment <comment_id> --ticket <ticket_id>`
 
-After creating each ticket, link every source comment in the group:
+## 5. Reply to Non-Ticket Comments
 
-```
-ur-workertools repo comments link --pr <pr_number> --comment <comment_id> --ticket <ticket_id>
-```
+Post in-thread replies via:
+`ur-workertools repo comments reply --pr <pr_number> <comment_id> "<message>"`
 
-One call per source comment. The server uses these links to post automatic "Tracking in `ur-xyz`" replies.
+- **Nits:** address specifically (fix or explain why not).
+- **Questions:** answer directly; say so if you don't know.
+- **Discussion:** engage substantively; push back with technical reasoning when warranted.
+- **Praise / acknowledgments:** skip — no reply needed.
 
-Guidelines for grouping:
-- Multiple comments about the same concern should be merged into a single ticket.
-- Each ticket title should be a concise, actionable description (e.g., "Add error handling for edge case X", "Rename function Y for clarity").
-- When merging multiple comments into one ticket, include all PR context entries (each with their own file, line, URL, and comment body).
-
-For top-level PR comments (from the issues endpoint), omit the `File:` and line fields since they are not file-specific.
-
-## 5. Reply to non-ticket comments
-
-For each reply-only comment, post an in-thread reply:
-
-```
-ur-workertools repo comments reply --pr <pr_number> <comment_id> "<message>"
-```
-
-Exercise judgment:
-- **Nits**: Address them — fix the issue or explain why not. Be specific.
-- **Questions**: Answer directly. If you don't know, say so.
-- **Discussion**: Engage substantively. Push back with technical reasoning when appropriate.
-- **Praise/acknowledgment**: Skip — no reply needed.
-
-Tone: terse, technical. No performative agreement ("Great point!", "You're absolutely right!"). State facts, reference code, move on.
+Keep tone terse, technical, and factual — zero performative agreement ("Great point!", "You're absolutely right!").
 
 ## 6. Done
 
-**REQUIRED: Signal completion by running `ur-workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
+Signal `ur-workertools status step-complete` (or `ur-workertools status request-human "<reason>"` if blocked).
 
-If you cannot complete the task, run `ur-workertools status request-human "<reason>"` and stop.
+## Guardrails
+
+- Never skip bot comments; always skip `🤖` poller auto-replies.
+- Never duplicate feedback already tracked by an existing child ticket.
+- Never omit `repo comments link` for any comment in a merged group.
+- Never use performative flattery in PR replies.
 
 $ARGUMENTS
+<!-- compiled-from: skills/specs/address-feedback.md@9bd256c03d36 profile:worker@6afed0c52191 -->

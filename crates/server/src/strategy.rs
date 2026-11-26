@@ -83,32 +83,26 @@ impl WorkerStrategy {
             Self::Code => {
                 skills.extend([
                     "implement".into(),
-                    "ship".into(),
-                    "bacon".into(),
                     "systematic-debugging".into(),
                     "test-driven-development".into(),
                 ]);
             }
             Self::Design => {
-                skills.extend(["design".into(), "dispatch".into()]);
+                skills.extend(["design".into()]);
             }
             Self::Manual => {
                 skills.extend([
                     "implement".into(),
-                    "implement-agents".into(),
-                    "ship".into(),
-                    "bacon".into(),
                     "systematic-debugging".into(),
                     "test-driven-development".into(),
                     "design".into(),
-                    "dispatch".into(),
                     // Brain consolidation: a person drives it, so manual workers only.
                     "brain:dream".into(),
-                    "brain:dream-init".into(),
                     // Only manual workers may drive other workers (grpc_peer.rs).
                     "drive-workers".into(),
-                    // Unattended implement/review orchestrator, and the triage skill it drives.
+                    // Unattended implement/review/trim orchestrator, and the skills it drives.
                     "auto".into(),
+                    "trim".into(),
                     "receiving-code-review".into(),
                 ]);
             }
@@ -120,9 +114,7 @@ impl WorkerStrategy {
 /// Skills shared by all worker strategies.
 fn common_skills() -> Vec<String> {
     vec![
-        "green".into(),
         "cli-design".into(),
-        "reclaude".into(),
         "writing-skills".into(),
         "address-feedback".into(),
         "code-review".into(),
@@ -139,8 +131,6 @@ mod tests {
     fn code_skills_include_code_specific() {
         let skills = WorkerStrategy::Code.skills();
         assert!(skills.contains(&"implement".to_string()));
-        assert!(skills.contains(&"ship".to_string()));
-        assert!(skills.contains(&"bacon".to_string()));
         assert!(skills.contains(&"systematic-debugging".to_string()));
         assert!(skills.contains(&"test-driven-development".to_string()));
     }
@@ -151,20 +141,14 @@ mod tests {
         assert!(skills.contains(&"design".to_string()));
         // Design should NOT have code-specific skills
         assert!(!skills.contains(&"implement".to_string()));
-        assert!(!skills.contains(&"bacon".to_string()));
+        assert!(!skills.contains(&"test-driven-development".to_string()));
     }
 
     #[test]
     fn both_strategies_include_common_skills() {
-        for strategy in [
-            WorkerStrategy::Code,
-            WorkerStrategy::Design,
-            WorkerStrategy::Manual,
-        ] {
+        for strategy in WorkerStrategy::ALL {
             let skills = strategy.skills();
-            assert!(skills.contains(&"green".to_string()));
             assert!(skills.contains(&"cli-design".to_string()));
-            assert!(skills.contains(&"reclaude".to_string()));
             assert!(skills.contains(&"writing-skills".to_string()));
             assert!(skills.contains(&"address-feedback".to_string()));
             assert!(skills.contains(&"code-review".to_string()));
@@ -174,12 +158,14 @@ mod tests {
     }
 
     #[test]
-    fn brain_dream_skills_are_manual_only() {
+    fn manual_only_skills_excluded_from_automated_strategies() {
         for strategy in [WorkerStrategy::Code, WorkerStrategy::Design] {
             let skills = strategy.skills();
             assert!(!skills.contains(&"brain:dream".to_string()));
-            assert!(!skills.contains(&"brain:dream-init".to_string()));
             assert!(!skills.contains(&"drive-workers".to_string()));
+            assert!(!skills.contains(&"auto".to_string()));
+            assert!(!skills.contains(&"trim".to_string()));
+            assert!(!skills.contains(&"receiving-code-review".to_string()));
         }
     }
 
@@ -188,38 +174,40 @@ mod tests {
         let skills = WorkerStrategy::Manual.skills();
         // Code-specific skills
         assert!(skills.contains(&"implement".to_string()));
-        assert!(skills.contains(&"ship".to_string()));
-        assert!(skills.contains(&"bacon".to_string()));
         assert!(skills.contains(&"systematic-debugging".to_string()));
         assert!(skills.contains(&"test-driven-development".to_string()));
-        // Subagent-dispatch variant is available to manual workers (opt-in)
-        assert!(skills.contains(&"implement-agents".to_string()));
         // Design-specific skills
         assert!(skills.contains(&"design".to_string()));
-        assert!(skills.contains(&"dispatch".to_string()));
         // Brain consolidation
         assert!(skills.contains(&"brain:dream".to_string()));
-        assert!(skills.contains(&"brain:dream-init".to_string()));
         // Driving other workers
         assert!(skills.contains(&"drive-workers".to_string()));
         // Unattended orchestration
         assert!(skills.contains(&"auto".to_string()));
+        assert!(skills.contains(&"trim".to_string()));
         assert!(skills.contains(&"receiving-code-review".to_string()));
-        // Common skills
-        assert!(skills.contains(&"green".to_string()));
-        assert!(skills.contains(&"cli-design".to_string()));
-        assert!(skills.contains(&"reclaude".to_string()));
-        assert!(skills.contains(&"brain".to_string()));
-        assert!(skills.contains(&"brain:init".to_string()));
     }
 
     #[test]
-    fn code_skills_exclude_implement_agents() {
-        // The automated code flow stays agent-free by default; the
-        // subagent-dispatch variant is opt-in (manual workers only).
-        let skills = WorkerStrategy::Code.skills();
-        assert!(skills.contains(&"implement".to_string()));
-        assert!(!skills.contains(&"implement-agents".to_string()));
+    fn retired_skills_are_not_in_any_strategy() {
+        for strategy in WorkerStrategy::ALL {
+            let skills = strategy.skills();
+            for retired in [
+                "ship",
+                "green",
+                "reclaude",
+                "dispatch",
+                "bacon",
+                "skill-hooks",
+                "implement-agents",
+                "brain:dream-init",
+            ] {
+                assert!(
+                    !skills.contains(&retired.to_string()),
+                    "{strategy:?} unexpectedly contains retired skill {retired}"
+                );
+            }
+        }
     }
 
     #[test]

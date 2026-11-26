@@ -5,7 +5,7 @@ and one ```` ```toml ```` config block that `ur dream` reads. The skill and `ur 
 about any project; if a fact about repos, ticket systems, or "done" is not in this file, they don't
 know it.
 
-Every value below is a placeholder. Real values are written by `brain:dream-init` into the brain,
+Every value below is a placeholder. Real values are written by `brain:init` into the brain,
 never into a skill.
 
 `ur dream config` validates the block (unknown keys, bad regexes, templates a pattern can't fill)

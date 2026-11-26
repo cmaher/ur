@@ -1,158 +1,129 @@
 ---
 name: implement
-description: Use when implementing a ticket — implements a single ticket, or an epic (ticket with open descendants) by working through its dispatchable descendants
+description: Use when implementing a designed ur ticket or epic (ticket with open descendants) where design and acceptance criteria are already settled
 ---
 
 # Implement Tickets
 
-Implement one or more tickets. An **epic** is any ticket with open descendants — detected at runtime, not by ticket type.
+Implement a single ticket or an epic (any ticket with open descendants — detected at runtime, not by ticket type).
 
-Design is already complete. Implement the ticket's existing design and acceptance criteria; do not start another design phase or request design approval. Resolve routine implementation details within that design as you work.
+Design is already complete. Execute the ticket's existing design and acceptance criteria; do not start another design phase or ask for design approval. Resolve routine implementation details as you work.
 
 ## Optional Hook Files
 
-The `@%UR_SKILL_HOOKS%/...` references below are optional project hooks. Read and follow each hook if its file exists. If a hook file is absent, skip it and continue the workflow; its absence is not a blocker and does not require clarification or `request-human`. Do not create missing hooks or invent replacement requirements. If verification hooks are absent, continue without hook-specified verification commands.
+The `@%UR_SKILL_HOOKS%/...` references below are optional project hooks. Read and follow each hook if the file exists. If a hook file is absent, skip it silently and continue — absence is never a blocker, never a reason to call `request-human`, and never a reason to create missing hooks or invent replacement verification commands.
 
-## NEVER Pause — There Are Exactly Two Ways To Stop
+## Unattended Execution — Exactly Two Ways To Stop
 
-You are running unattended. Nobody is watching your terminal. **Ending your turn without one of the two signals below silently stalls the workflow: the ticket sits untouched, no human is notified, and the stall is only discovered by accident.**
-
-There are exactly two legal ways to stop working:
+You are running unattended; response text is not delivered to anyone. Ending your turn without a signal silently stalls the workflow.
 
 | Situation | Required action |
-|-----------|-----------------|
+| --- | --- |
 | All work is done | `ur-workertools status step-complete` |
-| You are blocked and cannot finish | `ur-workertools status request-human "<reason>"` |
+| Blocked and cannot finish | `ur-workertools status request-human "<concrete reason or question>"` |
 
-**Every other form of stopping is forbidden.** In particular, NEVER:
+Never pause, wait, ask a question in prose, report partial progress, or stop without one of those two commands. `ur-workertools status pause-nudge` only suppresses nudges for 5 minutes while you keep working — it is never a way to stop.
 
-- Pause, wait, or "hold off" for any reason
-- Ask the user a question in your response text and stop — your text is not delivered to anyone. A question is a `request-human` call or it does not exist
-- Say you will "await confirmation", "check in", "pause here", "stop for review", or "resume once clarified"
-- Report a plan, a summary, or a partial result and stop without a signal
-- Stop because the change feels large, risky, ambiguous, or out of scope — that is exactly what `request-human` is for
-- Stop because a verification failed, a command errored, or you hit something you don't understand
-- Assume something else will pick the work up, notice you stopped, or nudge you
+Call `ur-workertools status request-human "<reason>"` and stop when:
+- Acceptance criteria are ambiguous or contradictory
+- Work requires genuine scope expansion beyond `Files to change` (small consequential edits like import sites or adjacent types are fine)
+- Workflow error recovery activities are contradictory or incomplete
+- Ticket description and codebase together lack enough context to implement confidently
 
-If any part of you is inclined to pause, that inclination is a `request-human` call. Make the call with a concrete reason, then stop. Uncertainty is never a reason to go quiet — it is a reason to call `request-human`.
+Never guess on unclear requirements. Never push, create PRs, or advance lifecycle status — the workflow does that after `step-complete`.
 
-`ur-workertools status pause-nudge` is NOT a way to pause work. It only suppresses nudge messages for 5 minutes while you keep working. It does not notify anyone and it does not end your turn.
-
-**Run `ur-workertools status request-human "<reason>"` and stop when:**
-- Ticket acceptance criteria are ambiguous or contradictory
-- Work appears to require changes beyond `Files to change` that are not obvious small consequences (import sites, adjacent types are fine)
-- Error recovery activities contain contradictory or incomplete guidance
-- Ticket description and codebase together do not provide enough context to implement confidently
-- You need a decision, an approval, or an answer from a human for any other reason
-
-Do not guess or make assumptions about unclear requirements.
+*(Caller override: when driven by the `auto` skill, follow its prompt override instead of calling `ur-workertools status` or dispatching subagents.)*
 
 ## Style
 
-Follow this style guide for all development.
+Follow this style guide for all development (parent and subagents alike):
 
 @%UR_SKILL_HOOKS%/implement/style-guide.md
 
-## Detect Mode — Single Ticket vs Epic
+## Error Recovery (Always First)
 
-After reading the ticket, determine which mode to use:
+Before any implementation work or child dispatch, check for unaddressed workflow failures on `<id>`:
 
-1. `ur ticket list --tree <id> --status open --output json` — check for open descendants
-2. If the result contains **any open descendants** → this ticket is an **epic** → use **Epic** mode
-3. If **no open descendants** (empty list or only the ticket itself) → use **Single Ticket** mode
+1. Run `ur ticket --output json show <id> --activity-author workflow`.
+2. Read the **most recent** workflow activities first (build/test/CI/merge failures) and any referenced log files (e.g., `/var/ur/logs/...`).
+3. Fix unaddressed failures before doing other work. The server runs `/clear` before dispatch, so ticket activities are your only prior context.
 
-## Error Recovery — Check Before Starting
+## Detect Mode
 
-Before doing any implementation work, check for unaddressed workflow error activities on the ticket. These appear when a previous attempt failed verification, CI, or merge.
+Run `ur ticket list --tree <id> --status open --output json`:
+- **No open descendants** (empty or only `<id>`) → **Single Ticket** mode.
+- **Any open descendants** → **Epic** mode.
 
-1. `ur ticket --output json show <id> --activity-author workflow` — read the ticket with only workflow activities
-2. Read the **most recent** workflow activities first (they contain the latest failure output)
-3. If workflow error activities exist and are not yet addressed:
-   - The error output describes what failed (build errors, test failures, merge conflicts, etc.)
-   - Activities may reference log files (e.g., `/var/ur/logs/...`) — read them for full error details
-   - Fix the errors **before** moving on to any other work
-   - The server sends `/clear` before every dispatch, so you start with a clean conversation — the ticket activities are your only source of prior context
-4. If no workflow error activities exist, proceed normally
+## Single Ticket Mode
 
-This applies to both single-ticket and epic flows. For epics, fix any errors on the epic ticket itself before implementing children.
-
-## Single Ticket
-
-When the ticket has no open descendants:
-
-1. `ur ticket --output json show <id>` — read the ticket (and check for workflow error activities per above)
-2. `ur ticket --output json update <id> --status in_progress` — claim it
+1. Read the ticket: `ur ticket --output json show <id>`.
+2. Claim it: `ur ticket --output json update <id> --status in_progress`.
 @%UR_SKILL_HOOKS%/implement/after-ticket-claim.md
-3. Read every file listed in the ticket's `Files to read first` section (if present) before editing anything. This loads the patterns and conventions needed for the change.
-4. Implement the work, scoped to the ticket's `Files to change` list. Treat `Out of scope` as a hard boundary.
-5. Before committing, run any verifications listed in the **Verification Hooks** section below
-6. Commit and set a summary of the work done as ticket metadata:
-   ```
-   ur ticket set-meta <id> pr_summary "1-2 sentence summary of the changes made" --output json
-   ```
+3. Read every file listed in `Files to read first` (if present) before editing anything.
+4. Implement within `Files to change`; treat `Out of scope` as a hard boundary.
+5. Run only the verification commands specified in **Verification Hooks** below.
+6. Commit on the working branch (never switch branches; never include ticket IDs in commit messages).
+7. Record a summary: `ur ticket set-meta <id> pr_summary "1-2 sentence summary" --output json`.
+8. Signal `ur-workertools status step-complete`.
 
-### Verification Hooks
+## Epic Mode
 
-Do NOT run any verification commands unless specified in this section.
+Choose execution mode:
+- **Direct (default)** — work dispatchable children sequentially in this context (always use Direct when invoked by the `auto` skill or when subtasks are small/tightly coupled).
+- **Subagent dispatch (opt-in / parallelizable)** — use when explicitly requested or when unblocked children touch independent files. Parent orchestrates via `ur ticket` only and never explores code inline.
 
+### Direct Execution
+1. Fix any workflow error activities on `<epic-id>` first.
+2. Query `ur ticket --output json dispatchable <epic-id>`.
+3. For each dispatchable child, follow **Single Ticket Mode** steps 1–6 (`ur ticket --output json show <child-id>`, claim `--status in_progress`, run `@%UR_SKILL_HOOKS%/implement/after-ticket-claim.md`, read `Files to read first`, implement within `Files to change` / `Out of scope`, run **Verification Hooks**, commit on the working branch without ticket IDs), then close it (`ur ticket --output json update <child-id> --status closed`).
+4. Re-query `ur ticket --output json dispatchable <epic-id>` after completing tickets — dependencies may have unblocked. Repeat until none remain.
+
+### Subagent Dispatch Execution
+1. Fix any workflow error activities on `<epic-id>` first.
+2. Run pre-dispatch hook:
+@%UR_SKILL_HOOKS%/implement/before-dispatch.md
+3. Query `ur ticket --output json dispatchable <epic-id>`.
+4. Dispatch subagents **in parallel** when `Files to change` do not heavily overlap; dispatch **sequentially** (one at a time, passing only 1–2 sentence summaries) when files heavily overlap or sequential mode is requested.
+5. Give each subagent this prompt:
+
+```
+Implement ticket <id>.
+1. Read: `ur ticket --output json show <id>` (read all `Files to read first` before editing).
+2. Claim: `ur ticket --output json update <id> --status in_progress`.
+3. Scope: stay within `Files to change` (small import/type consequences fine); treat `Out of scope` as a hard boundary. If genuine scope expansion or ambiguity blocks you, run `ur-workertools status request-human "<reason>"` and stop.
+4. Sibling agents may edit other files on the same branch — keep edits focused. Never switch branches.
+5. Verify ONLY with these hooks:
 @%UR_SKILL_HOOKS%/implement/subtask-verifications.md
+6. Stage your files and commit (no ticket IDs in commit message; do not push).
+7. Close: `ur ticket --output json update <id> --status closed`.
+8. Return ONLY a 1-2 sentence summary of what changed and any key paths/values needed next.
+```
 
-If you cannot complete the work, run `ur-workertools status request-human "<reason>"` and stop. Never stop without either this or `step-complete`.
+6. Re-query `ur ticket --output json dispatchable <epic-id>` after each wave until empty.
 
-Do NOT push, create PRs, or advance lifecycle status — that happens automatically after you stop.
-
-**REQUIRED: Signal completion by running `ur-workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
-
-## Epic (Ticket with Open Descendants)
-
-Work through the epic's descendants until none are left to implement:
-
-1. Check for workflow error activities on the epic ticket (see Error Recovery above) — fix before implementing children
-2. `ur ticket --output json dispatchable <epic-id>` — get all currently unblocked tickets
-3. Implement each dispatchable ticket using the **Single Ticket** steps above (claim → read → implement → verify → commit):
-   - Close it when done: `ur ticket --output json update <id> --status closed`
-   - Do NOT add ticket IDs to commit messages
-   - Commit on the working branch — never switch branches
-4. Re-query `ur ticket --output json dispatchable <epic-id>` — completing a ticket may have unblocked new ones
-5. Repeat until no dispatchable tickets remain
-
-Commit after each ticket so progress is durable.
-
-### Verification
-
-Do NOT run any verification commands unless specified in a **Verification Hooks** section.
-
-@%UR_SKILL_HOOKS%/implement/subtask-verifications.md
-
-### After All Descendants Complete (Epic Only)
-
+### Epic Wrap-Up
+1. Run final verification hook:
 @%UR_SKILL_HOOKS%/implement/final-verifications.md
+2. Set epic summary: `ur ticket set-meta <epic-id> pr_summary "Summary of all changes" --output json`.
+3. Signal `ur-workertools status step-complete`.
 
-After all dispatchable tickets are done and verification passes:
+## Verification Hooks
 
-1. Set `pr_summary` metadata on the epic with a summary of all work done:
-   ```
-   ur ticket set-meta <epic-id> pr_summary "Summary of all changes" --output json
-   ```
+Do NOT run verification commands (such as ad-hoc `cargo build`/`test`/`clippy`) unless specified in a hook section.
 
-If you cannot complete all work, run `ur-workertools status request-human "<reason>"` and stop. Never stop without either this or `step-complete`.
+@%UR_SKILL_HOOKS%/implement/subtask-verifications.md
 
-Do NOT push, create PRs, or advance lifecycle status — that happens automatically after you stop.
-
-**REQUIRED: Signal completion by running `ur-workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
-
-### Common Mistakes
+## Common Mistakes
 
 | Mistake | Fix |
-|---------|-----|
-| Pausing / waiting / stopping without a signal | **Never.** Stop only via `step-complete` (done) or `request-human "<reason>"` (blocked) |
-| Asking a question in your response text and stopping | Nobody reads it. Ask via `ur-workertools status request-human "<question>"` |
-| Using `pause-nudge` to pause work | It only mutes nudges for 5 min. It notifies nobody and does not end your turn |
-| Switching branches mid-work | **Never.** All commits go on the working branch |
-| Re-query skipped after completion | Always `ur ticket --output json dispatchable <epic>` again — deps may have unblocked |
-| Working a ticket without claiming | Always claim (`--status in_progress`) before implementing, and close when done |
-| Advancing lifecycle | **Never.** Push/PR/lifecycle happens automatically after you stop |
-| Running cargo build/test/clippy inline | **Never.** Only run verification commands specified by hook files |
-| Ignoring workflow error activities | **Always** check for `source=workflow` activities before starting work |
+| --- | --- |
+| Stopping or asking a question in prose | Always end via `step-complete` or `request-human "<reason>"` |
+| Using `pause-nudge` to pause | Only mutes nudges for 5 min; never ends a turn |
+| Skipping workflow error activities | Always check `--activity-author workflow` before starting |
+| Skipping `dispatchable` re-query | Always re-query after closing tickets — deps unblock |
+| Parallel subagents on unclaimed tickets | Every subagent claims `--status in_progress` first |
+| Switching branches or pushing | Commit on working branch only; never push or advance lifecycle |
+| Running unhooked verification commands | Run only commands specified in Verification Hooks |
 
 $ARGUMENTS
+<!-- compiled-from: skills/specs/implement.md@ba78c5ca5043 profile:worker@6afed0c52191 -->

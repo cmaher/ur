@@ -11,6 +11,8 @@ Two directories in the **base** container build context supply skills:
 
 Both are merged into a single `potential-skills/` pool during the Docker build. **`potential-skills/` copies second, so project-specific versions override vendor skills with the same name.**
 
+Human-authored bullet-point sources live in `skills/specs/<name>.md` alongside shared target profiles (`skills/specs/_profiles/{worker,local}.md`) and compiler rules (`skills/specs/COMPILE.md`). Each spec compiles into worker skills under `containers/worker-base/potential-skills/` and/or standalone local skills under `skills/local/`. `scripts/check-skills.sh` verifies spec/profile provenance hashes, frontmatter, zero worker-only leakage in `skills/local/`, and `strategy.rs` coverage; `scripts/link-skills.sh` symlinks `skills/local/*` and host-only `skills/ur:*` into `~/.claude/skills/`, `~/.gemini/config/skills/`, and `${CODEX_HOME:-~/.codex}/skills/`.
+
 These sources are agent-agnostic and live in the `containers/worker-base/` directory, but they
 are **not** baked into `ur-worker-base` itself. Each agent Dockerfile (Claude, Codex, AGY) copies
 them in from the `shared` named build context (`scripts/build/image.sh` passes
@@ -314,7 +316,7 @@ Prefer `%URCONFIG%/...` paths stored under `~/.ur/` (or wherever `$UR_CONFIG` po
 | `crates/workerd/src/init/instructions.rs` | Composes the strategy instruction file + shared fragments + project reference |
 | `crates/workerd/src/init/settings.rs` | Verbatim-copies the baked settings file (no model merge) |
 | `crates/ur_config/src/agent.rs` | `AgentType`/`AgentAuth` — per-agent home subdir, skill subdir, instruction filename, default models |
-| `crates/server/src/strategy.rs` | Default skill lists per mode (`WorkerStrategy::skills()`, `common_skills()`); manual-only skills (`brain:dream*`, `drive-workers`) are listed only under `Manual` |
+| `crates/server/src/strategy.rs` | Default skill lists per mode (`WorkerStrategy::skills()`, `common_skills()`); manual-only skills (`brain:dream`, `drive-workers`, `auto`, `trim`, `receiving-code-review`) are listed only under `Manual` |
 | `crates/server/src/worker.rs` | Mode resolution, `[worker_models]` parsing (`RawWorkerModels`, `effective_default_model()`), injects UR_WORKER_SKILLS, UR_WORKER_INSTRUCTION_STRATEGY, UR_WORKER_MODEL, and UR_AGENT_TYPE env vars |
 
 ## Skill Hook Integration
@@ -327,7 +329,10 @@ Skill sources never hard-code the hooks directory: they reference `@%UR_SKILL_HO
 
 | Skill | Hook Directory | Hook Files | Purpose |
 |-------|---------------|------------|---------|
-| `implement` | `implement/` | `after-ticket-claim.md`, `subtask-verifications.md`, `before-dispatch.md`, `final-verifications.md` | Verification commands at workflow checkpoints |
+| `implement` | `implement/` | `style-guide.md`, `after-ticket-claim.md`, `before-dispatch.md`, `subtask-verifications.md`, `final-verifications.md` | Style guide and verification commands at workflow checkpoints |
 | `code-review` | `code-review/` | `review-guidelines.md` | Project-specific review rules (rendered under "Project Rules" header) |
+| `design-doc-refinements` | `design-doc-refinements/` | `tools-and-links.md` | Doc-search tools and URL link formats |
+| `auto` | `implement/` | `subtask-verifications.md`, `final-verifications.md` | Per-batch and end-of-run verification hooks |
+| `trim` | `implement/` | `subtask-verifications.md` | Post-trim verification hook |
 
 To add project-specific hooks, place files in `ur-hooks/skills/<skill>/` in the project repo. Host overlays at `<config_dir>/projects/<key>/hooks/skills/<skill>/` take precedence on conflict.

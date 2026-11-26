@@ -1,153 +1,50 @@
 ---
 name: gitea
-description: Use when working with Gitea repositories, managing Gitea pull requests, reviewing code on Gitea, replying to or resolving Gitea comments, inspecting CI/actions status on Gitea, or merging Gitea pull requests
+description: Use when working with Gitea repositories, pull requests, PR reviews or comments, CI/Actions checks, or merging pull requests on Gitea
 ---
 
-# Gitea Collaboration Skill
+# Gitea Collaboration
 
-## Overview
-
-Collaborate with Gitea repositories using `git` for repository and commit operations and `tea` for forge collaboration (pull requests, code review, comments, CI status, and merging).
+Use `git` for all repository, branch, commit, rebase, and push operations, and `tea` exclusively for Gitea forge operations (pull requests, reviews, comments, CI checks, and merging).
 
 ## Strict Boundary Rules
 
-1. **Never use `gh`**: Do NOT run `gh` or suggest `gh` as fallback. GitHub CLI commands will fail or target the wrong platform. All forge actions must use `tea`.
-2. **Use `git` for repository & branch operations**: Always use standard `git` commands (`git fetch`, `git checkout -b`, `git commit`, `git push`, `git rebase`). Never use `tea clone`, `tea pr checkout`, or `tea pr clean`.
-3. **Host-managed authentication**: Tea authentication and tokens are managed on the host. NEVER run `tea login`, `tea logout`, `tea auth`, or pass credentials (`--token`, `--password`, `--secret`, `--key`) in arguments.
-4. **No insecure TLS**: Never pass `--insecure`, `-k`, or `--insecure-skip-tls-verify`.
-5. **Non-interactive execution**: All commands must be non-interactive. Supply required flags directly (e.g. `--title` for `tea pr create`, `--style` for `tea pr merge`). Never run commands that prompt for user input.
-6. **JSON output for read operations**: Use `--output json` on read commands (`tea pr ls`, `tea pr view`, `tea pr checks`, `tea pr comments`, `tea pr review-comments`, `tea runs ls`). Parse the structured JSON response.
+1. **Never use `gh`** (not even as fallback) — it targets GitHub, not Gitea.
+2. **Use `git` for repo and branch ops:** always use `git fetch`, `git checkout`, `git branch`, `git commit`, `git rebase`, `git push`. Never run `tea clone`, `tea pr checkout`, or `tea pr clean`.
+3. **Never manage auth or pass secrets:** never run `tea login`, `tea logout`, `tea auth`, or pass `--token`, `--password`, `--secret`, or `--key`.
+4. **Never disable TLS verification:** never pass `--insecure`, `-k`, or `--insecure-skip-tls-verify`.
+5. **Always run non-interactively:** supply required flags explicitly (`--title` and `--description` on `tea pr create`; `--style <merge|rebase|squash|rebase-merge>` on `tea pr merge`).
+6. **Always use `--output json` on reads:** `tea pr ls`, `tea pr view`, `tea pr checks`, `tea pr comments`, `tea pr review-comments`, `tea runs ls`.
 
 ## Quick Reference
 
-| Action | Command | Notes |
-|---|---|---|
-| List pull requests | `tea pr ls --output json` | Returns open PRs |
-| View pull request | `tea pr view <index> --output json` | PR details and status |
-| View PR diff | `tea pr diff <index>` | Patch/diff output |
-| Check CI status | `tea pr checks <index> --output json` | Commit check states |
-| Create pull request | `tea pr create --title "<title>" --description "<body>"` | Requires `--title` |
-| Edit pull request | `tea pr edit <index> --title "<new-title>"` | Edit title/body |
-| Close / Reopen PR | `tea pr close <index>` / `tea pr reopen <index>` | Update PR state |
-| Review: Approve | `tea pr review <index> --approve --comment "<text>"` | Approve PR |
-| Review: Request Changes | `tea pr review <index> --reject --comment "<text>"` | Request changes |
-| Review: Comment | `tea pr review <index> --comment "<text>"` | Review comment |
-| List review comments | `tea pr review-comments <index> --output json` | Inline thread comments |
-| List conversation comments | `tea pr comments <index> --output json` | Top-level PR comments |
-| Add PR comment | `tea pr comment <index> "<text>"` | Post comment |
-| Resolve review thread | `tea pr resolve <index> <comment-id>` | Mark thread resolved |
-| Unresolve review thread | `tea pr unresolve <index> <comment-id>` | Reopen thread |
-| Merge pull request | `tea pr merge <index> --style <merge\|rebase\|squash\|rebase-merge>` | Explicit style required |
-| View CI runs | `tea runs ls --output json` | Action run listings |
+| Action | Command |
+| --- | --- |
+| List open PRs | `tea pr ls --output json` |
+| View PR details/state | `tea pr view <id> --output json` |
+| View PR diff | `tea pr diff <id>` |
+| Check CI status | `tea pr checks <id> --output json` |
+| List workflow runs | `tea runs ls --output json` / `tea actions runs ls --output json` |
+| Create PR | `tea pr create --title "<title>" --description "<body>"` |
+| Edit / close / reopen PR | `tea pr edit <id> --title "..."` · `tea pr close <id>` · `tea pr reopen <id>` |
+| Review PR | `tea pr review <id> [--approve\|--reject] --comment "<text>"` |
+| List inline / issue comments | `tea pr review-comments <id> --output json` · `tea pr comments <id> --output json` |
+| Reply / resolve thread | `tea pr comment <id> "<text>"` · `tea pr resolve <id> <comment-id>` |
+| Merge PR | `tea pr merge <id> --style <merge\|rebase\|squash\|rebase-merge>` |
 
-For extended reference and examples, see [tea-workflows.md](references/tea-workflows.md).
+Extended command examples: [tea-workflows.md](references/tea-workflows.md).
 
-## Workflows
+## Core Workflows
 
-### 1. Create or Update a Pull Request
+1. **Create or update a PR:** commit and push via `git` → check existing PRs (`tea pr ls --output json`) → create (`tea pr create --title ... --description ...`) → re-verify (`tea pr view <id> --output json`).
+2. **Inspect PR & CI:** `tea pr view <id> --output json`, `tea pr checks <id> --output json`, `tea pr diff <id>`, and `tea runs ls --output json` / `tea actions runs ls --output json`.
+3. **Review & triage comments:** read `tea pr review-comments <id> --output json` and `tea pr comments <id> --output json` → edit/commit/push via `git` → reply (`tea pr comment`), resolve (`tea pr resolve <id> <comment-id>`), submit verdict (`tea pr review <id> [--approve|--reject] --comment "<text>"`) → re-verify (`tea pr view <id> --output json`).
+4. **Merge a PR (mandatory pre- and post-checks):** verify PR is open (`tea pr view <id> --output json`) AND CI checks pass (`tea pr checks <id> --output json`) → merge with explicit `--style` (`merge`, `rebase`, `squash`, or `rebase-merge`) → re-verify merged state (`tea pr view <id> --output json`).
 
-1. **Prepare changes with Git**:
-   ```bash
-   git checkout -b feature-branch
-   git add <files>
-   git commit -m "Description of changes"
-   git push -u origin feature-branch
-   ```
+## Guardrails
 
-2. **Check for existing PR**:
-   ```bash
-   tea pr ls --output json
-   ```
-
-3. **Create PR if none exists**:
-   ```bash
-   tea pr create --title "Feature title" --description "Summary of changes"
-   ```
-
-4. **Verify state**:
-   ```bash
-   tea pr view <index> --output json
-   ```
-
-### 2. Inspect Pull Request and CI Checks
-
-1. **Fetch PR details**:
-   ```bash
-   tea pr view <index> --output json
-   ```
-2. **Inspect CI status**:
-   ```bash
-   tea pr checks <index> --output json
-   ```
-3. **Inspect changes**:
-   ```bash
-   tea pr diff <index>
-   ```
-
-### 3. Review Feedback and Triage Comments
-
-1. **Inspect comments and review threads**:
-   ```bash
-   tea pr review-comments <index> --output json
-   tea pr comments <index> --output json
-   ```
-2. **Address feedback**:
-   - Make code edits and commit via `git commit`.
-   - Push updates via `git push origin <branch>`.
-3. **Reply and resolve threads**:
-   - Reply with explanation: `tea pr comment <index> "Addressed in commit <hash>"`
-   - Resolve thread: `tea pr resolve <index> <comment-id>`
-4. **Submit review verdict**:
-   - Approve: `tea pr review <index> --approve --comment "LGTM"`
-   - Or request changes: `tea pr review <index> --reject --comment "Please address feedback"`
-5. **Re-read PR state**:
-   ```bash
-   tea pr view <index> --output json
-   ```
-
-### 4. Merge a Pull Request
-
-1. **Pre-merge verification (MANDATORY)**:
-   - Verify PR is open:
-     ```bash
-     tea pr view <index> --output json
-     ```
-   - Verify CI checks are passing:
-     ```bash
-     tea pr checks <index> --output json
-     ```
-2. **Execute merge with explicit style**:
-   - Choose one of: `merge`, `rebase`, `squash`, `rebase-merge`.
-   ```bash
-   tea pr merge <index> --style squash
-   ```
-3. **Post-merge verification**:
-   - Verify PR state has transitioned to closed/merged:
-     ```bash
-     tea pr view <index> --output json
-     ```
-
-### 5. Diagnosing CI or Action Failures
-
-1. Check commit check status:
-   ```bash
-   tea pr checks <index> --output json
-   ```
-2. Check workflow runs:
-   ```bash
-   tea runs ls --output json
-   tea actions runs ls --output json
-   ```
-
-## Common Mistakes
-
-| Mistake | Why it Fails | Correct Approach |
-|---|---|---|
-| Using `gh` (`gh pr list`, `gh pr create`) | `gh` targets GitHub, not Gitea, and may be blocked | Use `tea` exclusively for forge actions |
-| Using `tea pr checkout <id>` | Tea checkout mutates working tree outside git | Use `git fetch origin` and `git checkout <branch>` |
-| Omitting `--style` on `tea pr merge` | Host policy blocks merge without explicit supported style | Always specify `--style <merge\|rebase\|squash\|rebase-merge>` |
-| Using unsupported merge style (`fast-forward`, etc.) | Host policy only permits `merge`, `rebase`, `squash`, `rebase-merge` | Use one of the four supported styles |
-| Omitting `--title` on `tea pr create` | Prompts interactively in terminal, which hangs | Always pass `--title` (and `--description`) |
-| Passing credentials (`--token`, `--password`) | Host policy rejects secrets in command arguments | Rely on host-configured credentials |
-| Passing `--insecure` or `-k` | Insecure TLS is prohibited | Trust system certificates |
-| Forgetting to re-verify state after mutation | Assumes mutation succeeded without checking server state | Always re-run `tea pr view <index> --output json` |
+- Never invoke `gh` on a Gitea repository.
+- Never omit `--style` on `tea pr merge` or `--title` on `tea pr create` (hangs or violates policy).
+- Never assume a mutation succeeded without re-reading `tea pr view <id> --output json`.
+- Never pass credentials on the command line or weaken TLS verification.
+<!-- compiled-from: skills/specs/gitea.md@e1888832d1d7 profile:worker@6afed0c52191 -->

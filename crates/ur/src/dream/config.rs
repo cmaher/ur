@@ -273,13 +273,13 @@ impl Config {
     pub fn load(brain: &Path) -> Result<Self> {
         let path = brain.join("DREAM.md");
         let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("{} not found: run brain:dream-init", path.display()))?;
+            .with_context(|| format!("{} not found: run brain:init", path.display()))?;
         Self::parse(&text).with_context(|| format!("{}", path.display()))
     }
 
     pub fn parse(dream_md: &str) -> Result<Self> {
         let Some(block) = BLOCK_RE.captures(dream_md) else {
-            bail!("no ```toml config block: run brain:dream-init");
+            bail!("no ```toml config block: run brain:init");
         };
         let raw: RawConfig = toml::from_str(&block[1]).context("config block is not valid")?;
         Self::from_raw(raw)

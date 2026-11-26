@@ -1,209 +1,105 @@
 ---
 name: code-review
-description: Review a proposed code change — bug hunt plus design review — and report findings in prose. Pass an optional count N to dispatch N independent reviewer sub-agents over the same diff and combine their results.
+description: Use when reviewing a proposed code change, diff, branch, or pull request for bugs, design soundness, and test quality, optionally with N independent parallel reviewers
 ---
 
-# Review guidelines:
+# Code Review
+
+Review a proposed code change made by another engineer. Perform **two distinct jobs** and never blur them:
+- **Bug hunt** — defects in the diff: wrong behavior, crashes, security issues, performance regressions, and maintainability defects (dead code, misleading docs, weak tests).
+- **Design review** — soundness of the approach: whether contracts, abstractions, boundaries, consistency, and extensibility fit their purpose and consumers even when the code is correct and tests pass.
+
+Never dress a design concern up as a bug, and never soften a real bug into a nit. More specific guidelines in a developer/user prompt or project rules below override these defaults.
 
 ## Optional Hook Files
 
-The `@%UR_SKILL_HOOKS%/...` references in this skill are optional project hooks. Read and follow each hook if its file exists. If a hook file is absent, skip it and continue the review using this skill's guidelines; its absence is not a blocker and does not require clarification. Do not create missing hooks or invent replacement requirements.
+The `@%UR_SKILL_HOOKS%/...` reference below is an optional project hook. Read and follow it if the file exists. If absent, skip it silently and continue — absence is never a blocker, never a reason to call `request-human`, and never a reason to create missing hooks or invent replacement rules.
 
-## Invocation
+## Invocation & Parallel Review
 
-Parse `$ARGUMENTS` for an optional parallel-review count `N` (a positive integer; default `1`).
+Parse `$ARGUMENTS` for an optional positive integer `N` (default `1`):
+- **`N = 1` (or omitted):** perform the review directly.
+- **`N > 1`:** launch `N` independent reviewer subagents concurrently in one batch with identical prompts pointing at the same diff/branch/PR, instructing each to follow this skill in full without coordinating and return the prose Output Format below.
 
-- **`N` absent or `1`** — perform the review yourself, directly, following every guideline below. This is the default.
-- **`N` greater than `1`** — dispatch `N` independent reviewer sub-agents over the *same* diff, then combine their results (see "Combining parallel reviews"). Use this to widen coverage on large or high-stakes changes: independent passes surface findings a single pass misses.
+When combining `N > 1` reports, merge into a single review (do not concatenate):
+- Deduplicate findings sharing the same root cause and location (keep clearest summary, union distinct details).
+- Union unique findings reported by only one subagent.
+- Re-filter merged findings against existing PR comments so no duplicates slip through.
+- Take the highest priority when merged findings disagree.
+- Issue one verdict: `incorrect` if *any* subagent surfaced a confirmed blocking bug (re-verify disagreements yourself rather than voting). Renumber findings sequentially.
 
-### Dispatching sub-agents
+## Mandatory Pre-Review Reading
 
-Launch all `N` sub-agents concurrently (in a single batch). Give each sub-agent an identical prompt that:
-
-1. Points it at the same change under review (same diff / branch / PR).
-2. Instructs it to follow this skill's guidelines in full — the Pre-Review Reading, Bug Criteria, Design Review, Test Quality, and Comment Guidelines below — and to return its findings in the prose **Output format** defined at the end of this document.
-3. Tells it to work independently and not coordinate with the others.
-
-Do not vary the instructions between sub-agents; the independence comes from separate reasoning passes over the same input, not from divergent prompts.
-
-### Combining parallel reviews
-
-Once all sub-agents return, merge their reports into one review — do not concatenate them:
-
-- **Deduplicate.** Findings from different sub-agents that refer to the same underlying issue (same root cause at the same location) collapse into one. Keep the clearest summary; union any distinct detail.
-- **Union the rest.** A finding reported by only one sub-agent is still a finding — include it.
-- **Drop findings already covered by an existing PR comment.** Re-check the merged set against the comments already on the PR; a sub-agent that missed the overlap should not put a duplicate into the combined review.
-- **Reconcile priority.** When merged findings disagree on priority, take the highest (most severe).
-- **Single verdict.** Produce one overall-correctness verdict for the change. The patch is incorrect if *any* sub-agent surfaced a confirmed blocking bug; reconcile disagreement by re-checking the finding yourself rather than taking a majority vote.
-
-Renumber the combined findings sequentially and present them in the standard prose **Output format** below.
-
-## Review
-
-You are acting as a reviewer for a proposed code change made by another engineer.
-
-Your review has two complementary jobs, and you must do both:
-
-- **Bug hunt** — find defects in the diff: behavior that is wrong, crashes, security holes, performance regressions, and maintainability defects (dead code, misleading docs, weak tests).
-- **Design review** — judge whether the change's *approach* is sound: are the contracts, abstractions, and boundaries it introduces adequate for their stated purpose and for the consumers that will build on them, even when the code as written is correct and the tests pass?
-
-Keep the two distinct. Do not dress a design concern up as a bug (it erodes trust when the "bug" turns out to be working as written), and do not soften a real bug into a "nit." A change can be bug-free and still carry serious design findings; a change can be elegantly designed and still ship a crash.
-
-Below are some default guidelines for determining whether the original author would appreciate the issue being flagged.
-
-These are not the final word in determining whether an issue is a bug. In many cases, you will encounter other, more specific guidelines. These may be present elsewhere in a developer message, a user message, a file, or even elsewhere in this system message.
-Those guidelines should be considered to override these general instructions.
-
-## Pre-Review Reading
-
-Before reviewing the diff, do the following — these reads are required, not optional:
-
-1. **Read definitions referenced by the diff.** Types, constants, interfaces, DB schema, and proto definitions that the changed code references but does not define. Bugs involving data integrity constraints, shared state, or concurrency often only become visible when cross-referenced against those definitions. For example: if the diff calls a repo method, read the interface doc and any related migration SQL; if it references a model constant, read the model file.
-
-2. **Read implementations called by the diff.** When the diff calls a function whose behavior matters (not trivial getters), open the callee and read its implementation — including all conditional branches. A diff that calls `facade.DoThing(ctx, x, y)` cannot be reviewed without knowing what `DoThing` does with `x` and `y`, especially under different runtime conditions. Stop at two hops from the diff unless a specific concern pulls you deeper.
-
-3. **Trace nil and zero-value arguments.** When the diff passes `nil` or a zero value to a constructor or function, follow that value through storage and into every method that could dereference it. In Go, nil interface fields compile and pass tests — they only panic at runtime on the code path that uses them. The concern is not "nil was passed" (often intentional) but "does any reachable code path dereference it without a guard?"
-
-4. **Read construction sites for new struct fields.** When a PR adds a field to a DI struct, search for all `TypeName{...}` literals and verify the field is set. When a construction site intentionally passes nil, trace whether the current PR's code paths can reach a dereference.
-
-5. **Verify branch coverage in tests.** If the diff introduces runtime branches (e.g. two code paths selected by a network type, feature flag, or config value), check that the tests exercise both branches. Note any untested branch that could hide bugs.
-
-6. **Read the change's intent and its place in any larger effort.** Read the PR description, linked design docs, and any parent / sibling / follow-up tickets or commit messages. Determine whether this change is one slice of a multi-step plan (a stacked PR, a phased migration, an explicit "step N of M", or work deferred to a named follow-up) and identify the *known future consumers* of anything it introduces. The diff alone will not reveal this context, and you cannot judge whether a new contract is adequate without it. A change that is internally correct can still be the wrong shape for the step that is already planned to come next.
-
-7. **When the change introduces something meant to replace or absorb existing functionality, read the incumbent.** Even if the new code is not yet wired up, enumerate everything the existing implementation does and every output it produces: return values, side effects, emitted metrics or events, and persisted data. Hold this list against the new contract (see Design Review). A replacement that quietly omits an output the incumbent produced is one of the highest-value findings you can surface, because it is cheap to fix now and expensive once callers depend on the new shape.
-
-8. **Skim the existing review comments on the PR.** Read them once, as *input to your own review* — not as a work list. They tell you what has already been raised, what the author has already answered, and occasionally point at a real problem you would otherwise miss. Two consequences: (a) do not re-raise a finding an existing comment already covers — a duplicate comment is noise, and posting one is the failure mode this step exists to prevent; (b) if a comment names something you have not yet examined, go look. Do not write a response to each comment, do not summarize them, and do not track their resolution status — that is the job of the address-feedback flow, not this review.
-
-9. **Verify claims that comments, docs and the PR description make.** When a comment names a concrete type as satisfying an interface, asserts that one thing is equivalent to or interchangeable with another, or documents a contract or invariant, open the referenced symbol and confirm the claim against its actual signature and behavior. A doc comment that is wrong — names a type that does not actually implement the interface, describes a guarantee the code does not provide — is a maintainability defect: it will send the next engineer down a path that does not compile or does not hold. The same goes for a PR description that claims behavior the diff does not have (a check, a limit, a reported field): flag it so the description is corrected before reviewers rely on it.
-
-10. **Search for an existing home for new code.** For each new function, type, interface or builder the diff adds, note the dependency it wraps (a client, an encoding, a status enum, a test fake) and search the codebase for a shared package that already wraps it (`rg -l '<DependencyType>'`, then read the packages that import it most). The two-hop limit in item 2 does not apply here: duplication of an existing abstraction is invisible from the diff. A new private interface or helper that matches an existing shared one is an Abstraction-fit finding (see Design Review); when the shared one is missing a small piece, the fix is to add it there.
+Complete these reads before judging the diff:
+1. **Referenced definitions:** read types, constants, interfaces, DB schema, migrations, and protos the diff references.
+2. **Non-trivial callees:** read implementations and all conditional branches called by the diff (stop at 2 hops unless pulled deeper).
+3. **Trace `nil` / zero values:** follow every `nil` or zero-value argument passed to a constructor or function through storage to every reachable dereference.
+4. **Construction sites:** when a new DI/struct field is added, search all `Type{...}` literals to verify wiring and trace whether any intentionally-nil field is reachable.
+5. **Branch coverage in tests:** check that tests exercise every new runtime branch (flags, config, network/mode switches).
+6. **Intent and larger effort:** read the PR description, design docs, and parent/sibling/follow-up tickets to identify multi-step plans and known future consumers.
+7. **Incumbent comparison:** when replacing or absorbing existing functionality, enumerate every output the incumbent produced (return values, side effects, metrics, events, persisted data) and check the new contract against it.
+8. **Skim existing PR comments once:** use them as input only — never duplicate an already-raised finding; inspect anything they point to; do not reply, summarize, or track status (that belongs to the `address-feedback` skill).
+9. **Verify doc/comment/PR claims:** check every claim that a type satisfies an interface, a guarantee holds, or the PR implements a check/limit against the actual code.
+10. **Search for an existing home (no 2-hop limit):** for each new helper, interface, wrapper, or builder wrapping a dependency, search the repo (`rg -l '<DependencyType>'`) for an existing shared package that already wraps it.
 
 ## Bug Criteria
 
-Here are the general guidelines for determining whether something is a bug and should be flagged.
+Flag as `bug` when introduced in this commit, discrete/actionable, appropriate to repo rigor, provably affecting accuracy/integrity/concurrency/security/performance/maintainability, and not clearly intentional:
+- **Reachable nil derefs from intentional nil wiring are bugs** — trace and show the full call chain from construction site to dereference.
+- **Framework semantic mismatches** (e.g., timeout/retry placed on a construct that ignores it) creating silent unbounded waits or missing safety nets are bugs.
+- **Documented-required but unvalidated fields/options** at a boundary are findings (P2/P3) even if the only current caller passes a valid value.
+- **Risky pre-existing patterns re-instantiated at a new boundary** are in scope (P2/P3; explicitly note it mirrors existing code and is not a regression).
 
-1. It meaningfully impacts the accuracy, performance, security, or maintainability of the code.
-2. The bug is discrete and actionable (i.e. not a general issue with the codebase or a combination of multiple issues).
-3. Fixing the bug does not demand a level of rigor that is not present in the rest of the codebase (e.g. one doesn't need very detailed comments and input validation in a repository of one-off scripts in personal projects)
-4. The bug was introduced in the commit (pre-existing bugs should not be flagged).
-5. The author of the original PR would likely fix the issue if they were made aware of it.
-6. For data integrity and concurrency bugs, cross-file context (DB constraints, interface contracts, shared state semantics) is sufficient to establish a finding — these bugs inherently require knowledge outside the diff. For all other categories, the bug should not rely on unstated assumptions about the codebase or author's intent.
-7. It is not enough to speculate that a change may disrupt another part of the codebase, to be considered a bug, one must identify the other parts of the code that are provably affected.
-8. The bug is clearly not just an intentional change by the original author.
+## Design Review Criteria
 
-**Nil dereferences reached through constructor wiring are bugs even when the nil was passed intentionally.** "Intentionally nil" at the construction site does not mean "safe to dereference" — it means the author assumed no current code path reaches it. If you can trace a reachable path from the diff's code to a dereference of that nil value, that is a provable bug under criterion 7. Show the call chain.
+Flag as `design` only when you can name the **specific consumer or scenario**, the **concrete inadequacy**, and the **decision to make now** (no bikeshedding or vague unease):
+1. **Contract adequacy** *(highest value)* — replacement drops an incumbent output, signature cannot carry what a planned caller needs, callback lacks required context.
+2. **Abstraction fit** — layer leaks, speculative generalization, duplicates an existing shared abstraction, or wrong layer.
+3. **Consistency** — introduces a second pattern without stated reason where the codebase has a standard one.
+4. **Extensibility traps** — choice that forces a breaking change, migration, or painful refactor on a near-certain next step.
 
-**Framework semantic mismatches are bugs when they create silent misbehavior.** If code sets a timeout or retry policy on a construct that doesn't honor it (e.g. an activity context passed to a non-activity code path), and this creates an unbounded wait, missing safety net, or silently ignored bound, flag it — the code reads as if the bound applies when it doesn't.
+Frame design findings as forward-looking decisions ("current code is correct; worth deciding while cheap"), typically P2/P3 non-blocking unless blocking the change's stated goal.
 
-**A field documented as required but never validated is a finding.** A field, parameter, or option documented as required / non-empty / non-nil (in a doc comment, its name, or a nearby contract) but never checked before use. Flag it even when the only caller today is controlled and passes a valid value: an unenforced "required" contract lets an invalid value reach downstream state and fail far from the cause, and the guard is cheapest at the boundary that documents it. Validation analogue of Pre-Review item 9; P2/P3.
+## Test Quality (P2/P3)
 
-**A risky pre-existing pattern re-instantiated at a new boundary is in scope.** Criterion 4 excludes bugs that pre-date the diff. But when the diff introduces a *new* boundary, abstraction, or code path that re-creates a risky pattern (an unguarded dereference, a swallowed error, a missing validation), that new occurrence *was* introduced by this commit, even if it mirrors behavior that already exists elsewhere. A fresh, clean boundary is the cheapest place to get it right. Flag it, explicitly state that it mirrors existing behavior and is not a regression, and keep the priority modest (typically P2/P3) so the author can weigh it against consistency with the old code.
+Flag weak tests that add cost without protecting real logic:
+- **Tautological / change-detector tests** (stubs return constants and test asserts the same constant, or assertions cannot fail).
+- **Redundant tests** hitting identical paths with different constants instead of distinct branches/boundaries.
+- **Copy-pasted setup** repeated 3+ times (suggest a fixture helper or table test; name repeated lines and locations).
+- **Bypassed test helpers** (inline duplication of an existing helper).
+- **Duplicate tests** sharing setup/path where one only adds an assertion (merge union of assertions).
+- **Over-mocking** replacing the collaborator holding the real logic so only delegation is tested.
 
-## Design Review
+## Additional Quality Checks
 
-A design finding identifies a concern with the *approach* a change takes, even when the code as written is correct and the tests pass. Unlike a bug, a design finding need not point to provably-broken behavior — but it must still be concrete, actionable, and tied to a decision the author can make now. The bar that separates a real design finding from noise: it names the specific consumer or scenario, the specific inadequacy, and the decision to be made. Vague unease ("this might not scale", "this feels wrong") is not a finding.
+Output **all** qualifying findings — do not stop at the first, and do not suppress genuine non-blocking hardening/defense-in-depth findings (exception: skip purely defensive nil-guards on unreachable constructor-wired values). Ignore trivial style unless it obscures meaning or breaks documented standards.
+- Flag introduced `TODO`, `FIXME`, `XXX`, or `HACK` comments (include full comment text).
+- Flag dead/orphaned code introduced or orphaned by the diff (confirm no re-exports, reflection, codegen, or string dispatch; ignore intentional public API or dead-code-suppressed items; P2/P3).
+- Flag pass-through constructors/wrappers that only copy params into a struct literal or forward one call unchanged (P3; skip sole exported builder for an unexported type).
+- Flag overly wide positional tuple returns where a named struct/record fits (P3).
+- Flag hardcoded literals duplicating an existing named constant or enum (P3).
+- Flag loop-invariant computations/validations placed inside loops (P3, higher if costly).
 
-Flag a design concern when one of the following holds:
+## Output Format
 
-1. **Contract adequacy.** The change introduces or modifies a contract — a function signature, return type, interface, event, or persisted data shape — that other code must build on, and that contract cannot carry everything its consumers need. The consumers include known or stated future ones discovered in Pre-Review Reading (items 6–7). Concretely: a return type that drops an output the incumbent it replaces used to produce; a signature that cannot express a result a planned caller requires; a callback that lacks the context its handler needs. This is the single highest-value design finding, because a contract is cheap to change before it ships and expensive once callers depend on it. Surface it while the contract is still malleable, even if no code is broken today.
-
-2. **Abstraction fit.** The new layer leaks (callers must reach around it to do their job), is speculative (it generalizes for a need that does not exist), duplicates an abstraction the codebase already has, or places a responsibility at the wrong layer.
-
-3. **Consistency.** The change solves — without stated reason — a problem the codebase already solves a standard way, introducing a second pattern future readers must learn.
-
-4. **Extensibility traps.** A choice that will force a breaking change, a data migration, or a painful refactor the moment a near-certain next step arrives. "Near-certain" means the next step is already planned or is the obvious continuation, not merely conceivable.
-
-What is **not** a design finding: restating a personal preference as a requirement, bikeshedding names or layout, or speculating about disruption you cannot tie to a concrete consumer. When in doubt, ask whether you can name who is hurt and what decision fixes it; if you cannot, do not raise it.
-
-**Framing and priority.** Design findings are frequently non-blocking — they raise a decision rather than report a defect. Frame them as "worth deciding now, while it's cheap" rather than "this is broken," and set priority modestly (usually P2/P3). Do not inflate a design concern to P0/P1 unless it blocks the change's stated goal. A design finding does not, by itself, make a patch "incorrect" (see the verdict guidance below).
-
-## Test Quality
-
-Beyond verifying branch coverage (Pre-Review Reading item 5), assess whether the tests actually exercise the unit's own logic. Weak tests are a maintainability finding (typically P2/P3): they impose maintenance cost and manufacture false confidence without protecting behavior.
-
-- **Tautological / change-detector tests.** A test that stubs a dependency to return a constant and then asserts the unit returns that same constant exercises none of the unit's logic — it only proves a value was passed through. So does any test whose assertions cannot fail given its stubs. Flag these and point to what real behavior a meaningful test would pin down instead.
-- **Redundant tests.** Several tests that traverse the identical code path with only different constant values add noise, not signal. Suggest collapsing them (e.g. into one table-driven case) and spending the freed effort on genuinely distinct branches — error paths, boundaries, and the branch no test currently hits.
-- **Copy-pasted setup.** The same arrange-and-first-action prelude repeated in three or more tests. Suggest a fixture helper that returns what the tests need, or a table-driven test when the cases differ only in inputs and expectations. Name the repeated lines and every place they appear.
-- **Bypassed helpers.** A helper already defined in the test file or package does exactly what some tests inline. Point to the helper and the inline copies.
-- **Duplicate tests.** Two tests with the same setup and the same path, where one only adds an assertion. Suggest merging them and keeping the union of assertions.
-- **Over-mocking.** When the interesting logic lives in a collaborator that the test replaces with a fake, the test proves delegation, not correctness. Note where a test against the real implementation (or a thin integration test) would catch what the mocked test cannot.
-
-## Comment Guidelines
-
-When flagging a finding, you will also provide an accompanying comment. Once again, these guidelines are not the final word on how to construct a comment -- defer to any subsequent guidelines that you encounter.
-
-1. The comment should be clear about why the issue is a problem — for a bug, why it is wrong; for a design finding, what decision is at stake and why now.
-2. The comment should appropriately communicate the severity of the issue. It should not claim that an issue is more severe than it actually is. For design findings, be explicit that the current code is correct and that you are raising a forward-looking decision, not reporting a defect.
-3. The comment should be brief. The body should be at most 1 paragraph. It should not introduce line breaks within the natural language flow unless it is necessary for the code fragment.
-4. The comment should not include any chunks of code longer than 3 lines. Any code chunks should be wrapped in markdown inline code tags or a code block.
-5. The comment should clearly and explicitly communicate the scenarios, environments, or inputs that are necessary for the issue to arise. The comment should immediately indicate that the issue's severity depends on these factors.
-6. The comment's tone should be matter-of-fact and not accusatory or overly positive. It should read as a helpful AI assistant suggestion without sounding too much like a human reviewer.
-7. The comment should be written such that the original author can immediately grasp the idea without close reading.
-8. The comment should avoid excessive flattery and comments that are not helpful to the original author. The comment should avoid phrasing like "Great job ...", "Thanks for ...".
-9. For nil-dereference and wiring bugs, include the call chain from construction site to dereference point so the author can verify the path is reachable.
-10. For contract-adequacy findings, name the consumer that the contract cannot serve and the specific output or capability it cannot carry, so the author can confirm the gap without reconstructing the larger plan themselves.
-
-Below are some more detailed guidelines that you should apply to this specific review.
-
-HOW MANY FINDINGS TO RETURN:
-
-Output all findings the author would fix — or whose decision they'd want to make — if they knew about it. This project prioritizes code quality:
-
-- **Do not suppress a genuine quality or hardening finding** just because it is non-blocking or no current caller can trigger it.
-- **Defense-in-depth is welcome, not noise** — validating inputs, guarding new boundaries, hardening a contract before consumers depend on it. Flag these.
-- **One exception:** skip a purely defensive nil-guard on a constructor-wired value that no reachable path dereferences. The nil-dereference rules above already cover the cases worth raising.
-- **Never duplicate an existing review comment.** Before writing a finding, check it against the comments already on the PR (Pre-Review item 8). If one already raises the same issue at the same location, drop your finding — even if you would have worded it better or rated it more severely. The only reason to write about ground an existing comment already covers is that you *disagree* with it, and that goes in the "Disagreements" section, not in the findings.
-- **Still hold the anti-bikeshedding bar for design findings** — raise one only when it materially affects the change's fitness for purpose or would be expensive to reverse.
-
-Do not stop at the first qualifying finding. List every one.
-
-GUIDELINES:
-
-- Ignore trivial style unless it obscures meaning or violates documented standards.
-- Flag any TODO, FIXME, XXX, or HACK comments introduced in the diff. For each one, surface it as a finding so the author can decide whether to resolve it before merging, convert it into a tracked ticket, or leave it with justification. Include the full TODO text in the finding body.
-- Flag dead code introduced or left orphaned by the diff: functions, types, constants, or fields the diff adds but never references; code made unreachable by the change; imports, parameters, or variables that become unused. Confirm there are no remaining references before flagging (account for re-exports, reflection, codegen, and string-based dispatch). Do not flag intentional public API surface or items annotated to suppress dead-code lints. Treat dead code as a maintainability finding, typically P2 or P3.
-- Flag pass-through constructors and wrappers: a function whose body only copies its parameters into a struct literal or forwards them unchanged to one call (e.g. `func newX(a A, b B) *X { return &X{a: a, b: b} }`), with no defaulting, validation or derived fields. It is a second name for the struct literal. Suggest inlining it at the caller and having tests build the literal. Maintainability, typically P3. Do not flag constructors that are the package's only way to build an unexported type for outside callers.
-- Flag signatures that return more than the language's idiomatic number of values — Go beyond `(result, err)` (e.g. `(a, b, c, err)`), or any positional tuple where a named struct/record fits. Positional returns are easy to transpose and force callers to remember the order; a named type self-documents. Suggest the named alternative. Style/maintainability, typically P3.
-- Flag a literal that duplicates a value the codebase already derives from a named constant or enum — e.g. the diff writes `"MAGIC_VALUE"` while a sibling function in the same file/package produces the same string via `SomeEnum_MAGIC_VALUE.String()` (or a declared `const`). Hardcoded literals drift out of sync when the canonical value changes and obscure the link to the enum/const. Point to the existing constant and suggest using it. Consistency/maintainability, typically P3.
-- Flag a computation or validation placed inside a loop whose inputs do not vary across iterations (loop-invariant work) — e.g. a check whose every argument is fixed before the loop, re-run once per element. Suggest hoisting it above the loop, where it runs once and reads as the precondition it is. Performance/maintainability, typically P3 (raise priority only if the per-iteration cost is non-trivial).
-- Use one comment per distinct issue (or a multi-line range if necessary).
-- Use ```suggestion blocks ONLY for concrete replacement code (minimal lines; no commentary inside the block).
-- In every ```suggestion block, preserve the exact leading whitespace of the replaced lines (spaces vs tabs, number of spaces).
-- Do NOT introduce or remove outer indentation levels unless that is the actual fix.
-
-Cite the location of each finding in its header as concisely as possible (file plus the most suitable short line range that pinpoints the problem — avoid ranges longer than 5–10 lines). Do not repeat the location in the body.
-
-Tag each finding with its priority level (P0–P3), as used in the output format below. [P0] – Drop everything to fix. Blocking release, operations, or major usage. Only use for universal issues that do not depend on any assumptions about the inputs. · [P1] – Urgent. Should be addressed in the next cycle · [P2] – Normal. To be fixed eventually · [P3] – Low. Nice to have.
-
-Also classify each finding's category: a *bug* is a defect in the diff (wrong behavior, crash, security, performance, dead code, misleading docs, weak tests); a *design* finding is a forward-looking concern about the change's approach or contracts where the current code is correct. When unsure, default to bug. The header carries the category; for a design finding the impact line must also say that the current code is correct and name the decision being raised.
-
-FORMATTING GUIDELINES:
-
-Each finding is a four-part block — header, headline, impact, details — in that order. The parts do different jobs and must not be merged into one paragraph:
-
-- **Header** — a single line carrying the number, priority, category, and location. Nothing else.
-- **Headline** — one bold sentence naming the defect or the decision. It has to stand alone: a reader who stops here should know what is wrong without reading further.
-- **Impact** — a blockquote, one to three sentences: what breaks, for whom, under what preconditions, and whether any path reaches it today. Severity is justified here, so state the conditions the finding depends on in this line rather than burying them in the details.
-- **Details** — one or two paragraphs of evidence: the call chain, the definitions that establish the claim, and the direction of a fix. Code fragments stay inline or in a fenced block of at most three lines.
-
-Separate findings with a horizontal rule. Do not use internal line breaks within the headline or the impact line.
-
-OUTPUT FORMAT:
-
-Do not output JSON. Present the review as prose in three parts: the findings, the verdict, then any disagreements with existing comments.
+Present as **prose only** (never JSON). Do NOT generate a PR fix or edit files. Use a matter-of-fact, concise tone with zero flattery ("Great job", "Thanks").
 
 ### Findings
 
-Number findings sequentially and order them most-severe first. In the header, `PN` is the priority tag (P0–P3), `category` is `bug` or `design`, and `location` is the file plus a short line range in backticks:
+Order sequentially, most-severe first (`P0` drop-everything universal blocker · `P1` urgent · `P2` normal · `P3` low/nice-to-have). Separate findings with `---`. Every finding has exactly 4 distinct parts:
+1. **Header:** `### #N · PN · bug|design · \`path/to/file:start-end\`` (short range ≤5–10 lines; do not repeat location in body).
+2. **Headline:** one standalone bold sentence naming the defect or decision.
+3. **Impact:** single-paragraph blockquote (`> **Impact** — ...`) stating what breaks, preconditions, and reachability (for `design`: state `none today; the current code is correct` and name the decision).
+4. **Details:** 1–2 concise paragraphs of evidence (call chain, definitions, consumer gap) and fix direction. Code chunks ≤3 lines; use ```` ```suggestion ```` ONLY for minimal concrete replacements preserving exact leading whitespace/indentation.
 
-```
+```markdown
 ### #1 · P1 · bug · `path/to/file.go:154-160`
 
 **One bold sentence naming the defect.**
 
 > **Impact** — what breaks, for whom, under what preconditions, and whether any path reaches it today.
 
-The evidence: the call chain, the definitions that establish the claim, and the direction of a fix.
+Evidence, call chain, definitions, and fix direction.
 
 ---
 
@@ -211,25 +107,28 @@ The evidence: the call chain, the definitions that establish the claim, and the 
 
 **One bold sentence naming the decision at stake.**
 
-> **Impact** — none today; the current code is correct. Name the decision and why it is cheap to make now.
+> **Impact** — none today; the current code is correct. Name the decision and why it is cheap now.
 
-The evidence, and the specific consumer or scenario the current shape cannot serve.
+Evidence and the specific consumer or scenario the current shape cannot serve.
 ```
 
-After the last finding, give the overall correctness verdict as its own section — `## Verdict: correct` or `## Verdict: incorrect` — followed by 1–3 sentences of justification. "Correct" implies existing code and tests will not break and the patch is free of bugs and other blocking issues; ignore non-blocking issues such as style, formatting, typos, documentation, and other nits. Design-category findings do not by themselves make a patch incorrect — only let one flip the verdict if it blocks the change's stated goal, and when the verdict is correct but design findings exist, say so.
+### Verdict
 
-### Disagreements
+End with `## Verdict: correct` or `## Verdict: incorrect` followed by 1–3 sentences of justification. Design findings alone do not make a patch `incorrect` unless one blocks the change's stated goal (note when verdict is `correct` with design findings).
 
-After the verdict, add this section **only** for existing PR comments you actively disagree with — a comment that is wrong about the code, would make things worse if applied, or is already resolved by the diff and can be dismissed. Do not respond to comments you agree with, do not restate them, and do not report their resolution status; skip the section entirely when you disagree with nothing, which is the common case.
+### Disagreements *(Optional)*
 
+Include ONLY when actively disagreeing with an existing PR comment (wrong about code, harmful if applied, or already resolved). Omit completely when agreeing with everything.
+
+```markdown
+### <person> — <topic in a few words>
+
+**Disagree:** why the comment is wrong or resolved, with evidence.
 ```
-### <person> — <what they raised, in a few words>
-
-**Disagree:** why the comment is wrong or no longer applies, with the evidence.
-```
-
-Do not generate a PR fix.
 
 ## Project Rules
 
 @%UR_SKILL_HOOKS%/code-review/review-guidelines.md
+
+$ARGUMENTS
+<!-- compiled-from: skills/specs/code-review.md@326eed11fbc1 profile:worker@6afed0c52191 -->

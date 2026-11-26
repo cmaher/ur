@@ -1,115 +1,63 @@
 ---
 name: cli-design
-description: Use when designing, building, or reviewing a CLI tool that AI agents will invoke — covers machine-readable output, input hardening, schema introspection, context window discipline, and safety rails
+description: Use when designing, building, or reviewing a CLI tool that AI agents will invoke
 ---
 
 # Designing CLIs for AI Agents
 
-Human DX optimizes for discoverability and forgiveness. Agent DX optimizes for predictability and defense-in-depth. **Agents hallucinate. Build like it.**
+Human DX optimizes for discoverability and forgiveness. Agent DX optimizes for predictability, structured I/O, context-window discipline, and defense-in-depth. **Agents hallucinate and parse literally — design for both.**
 
-## Core Principles
+## Core Design Principles
 
-### 1. Raw JSON Payloads Over Bespoke Flags
+### 1. Structured I/O & Stream Discipline
+- **Machine-readable output first:** support `--output json` (and `ndjson` for streaming/pagination), `OUTPUT_FORMAT=json`, or auto-JSON when stdout is not a TTY.
+- **Strict stream separation:** stdout emits **pure data only** (valid JSON when requested, zero logs or ANSI color codes); stderr carries progress, warnings, human diagnostics, and structured error envelopes (`{"ok":false,"error":{"code":"...","message":"...","hint":"..."}}`).
+- **Structured input alongside human flags:** accept `--json '{...}'` or `--input -` (stdin) for complex payloads so agents do not fight shell escaping across 15 bespoke flags.
 
-Support both human-friendly flags AND structured JSON input. Agents need to pass full API payloads without mapping to dozens of flags.
+### 2. Non-Interactive & Deterministic by Default
+- **Fail fast without a TTY:** never hang waiting for interactive confirmation or missing prompts when stdin is not a TTY; exit with an error naming the missing required flag.
+- **Stable exit-code taxonomy:** document and enforce numeric exit codes so callers branch on exit status rather than scraping English prose (e.g., `0` ok, `2` unreachable/transient, `3` not found, `5` invalid input, `6` permission/policy, `10` timeout).
+- **Explicit idempotency & retry semantics:** make retries safe or state clearly when an operation is non-idempotent.
 
-```bash
-# Human path
-mycli create --title "My Doc" --locale en --timezone UTC
+### 3. Runtime Discoverability
+- **Self-describing commands:** expose `--describe`, `schema <cmd>`, or `--help --json` returning accepted flags, payload schemas, exit codes, and response shapes as JSON so docs do not go stale in prompt context.
+- **Pair with a concise agent skill:** document cross-command invariants `--help` cannot convey (ordering, safety rails, required field masks).
 
-# Agent path — single structured input
-mycli create --json '{"title": "My Doc", "locale": "en", "timezone": "UTC"}'
-```
+### 4. Context-Window Discipline
+- **Field masks & bounded pagination:** support `--fields a,b,c`, `--limit N`, and cursor or NDJSON pagination so list/get calls never dump megabytes into agent context.
+- **Explicit truncation metadata:** whenever output is bounded, return deterministic metadata (`truncated: true`, `remaining: N`, `next_cursor`) rather than silently dropping items.
 
-For output: `--output json`, `OUTPUT_FORMAT=json` env var, or default to NDJSON when stdout is not a TTY.
+### 5. Input Hardening (Treat Agent Input as Untrusted)
+Validate early and fail loudly before any side effects:
 
-### 2. Schema Introspection Replaces Documentation
+| Vector | Example | Defense |
+| --- | --- | --- |
+| Path traversal | `../../.ssh/id_rsa` | Canonicalize/validate paths stay inside allowed root; reject `..` |
+| Control characters | Bytes `< 0x20` | Reject ASCII control chars in string inputs |
+| Query/fragment injection | `itemId?fields=all` | Reject query/fragment chars (`?`, `#`) in resource IDs |
+| Double encoding | `%2e%2e` | Decode before validating |
+| Unencoded path segments | Spaces/slashes in names | Reject raw path separators in IDs; percent-encode path segments |
 
-Static docs consume token budget and go stale. Make the CLI self-describing at runtime:
+Fuzz and unit-test with agent-typical hallucinations: wrong ID shapes, empty strings, relative escapes, trailing whitespace.
 
-```bash
-mycli schema drive.files.list   # Returns params, request body, response types as JSON
-mycli describe create           # Or --help --json for any command
-```
+### 6. Safety Rails
+- **`--dry-run` on mutations:** validate inputs, auth, and target state and print the planned diff/action without executing side effects.
+- **Non-interactive auth:** accept credentials via env vars, credential files, or host-managed auth — never trigger browser OAuth mid-command and never accept secrets in visible CLI flags when env/stdin/file works.
+- **Untrusted external payloads:** frame or sanitize external/user-controlled response prose so embedded prompt injections cannot hijack the calling agent.
 
-This is most valuable for API-backed CLIs, but `--describe` or `--help --json` works universally.
+## Incremental Adoption Order
 
-### 3. Context Window Discipline
+1. `--output json` + strict stdout/stderr separation + structured error JSON & exit codes
+2. Non-interactive fail-fast + boundary input hardening
+3. Field masks, `--limit`, pagination bounds, and truncation metadata
+4. `--dry-run` on mutating/destructive commands
+5. Runtime schema introspection (`--describe` / `schema`)
+6. Concise agent skill doc encoding non-obvious invariants
 
-Agents pay per token and lose reasoning capacity with every irrelevant field.
+## Guardrails
 
-- **Field masks**: `--params '{"fields": "files(id,name,mimeType)"}'` or `--fields id,name,mimeType`
-- **NDJSON pagination**: One JSON object per page for stream processing without buffering entire arrays
-
-Skill files / agent instructions should say: "ALWAYS use field masks when listing or getting resources."
-
-### 4. Input Hardening Against Hallucinations
-
-The agent is not a trusted operator. Agents hallucinate differently from human typos:
-
-| Attack Vector | Example | Defense |
-|---|---|---|
-| Path traversal | `../../.ssh/id_rsa` | Validate output dirs, reject `..` |
-| Control characters | Invisible chars below ASCII 0x20 | Reject control chars in all string inputs |
-| Embedded query params | `fileId?fields=name` | Strip query strings from resource IDs |
-| Double encoding | `%2e%2e` → `..` after decode | Decode first, then validate |
-| URL path segments | Special chars in filenames | Encode path segments properly |
-
-Validate early, reject loudly. Fuzz with agent-typical mistakes during testing.
-
-### 5. Ship Agent Skills, Not Just Commands
-
-Agents learn through injected context files, not `--help` text. Ship skill/context files with YAML frontmatter encoding invariants agents cannot intuit:
-
-- "Always use `--dry-run` for mutating operations"
-- "Always confirm with user before write/delete commands"
-- "Add `--fields` to every list call"
-
-### 6. Multi-Surface Architecture
-
-One binary, multiple agent surfaces:
-
-- **MCP (Model Context Protocol)**: Expose commands as JSON-RPC tools over stdio — eliminates shell escaping and argument parsing ambiguity
-- **Environment variables**: `MY_CLI_TOKEN`, `MY_CLI_CREDENTIALS_FILE` for credential injection without browser redirects
-- **Extensions**: Native capability installation for agent platforms
-
-All surfaces should derive from the same source of truth (API schema, discovery document, etc.).
-
-### 7. Safety Rails: Dry-Run and Response Sanitization
-
-- **`--dry-run`**: Validate requests locally before API invocation. Critical for create/update/delete.
-- **`--sanitize`**: Filter API responses for prompt injection before returning to agent. Malicious content in data (e.g. email bodies with injected instructions) can hijack agent behavior.
-
-## Implementation Order
-
-Add these incrementally — no rewrite required:
-
-1. `--output json` — machine-readable baseline
-2. Input validation — reject control chars, path traversals, embedded params
-3. `--describe` / schema command — runtime introspection
-4. Field masks / `--fields` — context window protection
-5. `--dry-run` — validation before mutation
-6. Skill files — explicit invariant documentation for agents
-7. MCP surface — typed JSON-RPC for API-backed CLIs
-
-## Quick Reference
-
-| Concern | Human CLI | Agent CLI |
-|---|---|---|
-| Input | Flat flags | Structured JSON payload |
-| Output | Pretty tables | JSON / NDJSON |
-| Docs | Man pages, `--help` | Schema introspection, skill files |
-| Errors | Friendly messages | Structured error JSON with codes |
-| Auth | Browser OAuth flow | Env vars, service accounts |
-| Safety | Confirmation prompts | `--dry-run`, input validation, response sanitization |
-| Pagination | "Next page? y/n" | NDJSON streaming |
-
-## Common Mistakes
-
-- **Omitting `--output json`**: The single highest-impact addition. Do this first.
-- **Trusting agent input**: Agents hallucinate paths, IDs, and parameters. Validate everything.
-- **Returning entire API responses**: Bloats context window and degrades reasoning. Support field masks.
-- **Relying on `--help` text for agents**: Agents work from injected context, not interactive help. Ship skill files.
-- **No `--dry-run`**: Agents should validate before mutating. Without this, mistakes are irreversible.
-
-$ARGUMENTS
+- Never mix logs or ANSI escape codes into `--output json` stdout.
+- Never hang on interactive prompts when stdin is not a TTY.
+- Never return unbounded API or DB dumps without limits or field selection.
+- Never trust agent-supplied paths, IDs, or resource names without boundary validation.
+<!-- compiled-from: skills/specs/cli-design.md@e0b8e44d60d3 profile:worker@6afed0c52191 -->

@@ -2042,7 +2042,7 @@ mod tests {
     fn worker_modes_default_has_code_and_design() {
         let cfg = WorkerModesConfig::default();
         let code = cfg.resolve_skills("", &[]).unwrap();
-        assert!(code.contains(&"green".to_string()));
+        assert!(code.contains(&"code-review".to_string()));
         let design = cfg.resolve_skills("design", &[]).unwrap();
         assert!(design.contains(&"design".to_string()));
     }
@@ -2089,7 +2089,7 @@ skills = ["a", "b"]
         let toml = "server_port = 5000\n";
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
         let code = cfg.resolve_skills("", &[]).unwrap();
-        assert!(code.contains(&"green".to_string()));
+        assert!(code.contains(&"code-review".to_string()));
     }
 
     #[test]
@@ -2164,7 +2164,7 @@ skills = ["tickets"]
         let manual = cfg.resolve_skills("manual", &[]).unwrap();
         assert!(manual.contains(&"implement".to_string()));
         assert!(manual.contains(&"design".to_string()));
-        assert!(manual.contains(&"green".to_string()));
+        assert!(manual.contains(&"code-review".to_string()));
     }
 
     #[test]
@@ -2180,7 +2180,7 @@ skills = ["tickets"]
         // All skills — union of code and design plus common
         assert!(skills.contains(&"implement".to_string()));
         assert!(skills.contains(&"design".to_string()));
-        assert!(skills.contains(&"green".to_string()));
+        assert!(skills.contains(&"code-review".to_string()));
         assert_eq!(model, "opus");
     }
 

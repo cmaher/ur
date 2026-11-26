@@ -8,7 +8,8 @@ attribution are documented below.
 - **Source:** https://github.com/obra/superpowers
 - **License:** MIT
 - **Copyright:** (c) 2025 Jesse Vincent
-- **Usage:** The design skill in `containers/worker-base/potential-skills/design/` is
+- **Usage:** The design skill in `skills/specs/design.md`,
+  `containers/worker-base/potential-skills/design/`, and `skills/local/design/` is
   adapted from the `superpowers` brainstorming skill. The original superpowers
   repository is also vendored as a submodule at
   `containers/worker-base/vendor/superpowers/`.

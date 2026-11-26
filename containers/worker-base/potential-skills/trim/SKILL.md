@@ -1,100 +1,77 @@
 ---
 name: trim
-description: Use when a change is done but before it ships, to find code to delete or replace with code that already exists: helpers that duplicate an existing package, pass-through wrappers, guards and knobs nobody needs, copy-pasted test setup, and stale docs. Reports findings by default; pass `apply` to make the cuts.
+description: Use when a change is functionally complete and before it ships to find and cut duplicated, wrapper, dead, or unnecessary code
 ---
 
-# trim: make the diff smaller
+# trim: Make the Diff Smaller
 
-## Overview
+Inspect a finished diff with one question: **what can go?** Cut code by deleting it, replacing it with code the repo or platform already provides, or folding copies into one. Never hunt bugs or add guards — use the `code-review` skill for that.
 
-A trim pass looks at a finished diff and asks one question: **what can go?** Code is cut by deleting it, by replacing
-it with code the repo or platform already has, or by folding copies into one. A trim pass does not hunt bugs or add
-guards. Use `code-review` for that.
+## Optional Hook Files
 
-**Core principle:** every line the diff adds has to earn its place against what already exists. The most valuable
-finding is freshly written code that duplicates something the codebase already provides, because the diff can't show
-it. You have to go and look.
+The `@%UR_SKILL_HOOKS%/...` reference below is an optional project hook. Read and follow it if the file exists. If absent, fall back to the verification commands documented in `CLAUDE.md` (or skip silently if none apply) — absence is never a blocker, never a reason to call `request-human`, and never a reason to create missing hooks or invent replacement checks.
 
 ## Invocation
 
 Parse `$ARGUMENTS` for:
+- A range (`<base>..<head>`, PR number, or branch; default: working branch vs merge base with default branch).
+- `apply`: perform accepted cuts, verify, and commit. Without `apply`, **report only** (do not edit files).
+- Scope contracts (if provided): never cut behavior a contract guarantees.
 
-- a range (`<base>..<head>`, a PR number, or a branch). The default is the working branch against its merge base
-  with the default branch.
-- `apply`: make the accepted cuts, verify, and commit. Without it, report only.
-- any scope contracts you were given. Keep every guarantee they list; a cut that breaks one is not a trim.
+## Step 1: Search for an Existing Home (Required)
 
-## Step 1: Search for an existing home (required)
+The diff alone hides duplication of code elsewhere. For every new function, type, interface, or constant, identify what dependency it wraps (client, encoding, enum, config, test fake) and search:
+1. **Shared packages** (`rg -l '<DependencyType>'`): read the packages importing it most. If an existing shared wrapper lacks one small piece, **add it there and use it** instead of keeping a private copy.
+2. **Same and sibling packages:** check neighboring files for existing helpers.
+3. **The test file itself:** check for existing helpers bypassed by inline copies.
+4. **The platform:** stdlib, framework, DB, or proxy behavior re-implemented in the diff.
 
-The diff alone can't show duplication of code that lives elsewhere. For each new function, type, interface or
-constant the diff adds, list what it depends on (a client, an encoding, a status enum, a config type, a test fake).
-Then search for code that already wraps that dependency:
+## Step 2: Cut Catalog
 
-1. **Shared packages for the dependency.** Look for a common, shared or util package built around the same client
-   or library: `rg -l '<DependencyType>' --type <lang>`, then read the packages that import it most. A new
-   interface with the same methods as an existing client wrapper, or a builder that encodes the same request,
-   belongs in that wrapper.
-2. **The same package and its siblings.** Helpers one directory over often already do the job.
-3. **The test file itself.** A helper defined in the file but bypassed by inline copies is a finding.
-4. **The platform.** Stdlib, framework, database or proxy features the code re-implements.
-
-Record each hit as "new `X` duplicates existing `Y` at `path:line`". When the existing home is missing a small
-piece (a method, an exported helper), the trim is to **add it there and use it**, not to keep a private copy.
-
-## Step 2: Cut catalog
-
-Check the diff against each category.
-
-| Category | What to look for | Usual cut |
+| Category | Look for | Usual cut |
 | --- | --- | --- |
-| Duplicate of existing code | Step 1 hits: a new interface, builder, mapper or helper that matches one in a shared package | Use the existing one; move the missing piece there |
-| Pass-through constructor or wrapper | A function whose body only copies its parameters into a struct literal or forwards them to one call (`newX(a, b, c) *X { return &X{a: a, b: b, c: c} }`), with no defaulting, validation or derivation | Inline it at its caller. Tests build the struct literal |
-| One-implementation abstraction | An interface, option type or strategy with one implementation and no planned second one | Use the concrete type |
-| Platform already does it | Re-implemented stdlib, framework, DB or proxy behavior | Delete it and rely on the platform |
-| Guards for one root cause | Several checks that together compensate for one missing invariant | Fix the root cause once; drop the guards |
-| Unneeded knobs | Config fields, flags or parameters with one value in practice | Make it a constant |
-| Duplication across units | The same logic in two files or units of the change | One implementation, called from both |
-| Dead code | Symbols, branches, imports or parameters nothing reaches after the change | Delete |
-| Copy-pasted test setup | The same prelude (arrange plus first action) repeated 3+ times | One fixture helper, or a table test when cases differ only in inputs and expectations |
-| Bypassed test helper | A helper exists, but some tests inline what it does | Use the helper everywhere |
-| Duplicate tests | Two tests with the same setup and the same path, where one adds only an assertion | Merge them, keeping the union of assertions |
-| Stale docs | Doc comments, READMEs or the PR description claiming behavior the code no longer has | Delete or correct the claim |
+| Duplicate of existing code | Step 1 hits matching an existing wrapper/helper/builder | Use existing home; move missing piece there |
+| Pass-through constructor/wrapper | Body only copies params into a struct literal or forwards one call | Inline at callers; tests build literal |
+| One-implementation abstraction | Interface/option/strategy with one impl and no planned second | Use concrete type |
+| Platform already does it | Re-implemented stdlib, framework, DB, or proxy feature | Delete and rely on platform |
+| Guards for one root cause | Multiple checks compensating for one missing invariant | Fix root cause once; drop guards |
+| Unneeded knobs | Config fields, flags, or params with one value in practice | Replace with constant |
+| Duplication across units | Same logic in two files or units of the change | Single implementation called by both |
+| Dead code | Unreachable symbols, branches, imports, or params | Delete |
+| Copy-pasted test setup | Same arrange/prelude repeated 3+ times | Fixture helper or table test |
+| Bypassed test helper | Existing helper bypassed by inline copies | Use the helper everywhere |
+| Duplicate tests | Same setup and path where one adds only an assertion | Merge keeping union of assertions |
+| Stale docs | Doc comments, READMEs, or PR claims no longer true | Delete or correct |
 
-Not a trim: renames, reformatting, style preferences, or anything that changes behavior a contract guarantees.
+**Not a trim:** renames, reformatting, style preferences, or any cut that breaks a guaranteed contract.
 
 ## Step 3: Report
 
-Number each finding, most lines saved first:
+Number findings sequentially, **most lines saved first**:
 
+```markdown
+### #1 · duplicate · `path/to/client.go:23-40`
+
+**`fooClient` and its private interface duplicate `path/to/common/foo`.**
+
+Add the missing method to the shared wrapper, hold it directly, and delete the private interface and builder. Saves ~40 lines.
 ```
-### #1 · duplicate · `path/to/feature/client.go:23-40`
 
-**`fooClient` and its private interface re-implement the wrapper in `path/to/common/foo`.**
+Name the code to remove, its exact replacement (`symbol` + path, or "nothing"), and estimated lines saved. End with the estimated total lines cut.
 
-Add the one missing method to the shared wrapper, hold that wrapper instead, and delete the private interface and
-request builder. Saves ~40 lines here.
-```
+## Step 4: Apply (Only With `apply`)
 
-Each finding names the code to remove, what replaces it (an existing symbol with its path, or "nothing"), and roughly
-how many lines it saves. End with a total of the lines you expect to cut.
-
-## Step 4: Apply (only with `apply`)
-
-1. Make the cuts, smallest blast radius first. Move shared pieces before switching callers.
-2. Run the project's verification (its CLAUDE.md, or the hooks below), plus the tests for every package you touched.
-3. Commit once with a message listing each cut. Don't push.
-
+1. Make cuts smallest blast radius first (move/extend shared code before switching callers).
+2. Run verification (hook below or `CLAUDE.md` commands) plus tests for every touched package:
 @%UR_SKILL_HOOKS%/implement/subtask-verifications.md
+3. Commit once listing each cut. Never push.
 
-## Red flags
+## Red Flags
 
-| Thought | Reality |
-| --- | --- |
-| "The diff looks self-contained" | Duplication of existing code is invisible in the diff; run Step 1 |
-| "It's only a few lines of wrapper" | A pass-through wrapper is a second name for the same thing; inline it |
-| "The shared package lacks this, so keep a private copy" | Add the missing piece to the shared package |
-| "Each test should be readable on its own" | Many copies of one prelude hide what each test changes; use a helper or a table |
-| "While I'm here, I'll fix this bug" | Report it for `code-review`; trim only cuts |
-| "This guard is cheap" | Ask what root cause it compensates for |
+- Skipping Step 1 because "the diff looks self-contained"
+- Keeping a private copy because the shared wrapper lacks one small method
+- Fixing bugs or adding guards during a trim pass (report them for the `code-review` skill)
+- Editing files when `apply` was not passed, or pushing commits
 
 $ARGUMENTS
+<!-- compiled-from: skills/specs/trim.md@cc1264b75a41 profile:worker@6afed0c52191 -->

@@ -1,43 +1,43 @@
 ---
-description: Load this project's brain — user-managed context outside the repo (mounted at /brain in workers). Use when you need durable project knowledge (architecture, decisions, domain facts) or in-progress working context that isn't in the repo.
+name: brain
+description: Use when loading durable project knowledge (architecture, decisions, domain facts) or transient in-progress working context stored outside the repo in the project's brain
 ---
 
 # Brain
 
-The **brain** is a per-project, user-managed context directory. It holds knowledge that lives outside the repo: durable facts (architecture, decisions, domain knowledge) and transient working context (investigations, scratch notes). Its content is owned by the user — this skill only reads it.
+The **brain** is a per-project, user-managed context directory outside the repo (`reference/` for durable knowledge, `working/` for transient streams). Its content is user-owned — this skill is read-oriented and never restructures or deletes brain content (`/brain:init` scaffolds missing layout; `/brain:dream` consolidates).
 
-## Brain root
+## Brain Root
 
-`<brain>` is `$UR_BRAIN` when set (ur sets it to `/brain` in workers that have a brain). Otherwise it is the `brain` field of this project in `ur project list --output json`: the project is this skill's argument, or the one whose `repo` matches this directory's `origin` remote; if none or several match, ask.
+`<brain>` is `$UR_BRAIN` (mounted at `/brain/` in workers with a brain). Run every `git` command from inside `<brain>` (`cd <brain>` first) — never `git -C`, because in a worker only the working directory is host-mapped.
 
-## Instructions
+## Reading the Brain
 
-1. **Read `<brain>/CLAUDE.md`** — the top-level orientation file.
-   - If it does **not** exist, the brain is empty. Tell the user the brain is empty and suggest running `/brain:init` to scaffold it, then stop.
-2. **Follow the table-of-contents links** in `<brain>/CLAUDE.md`. It typically points to sub-indexes such as:
+1. **Read `<brain>/CLAUDE.md`.** If it does not exist, report that the brain is empty, suggest running `/brain:init`, and stop.
+2. **Follow table-of-contents pointers** in `<brain>/CLAUDE.md` — typically:
    - `<brain>/reference/CLAUDE.md` — durable knowledge (architecture, decisions, domain facts).
-   - `<brain>/working/CLAUDE.md` — in-progress / transient context (investigations, scratch).
-   Each index lists one-line pointers to sibling files (the `MEMORY.md` index pattern).
-3. **Load the entries relevant to your current task** by reading the files those pointers reference. Do not read the whole brain indiscriminately — follow the pointers that matter for what you're doing.
+   - `<brain>/working/CLAUDE.md` — transient, in-progress context (investigations, scratch streams).
+3. **Load only what applies to the current task.** Follow specific one-line index pointers rather than reading the whole brain indiscriminately.
 
-## Writing to the brain
+## Writing Notes or Streams
 
-When you start a new stream in `<brain>/working/`, give its entry file (`README.md`, or the single file) frontmatter so later consolidation can tell when it is finished without searching for it:
+- **New working stream** (`<brain>/working/<stream>/README.md` or a single file) must carry YAML frontmatter:
+  ```yaml
+  ---
+  status: active          # active | done | archived
+  refs:                   # tickets, PRs, branches; use ref kinds from DREAM.md when present
+    - ticket: EXAMPLE-123
+  last-verified: YYYY-MM-DD
+  ---
+  ```
+- **Verify code actually runs:** before recording a code fact, check its call sites and the flag/config that enables it per environment. Unused code or off-by-default features must be labeled as such, never as live behavior.
+- **Cite by path and symbol, never `file:line`** (line numbers go stale).
+- **Git hygiene:** `cd <brain>`, stage **only** the files you changed (`git add <files>`), and commit with `"brain: <what changed>"`. If `git remote` lists a remote, run `git push`; otherwise stop after committing. Never add a remote or force-push.
 
-```yaml
----
-status: active          # active | done | archived
-refs:                   # tickets, PRs, branches this work lives in; kinds are listed in DREAM.md
-  - ticket: EXAMPLE-123
-  - pr: example-org/example-repo#45
-last-verified: YYYY-MM-DD
----
-```
+## Guardrails
 
-Add refs as they appear. If `<brain>/DREAM.md` lists ref kinds, use those names.
-
-When you write a fact about code into the brain, check that it runs: find the call sites and the flag or config that enables it, and its value per environment. A type or function that exists but has no callers, or a feature behind an off flag, is written down as exactly that, not as current behavior. Cite code by path and symbol, not `file:line` (line numbers go stale).
-
-Commit what you change in the brain when you finish (`cd <brain>`, `git add <the files you changed>`, `git commit -m "brain: <what changed>"`). Never stage files you didn't change. If `git remote` lists a remote, push the commit (`git push`); if it lists none, the brain is local-only and the commit is the end. Never add a remote, never force-push.
-
-The brain is user-managed. Do not restructure or delete brain content here. `/brain:init` scaffolds missing layout; `/brain:dream` is the skill that restructures and consolidates.
+- Never dump the whole brain when only specific entries are relevant.
+- Never restructure or delete existing brain files here.
+- Never cite `file:line` or record unverified/dead code as live behavior.
+- Never run `git -C`, stage untouched files, add remotes, or force-push.
+<!-- compiled-from: skills/specs/brain.md@3f7673200aeb profile:worker@6afed0c52191 -->
